@@ -1,0 +1,1778 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>Panimalar Transit · Admin Control Center</title>
+    <meta name="description" content="Panimalar Transit Admin Control Center. Manage routes, drivers, schedules, emergency broadcasts and track live bus locations in real-time." />
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <meta name="theme-color" content="#2563eb" />
+    <link rel="manifest" href="manifest.json" />
+    <link rel="apple-touch-icon" href="logo.jpg" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        /* ─── TOKENS (same as student page) ─────────────────────────── */
+        :root {
+            --blue: #2563eb; --blue-dark: #1d4ed8;
+            --green: #22c55e; --orange: #f97316;
+            --pink: #db2777; --red: #ef4444;
+            --bg: #eef2ff; --surface: #ffffff;
+            --border: #e8edf8; --text: #0f172a; --muted: #64748b;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: linear-gradient(145deg, #eef2ff 0%, #dde6ff 100%);
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            display: flex; align-items: center; justify-content: center;
+            min-height: 100vh; padding: 20px;
+        }
+
+        /* ─── APP SHELL (identical structure to student) ────────────── */
+        .app-shell {
+            max-width: 460px; width: 100%; height: 860px;
+            background: #fff; border-radius: 44px;
+            box-shadow: 0 32px 60px -20px rgba(37,99,235,0.25), 0 0 0 1px rgba(255,255,255,0.6) inset;
+            display: flex; flex-direction: column; overflow: hidden; position: relative;
+        }
+
+        /* ─── HEADER ─────────────────────────────────────────────────── */
+        .app-header {
+            padding: 14px 20px; background: white; border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+        }
+        .logo-box {
+            width: 36px; height: 36px; background: #ffffff;
+            border-radius: 50%; display: flex; align-items: center; justify-content: center;
+            overflow: hidden; flex-shrink: 0;
+        }
+        .app-logo { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
+        .app-header h1 {
+            font-size: .95rem; font-weight: 800;
+            background: linear-gradient(130deg, #0f2b3d, #2563eb);
+            -webkit-background-clip: text; background-clip: text;
+            color: transparent; letter-spacing: -0.3px; line-height: 1.2;
+        }
+        .admin-pill {
+            margin-left: auto; background: #fef3c7; padding: 5px 11px;
+            border-radius: 50px; font-size: 10px; font-weight: 800; color: #92400e;
+            display: flex; align-items: center; gap: 5px; flex-shrink: 0;
+        }
+        .live-pill {
+            margin-left: auto; background: #dcfce7; padding: 5px 11px;
+            border-radius: 50px; font-size: 10px; font-weight: 800; color: #15803d;
+            display: flex; align-items: center; gap: 5px; flex-shrink: 0;
+        }
+        .pulse-dot {
+            width: 7px; height: 7px; background: var(--green);
+            border-radius: 50%; animation: blink 1.2s ease-in-out infinite alternate;
+        }
+        @keyframes blink { from{opacity:.4;transform:scale(.8);}to{opacity:1;transform:scale(1.3);} }
+
+        /* ─── PAGE CONTAINER ─────────────────────────────────────────── */
+        .page-container {
+            flex: 1; overflow-y: auto; padding: 14px 14px 8px;
+            scrollbar-width: thin; scrollbar-color: #c7d2fe transparent;
+        }
+        .page { display: none; flex-direction: column; gap: 12px; animation: fadeUp .3s ease; }
+        .page.active { display: flex; }
+        @keyframes fadeUp { from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:translateY(0);} }
+
+        /* ─── BOTTOM NAV ─────────────────────────────────────────────── */
+        .bottom-nav {
+            display: flex; background: white; border-top: 1px solid #eef2f8;
+            padding: 6px 8px 14px; gap: 4px; flex-shrink: 0; overflow-x: auto;
+        }
+        .bottom-btn {
+            flex: 1; background: transparent; border: none; padding: 7px 0;
+            font-weight: 700; font-size: 9.5px; font-family: inherit; color: #94a3b8;
+            border-radius: 40px; cursor: pointer; transition: .18s; white-space: nowrap;
+            min-width: 0;
+        }
+        .bottom-btn.active { background: #eef2ff; color: var(--blue); }
+
+        /* ─── SHARED COMPONENTS ──────────────────────────────────────── */
+        .btn {
+            border: none; padding: 13px 20px; border-radius: 40px;
+            font-weight: 700; font-size: 14px; font-family: inherit;
+            color: white; width: 100%; cursor: pointer; transition: all .18s ease;
+        }
+        .btn-primary { background: var(--blue); }
+        .btn-primary:hover { background: var(--blue-dark); transform: scale(.98); }
+        .btn-secondary { background: #f1f5f9; color: #1e293b; border: 1px solid #e2e8f0; }
+        .btn-secondary:hover { background: #e8edf8; }
+        .btn-danger { background: var(--red); }
+        .btn-sm {
+            padding: 7px 14px; font-size: 11px; border-radius: 30px;
+            border: none; font-weight: 700; font-family: inherit; cursor: pointer; transition: .18s;
+        }
+        .btn-sm-primary { background: var(--blue); color: white; }
+        .btn-sm-secondary { background: #f1f5f9; color: #334155; border: 1px solid #e2e8f0; }
+        .btn-sm-danger { background: #fee2e2; color: var(--red); }
+        .btn-sm-orange { background: #fff7ed; color: var(--orange); border: 1px solid #fed7aa; }
+
+        .section-label {
+            font-size: 10px; font-weight: 800; text-transform: uppercase;
+            letter-spacing: 1.4px; color: var(--muted);
+        }
+        select, input[type=text], input[type=tel], input[type=date], textarea {
+            width: 100%; padding: 11px 16px; border-radius: 30px;
+            border: 1.5px solid #e2edf2; background: #fafbff;
+            font-size: 13px; font-family: inherit; outline: none; color: var(--text);
+        }
+        select:focus, input:focus, textarea:focus {
+            border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,0.15);
+        }
+        textarea { border-radius: 18px; resize: none; min-height: 72px; }
+
+        .badge { padding: 4px 10px; border-radius: 60px; font-size: 10px; font-weight: 800; color: white; }
+        .badge-blue { background: var(--blue); }
+        .badge-green { background: var(--green); }
+        .badge-orange { background: var(--orange); }
+        .badge-red { background: var(--red); }
+        .badge-pink { background: var(--pink); }
+
+        .status-badge { padding: 3px 9px; border-radius: 20px; font-size: 10px; font-weight: 800; }
+        .status-ontime { background: #dcfce7; color: #15803d; }
+        .status-delayed { background: #fee2e2; color: #dc2626; }
+        .status-arrived { background: #dbeafe; color: #1d4ed8; }
+
+        /* card */
+        .card {
+            background: white; border-radius: 20px; padding: 14px 16px;
+            border: 1.5px solid #eef2ff;
+        }
+        .card-title { font-size: 12px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+
+        /* stat grid */
+        .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .stat-card {
+            background: white; border-radius: 18px; padding: 12px 14px;
+            border: 1.5px solid #eef2ff; display: flex; flex-direction: column; gap: 4px;
+        }
+        .stat-icon { font-size: 20px; }
+        .stat-val { font-size: 24px; font-weight: 800; line-height: 1; }
+        .stat-label { font-size: 10px; font-weight: 700; color: var(--muted); }
+
+        /* map */
+        .map-card {
+            width: 100%; height: 260px; border-radius: 26px;
+            overflow: hidden; border: 1.5px solid #eef2ff;
+            position: relative; background: #e2e8f0;
+        }
+        .live-badge {
+            position: absolute; top: 12px; right: 12px;
+            background: rgba(0,0,0,0.78); backdrop-filter: blur(8px);
+            padding: 5px 12px; border-radius: 60px;
+            font-size: 10px; font-weight: 700; color: white;
+            display: flex; align-items: center; gap: 6px;
+            z-index: 500; pointer-events: none;
+        }
+
+        /* bus card */
+        .bus-card {
+            background: white; border-radius: 20px; padding: 12px 14px;
+            border: 1.5px solid #eef2ff; cursor: pointer; transition: .18s;
+        }
+        .bus-card:hover { transform: translateY(-2px); border-color: #bfd0f8; }
+        .bus-card-top { display: flex; justify-content: space-between; align-items: flex-start; }
+        .bus-card-meta { display: flex; flex-direction: column; gap: 3px; }
+        .bus-card-num { font-weight: 800; font-size: 14px; }
+        .bus-card-sub { font-size: 11px; color: var(--muted); }
+        .bus-card-actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+
+        /* table */
+        .table-wrap { overflow-x: auto; border-radius: 16px; border: 1.5px solid #eef2ff; }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        thead th {
+            background: #f8fafc; padding: 9px 12px; text-align: left;
+            font-weight: 800; color: var(--muted); font-size: 10px;
+            text-transform: uppercase; letter-spacing: 1px; white-space: nowrap;
+        }
+        tbody td { padding: 9px 12px; border-top: 1px solid #f1f5f9; color: var(--text); font-weight: 600; }
+        tbody tr:hover { background: #f8faff; }
+
+        /* upload zone */
+        .upload-zone {
+            border: 2px dashed #bfdbfe; border-radius: 22px;
+            padding: 28px 20px; text-align: center; cursor: pointer;
+            background: #eff6ff; transition: .2s;
+        }
+        .upload-zone:hover, .upload-zone.drag-over { border-color: var(--blue); background: #dbeafe; }
+        .upload-zone-icon { font-size: 40px; margin-bottom: 8px; }
+        .upload-zone-title { font-size: 14px; font-weight: 800; color: #1d4ed8; }
+        .upload-zone-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+        .file-item {
+            background: white; border-radius: 16px; padding: 10px 14px;
+            border: 1.5px solid #eef2ff; display: flex; align-items: center; gap: 10px;
+        }
+        .file-icon { font-size: 24px; flex-shrink: 0; }
+        .file-name { font-size: 12px; font-weight: 700; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .file-size { font-size: 10px; color: var(--muted); }
+
+        /* alert card */
+        .alert-card {
+            border-radius: 20px; padding: 12px 14px; display: flex; gap: 10px;
+            align-items: flex-start; border: 1.5px solid transparent;
+        }
+        .alert-card.breakdown { background: #fef2f2; border-color: #fecaca; }
+        .alert-card.delay { background: #fffbeb; border-color: #fde68a; }
+        .alert-card.route { background: #eff6ff; border-color: #bfdbfe; }
+        .alert-card-icon { font-size: 22px; flex-shrink: 0; }
+        .alert-card-body { flex: 1; }
+        .alert-card-title { font-size: 13px; font-weight: 800; }
+        .alert-card-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+        .alert-card-time { font-size: 10px; color: #adb5bd; margin-top: 4px; }
+
+        /* login */
+        .login-wrap {
+            display: flex; flex-direction: column; gap: 14px;
+            padding: 20px 0; justify-content: center; flex: 1;
+        }
+        .login-hero { text-align: center; }
+        .login-hero-icon { font-size: 56px; margin-bottom: 10px; }
+        .login-hero h2 { font-size: 20px; font-weight: 800; }
+        .login-hero p { font-size: 12px; color: var(--muted); margin-top: 4px; }
+        .input-group { display: flex; flex-direction: column; gap: 6px; }
+        .input-label { font-size: 11px; font-weight: 800; color: var(--muted); padding-left: 4px; text-transform: uppercase; letter-spacing: 1px; }
+        .input-field {
+            padding: 12px 16px; border-radius: 30px; border: 1.5px solid #e2edf2;
+            background: #fafbff; font-size: 13px; font-family: inherit; outline: none;
+            width: 100%; color: var(--text);
+        }
+        .input-field:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,.15); }
+        .login-hint { background: #f0f9ff; border-radius: 14px; padding: 10px 14px; font-size: 11px; color: #0369a1; font-weight: 600; }
+
+        /* notif */
+        .notif-container { position: fixed; top: 20px; right: 20px; z-index: 99999; display: flex; flex-direction: column; gap: 10px; max-width: 320px; }
+        .notif-card {
+            background: white; border-radius: 18px; padding: 14px 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.18), 0 0 0 1px rgba(0,0,0,0.05);
+            display: flex; gap: 12px; align-items: flex-start;
+            transform: translateX(340px); opacity: 0;
+            transition: transform .35s cubic-bezier(.34,1.56,.64,1), opacity .3s ease;
+        }
+        .notif-card.show { transform: translateX(0); opacity: 1; }
+        .notif-card.hide { transform: translateX(340px); opacity: 0; }
+        .notif-icon { font-size: 28px; flex-shrink: 0; margin-top: -2px; }
+        .notif-body { flex: 1; }
+        .notif-app { font-size: 10px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+        .notif-title { font-size: 13px; font-weight: 800; color: var(--text); margin-top: 2px; }
+        .notif-sub { font-size: 12px; color: var(--muted); margin-top: 2px; line-height: 1.4; }
+        .notif-progress { height: 3px; background: #f1f5f9; border-radius: 10px; margin-top: 8px; overflow: hidden; }
+        .notif-progress-fill { height: 100%; background: var(--blue); border-radius: 10px; width: 100%; transition: width linear; }
+
+        /* legend */
+        .legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; font-size: 10px; font-weight: 600; color: var(--muted); }
+        .legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+
+        /* chip grid */
+        .route-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .route-chip {
+            background: #f8fafc; border-radius: 14px;
+            font-weight: 700; font-size: 12px; color: #334155;
+            border: 1.5px solid #e2e8f0; cursor: pointer; transition: .18s;
+            padding: 10px 12px; text-align: center; line-height: 1.3;
+        }
+        .route-chip.active { background: var(--blue); color: white; border-color: var(--blue); }
+        .route-chip:hover:not(.active) { border-color: #bfd0f8; background: #eef2ff; }
+
+        /* settings row */
+        .settings-row {
+            background: white; border-radius: 18px; padding: 13px 16px;
+            border: 1.5px solid #eef2ff; display: flex; align-items: center; gap: 12px;
+        }
+        .settings-row-icon { font-size: 20px; flex-shrink: 0; }
+        .settings-row-body { flex: 1; }
+        .settings-row-title { font-size: 13px; font-weight: 700; }
+        .settings-row-sub { font-size: 11px; color: var(--muted); }
+        .toggle {
+            width: 40px; height: 22px; background: #e2e8f0; border-radius: 50px;
+            position: relative; cursor: pointer; transition: .25s; flex-shrink: 0; border: none;
+        }
+        .toggle.on { background: var(--blue); }
+        .toggle::after {
+            content: ''; position: absolute; top: 3px; left: 3px;
+            width: 16px; height: 16px; background: white; border-radius: 50%;
+            transition: .25s; box-shadow: 0 1px 4px rgba(0,0,0,.2);
+        }
+        .toggle.on::after { left: 21px; }
+
+        /* date filter bar */
+        .filter-bar {
+            background: #f8fafc; border-radius: 50px; padding: 8px 14px;
+            display: flex; gap: 8px; align-items: center;
+        }
+        .filter-bar input[type=date] {
+            padding: 6px 12px; font-size: 12px; border-radius: 30px;
+            border: 1.5px solid #e2e8f0; background: white; flex: 1;
+        }
+
+        /* canvas chart */
+        .chart-wrap { background: white; border-radius: 20px; padding: 14px 14px 10px; border: 1.5px solid #eef2ff; }
+        .chart-wrap canvas { max-height: 180px; }
+
+        /* modal overlay */
+        .modal-overlay {
+            position: absolute; inset: 0; background: rgba(15,23,42,.55);
+            backdrop-filter: blur(4px); z-index: 900;
+            display: none; align-items: flex-end; justify-content: center;
+            border-radius: 44px; overflow: hidden;
+        }
+        .modal-overlay.open { display: flex; }
+        .modal-sheet {
+            background: white; border-radius: 28px 28px 0 0;
+            padding: 20px 18px 28px; width: 100%;
+            display: flex; flex-direction: column; gap: 12px;
+            max-height: 85%; overflow-y: auto;
+            animation: slideUp .3s cubic-bezier(.34,1.56,.64,1);
+        }
+        @keyframes slideUp { from{transform:translateY(60px);opacity:0;}to{transform:translateY(0);opacity:1;} }
+        .modal-handle { width: 40px; height: 4px; background: #e2e8f0; border-radius: 10px; margin: 0 auto 4px; }
+        .modal-title { font-size: 16px; font-weight: 800; }
+
+        /* log table scrollable */
+        .log-table-wrap { max-height: 300px; overflow-y: auto; border-radius: 16px; border: 1.5px solid #eef2ff; }
+
+        /* info bar */
+        .info-bar {
+            background: #f0f4fe; border-radius: 50px; padding: 10px 16px;
+            font-weight: 600; font-size: 12px;
+            display: flex; justify-content: center; gap: 8px; align-items: center;
+        }
+    </style>
+</head>
+<body>
+<div class="app-shell" id="appShell">
+
+    <!-- ═══ LOGIN PAGE ═══════════════════════════════════════════ -->
+    <div id="loginScreen" style="display:flex;flex-direction:column;padding:24px;gap:14px;flex:1;overflow-y:auto;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+            <div class="logo-box"><img src="logo.jpg" alt="Panimalar logo" class="app-logo" onerror="this.style.display='none';this.parentElement.innerHTML='🚌'"></div>
+            <div>
+                <div style="font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Panimalar Transit</div>
+                <div style="font-size:13px;font-weight:800;color:var(--text)">Admin Control Center</div>
+            </div>
+        </div>
+        <div class="login-hero">
+            <div class="login-hero-icon">🔐</div>
+            <h2>Admin Login</h2>
+            <p>Panimalar Engineering College, Chennai</p>
+        </div>
+        <div class="input-group">
+            <div class="input-label">Username</div>
+            <input class="input-field" type="text" id="loginUser" placeholder="Enter username" autocomplete="off">
+        </div>
+        <div class="input-group">
+            <div class="input-label">Password</div>
+            <input class="input-field" type="password" id="loginPass" placeholder="Enter password">
+        </div>
+        <button class="btn btn-primary" onclick="doLogin()">🚀 Login to Dashboard</button>
+        <div class="login-hint">Demo — Username: <strong>admin</strong> &nbsp;|&nbsp; Password: <strong>panimalar123</strong></div>
+        <div id="loginErr" style="color:var(--red);font-size:12px;font-weight:700;text-align:center;display:none">❌ Invalid credentials. Try again.</div>
+    </div>
+
+    <!-- ═══ MAIN APP (hidden until login) ════════════════════════ -->
+    <div id="mainApp" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
+
+        <!-- Header -->
+        <div class="app-header">
+            <div class="logo-box"><img src="logo.jpg" alt="Panimalar logo" class="app-logo" onerror="this.style.display='none';this.parentElement.innerHTML='🚌'"></div>
+            <h1>Panimalar Transit<br>Admin Center</h1>
+            <div class="live-pill" id="headerLivePill"><div class="pulse-dot"></div> LIVE</div>
+        </div>
+
+        <!-- Pages -->
+        <div class="page-container">
+
+            <!-- ── OVERVIEW ──────────────────────────────────────── -->
+            <div id="overviewPage" class="page active">
+                <div style="text-align:center;margin:6px 0 2px">
+                    <div style="font-size:46px">🏫</div>
+                    <h2 style="font-size:18px;font-weight:800;margin-top:6px">Admin Dashboard</h2>
+                    <p style="color:var(--muted);font-size:11px;margin-top:3px">Panimalar Engineering College, Chennai</p>
+                </div>
+
+                <div class="stat-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon">🚌</div>
+                        <div class="stat-val" id="statTotal">10</div>
+                        <div class="stat-label">Total Buses</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon" style="color:var(--orange)">🛣️</div>
+                        <div class="stat-val" style="color:var(--orange)" id="statOnRoute">7</div>
+                        <div class="stat-label">On Route</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon" style="color:var(--green)">✅</div>
+                        <div class="stat-val" style="color:var(--green)" id="statArrived">2</div>
+                        <div class="stat-label">Arrived</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon" style="color:var(--red)">⚠️</div>
+                        <div class="stat-val" style="color:var(--red)" id="statDelayed">1</div>
+                        <div class="stat-label">Delayed</div>
+                    </div>
+                </div>
+
+                <!-- mini stat row -->
+                <div style="display:flex;gap:8px">
+                    <div style="flex:1;background:#f0fdf4;border-radius:16px;padding:10px 12px;border:1.5px solid #86efac;text-align:center">
+                        <div style="font-size:18px;font-weight:800;color:#166534" id="statDeparted">3</div>
+                        <div style="font-size:10px;font-weight:700;color:#16a34a">Departed</div>
+                    </div>
+                    <div style="flex:1;background:#eff6ff;border-radius:16px;padding:10px 12px;border:1.5px solid #bfdbfe;text-align:center">
+                        <div style="font-size:18px;font-weight:800;color:#1d4ed8" id="statDrivers">10</div>
+                        <div style="font-size:10px;font-weight:700;color:#2563eb">Drivers</div>
+                    </div>
+                    <div style="flex:1;background:#fff7ed;border-radius:16px;padding:10px 12px;border:1.5px solid #fed7aa;text-align:center">
+                        <div style="font-size:18px;font-weight:800;color:#c2410c" id="statAlerts">2</div>
+                        <div style="font-size:10px;font-weight:700;color:var(--orange)">Alerts</div>
+                    </div>
+                </div>
+
+                <!-- quick actions -->
+                <div class="card">
+                    <div class="card-title">⚡ Quick Actions</div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                        <button class="btn btn-secondary" style="font-size:12px;padding:10px" onclick="switchPage('trackingPage')">📍 Live Tracking</button>
+                        <button class="btn btn-secondary" style="font-size:12px;padding:10px" onclick="switchPage('alertsPage')">🚨 Send Alert</button>
+                        <button class="btn btn-secondary" style="font-size:12px;padding:10px" onclick="switchPage('uploadPage')">📤 Upload Schedule</button>
+                        <button class="btn btn-secondary" style="font-size:12px;padding:10px" onclick="switchPage('logsPage')">📋 View Logs</button>
+                    </div>
+                </div>
+
+                <!-- active alerts preview -->
+                <div class="card" id="activeAlertsPreview">
+                    <div class="card-title">🔔 Active Alerts</div>
+                    <div id="alertPreviewList"></div>
+                </div>
+            </div>
+
+            <!-- ── LIVE TRACKING ──────────────────────────────────── -->
+            <div id="trackingPage" class="page">
+                <button class="btn btn-secondary" onclick="switchPage('overviewPage')">← Overview</button>
+                <div style="position:relative">
+                    <div id="adminLiveMap" class="map-card" style="height:280px"></div>
+                    <div class="live-badge"><div class="pulse-dot"></div> ALL ROUTES LIVE</div>
+                </div>
+                <div class="legend" id="trackLegend"></div>
+                <div class="section-label">Live Bus Status</div>
+                <div id="liveBusList"></div>
+            </div>
+
+            <!-- ── UPLOAD SCHEDULES ───────────────────────────────── -->
+            <div id="uploadPage" class="page">
+                <button class="btn btn-secondary" onclick="switchPage('overviewPage')">← Overview</button>
+                <div class="upload-zone" id="uploadZone">
+                    <div class="upload-zone-icon">📁</div>
+                    <div class="upload-zone-title">Drag & Drop Files Here</div>
+                    <div class="upload-zone-sub">Supports PDF, JPG, JPEG, PNG</div>
+                    <input type="file" id="fileInput" accept=".pdf,.jpg,.jpeg,.png" multiple style="display:none">
+                    <button class="btn btn-primary" style="margin-top:12px;width:auto;padding:10px 24px;font-size:12px" onclick="document.getElementById('fileInput').click()">Browse Files</button>
+                </div>
+                <div class="section-label">Uploaded Files</div>
+                <div id="uploadedFilesList"></div>
+            </div>
+
+            <!-- ── ARRIVAL / DEPARTURE LOGS ──────────────────────── -->
+            <div id="logsPage" class="page">
+                <button class="btn btn-secondary" onclick="switchPage('overviewPage')">← Overview</button>
+                <div class="filter-bar">
+                    <span style="font-size:11px;font-weight:700;color:var(--muted);white-space:nowrap">📅 Filter</span>
+                    <input type="date" id="logDateFilter" onchange="renderLogsTable()">
+                    <button class="btn-sm btn-sm-secondary" onclick="document.getElementById('logDateFilter').value='';renderLogsTable()">Clear</button>
+                </div>
+                <div class="info-bar" id="logSummaryBar">Loading logs...</div>
+                <div class="log-table-wrap">
+                    <table>
+                        <thead><tr><th>Bus</th><th>Driver</th><th>Route</th><th>Arrived</th><th>Departed</th><th>Status</th></tr></thead>
+                        <tbody id="logTableBody"></tbody>
+                    </table>
+                </div>
+                <div style="display:flex;gap:8px">
+                    <button class="btn btn-secondary" style="font-size:12px;padding:10px" onclick="exportCSV()">📥 Export CSV</button>
+                    <button class="btn btn-secondary" style="font-size:12px;padding:10px" onclick="exportPDF()">📄 Export PDF</button>
+                </div>
+            </div>
+
+            <!-- ── ROUTE MANAGEMENT ──────────────────────────────── -->
+            <div id="routesPage" class="page">
+                <button class="btn btn-secondary" onclick="switchPage('overviewPage')">← Overview</button>
+                <button class="btn btn-primary" onclick="openRouteModal()">+ Add New Route</button>
+                <div class="section-label">Managed Routes</div>
+                <div id="routesList"></div>
+            </div>
+
+            <!-- ── DRIVER & BUS MANAGEMENT ───────────────────────── -->
+            <div id="driversPage" class="page">
+                <button class="btn btn-secondary" onclick="switchPage('overviewPage')">← Overview</button>
+                <button class="btn btn-primary" onclick="openDriverModal()">+ Add Driver / Bus</button>
+                <div class="section-label">Driver & Bus Registry</div>
+                <div id="driversList"></div>
+            </div>
+
+            <!-- ── ANALYTICS ─────────────────────────────────────── -->
+            <div id="analyticsPage" class="page">
+                <button class="btn btn-secondary" onclick="switchPage('overviewPage')">← Overview</button>
+                <div class="chart-wrap">
+                    <div class="card-title">📊 Daily Arrival Statistics</div>
+                    <canvas id="arrivalChart"></canvas>
+                </div>
+                <div class="chart-wrap">
+                    <div class="card-title">⏱ Bus Punctuality Report</div>
+                    <canvas id="punctualityChart"></canvas>
+                </div>
+                <div class="chart-wrap">
+                    <div class="card-title">🛣️ Route Performance</div>
+                    <canvas id="routeChart"></canvas>
+                </div>
+            </div>
+
+            <!-- ── EMERGENCY ALERTS ──────────────────────────────── -->
+            <div id="alertsPage" class="page">
+                <button class="btn btn-secondary" onclick="switchPage('overviewPage')">← Overview</button>
+                <div class="card">
+                    <div class="card-title">🚨 Send Emergency Alert</div>
+                    <div style="display:flex;flex-direction:column;gap:10px">
+                        <div class="section-label">Alert Type</div>
+                        <select id="alertType">
+                            <option value="breakdown">🔴 Bus Breakdown</option>
+                            <option value="delay">🟡 Delay Notification</option>
+                            <option value="route">🔵 Route Change</option>
+                        </select>
+                        <div class="section-label">Select Bus</div>
+                        <select id="alertBus"></select>
+                        <div class="section-label">Message</div>
+                        <textarea id="alertMsg" placeholder="Enter alert message for students and drivers…"></textarea>
+                        <button class="btn btn-danger" onclick="sendAlert()">🚨 Broadcast Alert Now</button>
+                    </div>
+                </div>
+                <div class="section-label">Alert History</div>
+                <div id="alertHistoryList"></div>
+            </div>
+
+            <!-- ── SETTINGS ──────────────────────────────────────── -->
+            <div id="settingsPage" class="page">
+                <div class="card">
+                    <div class="card-title">⚙️ Settings</div>
+                    <div style="display:flex;flex-direction:column;gap:8px">
+                        <div class="settings-row">
+                            <div class="settings-row-icon">🔔</div>
+                            <div class="settings-row-body">
+                                <div class="settings-row-title">Push Notifications</div>
+                                <div class="settings-row-sub">Alerts for arrivals & delays</div>
+                            </div>
+                            <button class="toggle on" onclick="this.classList.toggle('on')"></button>
+                        </div>
+                        <div class="settings-row">
+                            <div class="settings-row-icon">📍</div>
+                            <div class="settings-row-body">
+                                <div class="settings-row-title">Live GPS Tracking</div>
+                                <div class="settings-row-sub">Real-time bus location</div>
+                            </div>
+                            <button class="toggle on" onclick="this.classList.toggle('on')"></button>
+                        </div>
+                        <div class="settings-row">
+                            <div class="settings-row-icon">🌙</div>
+                            <div class="settings-row-body">
+                                <div class="settings-row-title">Dark Mode</div>
+                                <div class="settings-row-sub">Coming soon</div>
+                            </div>
+                            <button class="toggle" onclick="this.classList.toggle('on')"></button>
+                        </div>
+                        <div class="settings-row">
+                            <div class="settings-row-icon">🔄</div>
+                            <div class="settings-row-body">
+                                <div class="settings-row-title">Auto-refresh Interval</div>
+                                <div class="settings-row-sub">Map updates every 5 seconds</div>
+                            </div>
+                            <button class="toggle on" onclick="this.classList.toggle('on')"></button>
+                        </div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">👤 Admin Profile</div>
+                    <div style="display:flex;flex-direction:column;gap:8px">
+                        <div class="settings-row"><div class="settings-row-icon">👤</div><div class="settings-row-body"><div class="settings-row-title">Administrator</div><div class="settings-row-sub">admin@panimalar.ac.in</div></div></div>
+                        <div class="settings-row"><div class="settings-row-icon">🏫</div><div class="settings-row-body"><div class="settings-row-title">Panimalar Engineering College</div><div class="settings-row-sub">Poonamallee, Chennai</div></div></div>
+                    </div>
+                </div>
+                <button class="btn btn-danger" onclick="doLogout()">🚪 Logout</button>
+            </div>
+
+        </div><!-- end page-container -->
+
+        <!-- Bottom Nav -->
+        <div class="bottom-nav" id="bottomNav">
+            <button class="bottom-btn active" data-page="overviewPage" onclick="switchPage('overviewPage')">🏠 Home</button>
+            <button class="bottom-btn" data-page="trackingPage" onclick="switchPage('trackingPage')">📍 Live</button>
+            <button class="bottom-btn" data-page="logsPage" onclick="switchPage('logsPage')">📋 Logs</button>
+            <button class="bottom-btn" data-page="driversPage" onclick="switchPage('driversPage')">👨✈️ Drivers</button>
+            <button class="bottom-btn" data-page="analyticsPage" onclick="switchPage('analyticsPage')">📊 Analytics</button>
+            <button class="bottom-btn" data-page="settingsPage" onclick="switchPage('settingsPage')">⚙️ Settings</button>
+        </div>
+
+    </div><!-- end mainApp -->
+
+    <!-- ═══ MODAL OVERLAY ══════════════════════════════════════════ -->
+    <div class="modal-overlay" id="modalOverlay" onclick="closeModalIfOutside(event)">
+        <div class="modal-sheet" id="modalSheet">
+            <div class="modal-handle"></div>
+            <div class="modal-title" id="modalTitle">Modal</div>
+            <div id="modalBody"></div>
+        </div>
+    </div>
+
+</div><!-- end app-shell -->
+
+<div class="notif-container" id="notifContainer"></div>
+
+<!-- ─── SCRIPT ────────────────────────────────────────────────── -->
+<script>
+/* ================================================================
+   PANIMALAR TRANSIT — ADMIN DASHBOARD  admin.js (inline)
+   ================================================================ */
+
+// ─── CONSTANTS ────────────────────────────────────────────────────
+const PANIMALAR_GATE = { lat: 13.0489049, lng: 80.0754642, radius: 150 };
+const DEST_COORD = [13.0489049, 80.0754642];
+
+const ROUTE_STOPS = {
+    tambaram:       ["Tambaram","Chromepet","Pallavaram","Pammal","Poonamallee","Panimalar Engineering College"],
+    arrkonam:       ["Arakkonam","Kanchipuram","Sriperumbudur","Pennalur","Poonamallee","Panimalar Engineering College"],
+    tnagar:         ["T.Nagar","Vadapalani","Koyambedu","Poonamallee Bypass","Poonamallee","Panimalar Engineering College"],
+    manali:         ["Manali","Madhavaram","Ambattur","Avadi Rd","Poonamallee","Panimalar Engineering College"],
+    kundrathur:     ["Kundrathur","Baikadai","Madhanandapuram","Porur","Poonamallee","Panimalar Engineering College"],
+    ayyappanthangal:["Ayyappanthangal","Kattupakkam","Nazarathpet","Poonamallee","Panimalar Engineering College"],
+    perambur:       ["Perambur","Kolathur","Villivakkam","Anna Nagar","Koyambedu","Poonamallee","Panimalar Engineering College"],
+    velachery:      ["Velachery","Guindy","St. Thomas Mount","Chromepet","Pammal","Poonamallee","Panimalar Engineering College"],
+    sholinganallur: ["Sholinganallur","Perungudi","Taramani","Guindy","Koyambedu","Poonamallee","Panimalar Engineering College"],
+    redhills:       ["Red Hills","Ambattur","Padi","Koyambedu","Poonamallee","Panimalar Engineering College"]
+};
+
+const ROUTE_LABELS = {
+    tambaram:"Tambaram", arrkonam:"Arakkonam", tnagar:"T.Nagar",
+    manali:"Manali", kundrathur:"Kundrathur", ayyappanthangal:"Ayyappanthangal",
+    perambur:"Perambur", velachery:"Velachery", sholinganallur:"Sholinganallur", redhills:"Red Hills"
+};
+
+const ROUTE_COLORS = ['#2563eb','#22c55e','#f97316','#db2777','#8b5cf6','#06b6d4','#ef4444','#84cc16','#f59e0b','#10b981'];
+
+const COORDS = {
+    "Panimalar Engineering College":[13.0489049,80.0754642],
+    "Tambaram":[12.9249,80.1000],"Chromepet":[12.9516,80.1440],"Pallavaram":[12.9675,80.1496],"Pammal":[12.9807,80.0935],
+    "Arakkonam":[13.0783,79.6703],"Kanchipuram":[12.8342,79.7036],"Sriperumbudur":[12.9672,79.9458],"Pennalur":[13.0180,80.0150],
+    "T.Nagar":[13.0418,80.2341],"Vadapalani":[13.0504,80.2121],"Koyambedu":[13.0694,80.1948],"Poonamallee Bypass":[13.0580,80.1378],
+    "Manali":[13.1648,80.2558],"Madhavaram":[13.1468,80.2325],"Ambattur":[13.0982,80.1571],"Avadi Rd":[13.0750,80.1200],
+    "Kundrathur":[12.9998,80.0956],"Baikadai":[13.0126,80.1019],"Madhanandapuram":[13.0228,80.1073],"Porur":[13.0381,80.1576],
+    "Ayyappanthangal":[13.0370,80.1385],"Kattupakkam":[13.0453,80.1215],"Nazarathpet":[13.0435,80.0681],
+    "Perambur":[13.1121,80.2392],"Kolathur":[13.1155,80.2168],"Villivakkam":[13.1028,80.2097],"Anna Nagar":[13.0850,80.2101],
+    "Velachery":[12.9815,80.2209],"Guindy":[13.0067,80.2206],"St. Thomas Mount":[13.0119,80.1969],"Chromepet":[12.9516,80.1440],
+    "Sholinganallur":[12.9010,80.2279],"Perungudi":[12.9631,80.2426],"Taramani":[12.9894,80.2459],
+    "Red Hills":[13.1924,80.1830],"Padi":[13.0952,80.2038],"Poonamallee":[13.0468,80.0948]
+};
+
+// ─── STATE ────────────────────────────────────────────────────────
+let adminMap = null;
+let busMarkers = {}, routeLayers = [];
+let busSimState = {}; // progress per bus
+let animRaf = null, lastTs = null;
+let chartsInitialized = false;
+
+// ─── DEFAULT DATA (merged with LocalStorage) ──────────────────────
+const DEFAULT_DRIVERS = [
+    {id:1,bus:'B101',driver:'Rajan Kumar',contact:'9876543210',route:'tambaram',type:'boys'},
+    {id:2,bus:'B202',driver:'Selvam P',contact:'9876543211',route:'arrkonam',type:'girls'},
+    {id:3,bus:'B303',driver:'Murugan S',contact:'9876543212',route:'tnagar',type:'boys'},
+    {id:4,bus:'B404',driver:'Kannan R',contact:'9876543213',route:'manali',type:'combined'},
+    {id:5,bus:'B505',driver:'Arjun D',contact:'9876543214',route:'kundrathur',type:'boys'},
+    {id:6,bus:'B606',driver:'Senthil K',contact:'9876543215',route:'ayyappanthangal',type:'girls'},
+    {id:7,bus:'B707',driver:'Vijay M',contact:'9876543216',route:'perambur',type:'boys'},
+    {id:8,bus:'B808',driver:'Prabhu N',contact:'9876543217',route:'velachery',type:'combined'},
+    {id:9,bus:'B909',driver:'Kumar S',contact:'9876543218',route:'sholinganallur',type:'boys'},
+    {id:10,bus:'B010',driver:'Dinesh T',contact:'9876543219',route:'redhills',type:'girls'},
+];
+
+const DEFAULT_ROUTES = Object.keys(ROUTE_LABELS).map((key,i) => ({
+    id: i+1, key, name: ROUTE_LABELS[key],
+    stops: ROUTE_STOPS[key], color: ROUTE_COLORS[i]
+}));
+
+const DEFAULT_LOGS = (() => {
+    const today = new Date().toISOString().slice(0,10);
+    return DEFAULT_DRIVERS.map((d,i) => ({
+        id: d.id, bus: d.bus, driver: d.driver, route: ROUTE_LABELS[d.route],
+        date: today,
+        arrived: i < 5 ? `0${7+i}:${i*5<10?'0':''}${i*5}` : null,
+        departed: i < 3 ? `1${6+i}:${i*5<10?'0':''}${i*5}` : null,
+        status: i < 5 ? (i===2?'delayed':'arrived') : 'on-route'
+    }));
+})();
+
+const DEFAULT_ALERTS = [
+    {id:1,type:'breakdown',bus:'B303',msg:'Bus B303 has broken down near Koyambedu. Alternate arrangements being made.',time: new Date(Date.now()-300000).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})},
+    {id:2,type:'delay',bus:'B505',msg:'Bus B505 is delayed by 20 minutes due to traffic near Porur.',time: new Date(Date.now()-900000).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}
+];
+
+function loadLS(key, def) { try { return JSON.parse(localStorage.getItem(key)) || def; } catch(e){ return def; } }
+function saveLS(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch(e){} }
+
+let drivers  = loadLS('ptAdmin_drivers', DEFAULT_DRIVERS);
+let routes   = loadLS('ptAdmin_routes',  DEFAULT_ROUTES);
+let logs     = loadLS('ptAdmin_logs',    DEFAULT_LOGS);
+let alerts   = loadLS('ptAdmin_alerts',  DEFAULT_ALERTS);
+let uploads  = loadLS('ptAdmin_uploads', []);
+
+// ─── AUTH ─────────────────────────────────────────────────────────
+function doLogin() {
+    const u = document.getElementById('loginUser').value.trim();
+    const p = document.getElementById('loginPass').value;
+    if (u === 'admin' && p === 'panimalar123') {
+        document.getElementById('loginScreen').style.display = 'none';
+        document.getElementById('mainApp').style.display = 'flex';
+        document.getElementById('mainApp').style.flexDirection = 'column';
+        initApp();
+    } else {
+        document.getElementById('loginErr').style.display = 'block';
+    }
+}
+document.getElementById('loginUser').addEventListener('keydown', e => { if(e.key==='Enter') document.getElementById('loginPass').focus(); });
+document.getElementById('loginPass').addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
+
+function doLogout() {
+    document.getElementById('mainApp').style.display = 'none';
+    document.getElementById('loginScreen').style.display = 'flex';
+    document.getElementById('loginUser').value='';
+    document.getElementById('loginPass').value='';
+    document.getElementById('loginErr').style.display='none';
+    if (animRaf) { cancelAnimationFrame(animRaf); animRaf=null; }
+    if (adminMap) { adminMap.remove(); adminMap=null; }
+}
+
+// ─── APP INIT ─────────────────────────────────────────────────────
+function initApp() {
+    initBusSimState();
+    renderOverview();
+    renderAlertPreview();
+    renderAlertBusSelect();
+    renderAlertHistory();
+    renderUploadedFiles();
+    renderLogsTable();
+    renderRoutesList();
+    renderDriversList();
+    switchPage('overviewPage');
+    setTimeout(startBusAnimation, 400);
+}
+
+function initBusSimState() {
+    const routeKeys = Object.keys(ROUTE_LABELS);
+    routeKeys.forEach((key, i) => {
+        busSimState[key] = {
+            progress: 0.05 + i * 0.09,
+            lat: 0, lng: 0,
+            speed: 35 + Math.random()*15,
+            near: false
+        };
+    });
+}
+
+// ─── PAGE SWITCHING ───────────────────────────────────────────────
+function switchPage(id) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    document.querySelectorAll('.bottom-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.page === id));
+    if (id === 'trackingPage') setTimeout(initAdminMap, 150);
+    if (id === 'analyticsPage') setTimeout(initCharts, 200);
+    if (id === 'logsPage') renderLogsTable();
+    if (id === 'driversPage') renderDriversList();
+    if (id === 'routesPage') renderRoutesList();
+    if (id === 'alertsPage') { renderAlertBusSelect(); renderAlertHistory(); }
+}
+
+// ─── MATH HELPERS ─────────────────────────────────────────────────
+function haversineKm(la1,lo1,la2,lo2){
+    const R=6371,dL=(la2-la1)*Math.PI/180,dO=(lo2-lo1)*Math.PI/180;
+    const a=Math.sin(dL/2)**2+Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dO/2)**2;
+    return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+
+function interpolateRoute(pts, progress) {
+    if (!pts||!pts.length) return {lat:DEST_COORD[0],lng:DEST_COORD[1]};
+    const t=Math.max(0,Math.min(1,progress));
+    const scaled=t*(pts.length-1), i=Math.floor(scaled), frac=scaled-i;
+    const a=pts[Math.min(i,pts.length-1)], b=pts[Math.min(i+1,pts.length-1)];
+    return {lat:a.lat+(b.lat-a.lat)*frac, lng:a.lng+(b.lng-a.lng)*frac};
+}
+
+function getLinearRoute(routeKey) {
+    const stops = ROUTE_STOPS[routeKey];
+    const pts = [];
+    stops.forEach((name, i) => {
+        const coord = COORDS[name]; if (!coord) return;
+        if (i === 0) { pts.push({lat:coord[0],lng:coord[1]}); return; }
+        const prev = COORDS[stops[i-1]]; if (!prev) return;
+        for (let s=1; s<=40; s++) {
+            const t=s/40;
+            pts.push({lat:prev[0]+(coord[0]-prev[0])*t, lng:prev[1]+(coord[1]-prev[1])*t});
+        }
+    });
+    return pts;
+}
+
+// ─── BUS ANIMATION ────────────────────────────────────────────────
+const BUS_SPEED = 0.003;
+const LERP = 0.06;
+const routePtsCache = {};
+
+function getBusPts(routeKey) {
+    if (!routePtsCache[routeKey]) routePtsCache[routeKey] = getLinearRoute(routeKey);
+    return routePtsCache[routeKey];
+}
+
+function startBusAnimation() {
+    if (animRaf) cancelAnimationFrame(animRaf);
+    lastTs = null;
+    animRaf = requestAnimationFrame(animLoop);
+}
+
+function animLoop(ts) {
+    if (!lastTs) lastTs = ts;
+    const dt = Math.min((ts-lastTs)/1000, 0.1); lastTs = ts;
+    const routeKeys = Object.keys(ROUTE_LABELS);
+    routeKeys.forEach(key => {
+        const s = busSimState[key];
+        s.progress += BUS_SPEED * dt;
+        if (s.progress >= 1) { s.progress = 0; }
+        const pts = getBusPts(key);
+        const target = interpolateRoute(pts, s.progress);
+        s.lat += (target.lat - s.lat) * LERP;
+        s.lng += (target.lng - s.lng) * LERP;
+        
+        // Geofence Check
+        const dist = haversineKm(s.lat, s.lng, PANIMALAR_GATE.lat, PANIMALAR_GATE.lng);
+        const nearNow = (dist * 1000) <= PANIMALAR_GATE.radius;
+        if (nearNow && !s.near) {
+            s.near = true;
+            markBusArrived(key);
+        } else if (!nearNow && s.near) {
+            s.near = false;
+            markBusDeparted(key);
+        }
+    });
+    
+    // Update map markers if map is active
+    if (adminMap) updateMapMarkers();
+    
+    animRaf = requestAnimationFrame(animLoop);
+}
+
+// ─── GEOFENCE EVENTS ──────────────────────────────────────────────
+function markBusArrived(routeKey) {
+    const driver = drivers.find(d => d.route === routeKey);
+    if (!driver) return;
+    
+    const today = new Date().toISOString().slice(0,10);
+    let log = logs.find(l => l.bus === driver.bus && l.date === today);
+    const timeNow = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+    
+    if (log) {
+        if (!log.arrived) {
+            log.arrived = timeNow;
+            log.status = 'arrived';
+        }
+    } else {
+        log = {
+            id: Date.now() + Math.random(),
+            bus: driver.bus,
+            driver: driver.driver,
+            route: ROUTE_LABELS[routeKey],
+            date: today,
+            arrived: timeNow,
+            departed: null,
+            status: 'arrived'
+        };
+        logs.push(log);
+    }
+    saveLS('ptAdmin_logs', logs);
+    renderOverview();
+    renderLogsTable();
+    showNotification('🚌 Bus Arrived', `Bus ${driver.bus} on route ${ROUTE_LABELS[routeKey]} has arrived at campus.`);
+}
+
+function markBusDeparted(routeKey) {
+    const driver = drivers.find(d => d.route === routeKey);
+    if (!driver) return;
+    
+    const today = new Date().toISOString().slice(0,10);
+    let log = logs.find(l => l.bus === driver.bus && l.date === today);
+    const timeNow = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+    
+    if (log) {
+        if (!log.departed) {
+            log.departed = timeNow;
+        }
+    } else {
+        log = {
+            id: Date.now() + Math.random(),
+            bus: driver.bus,
+            driver: driver.driver,
+            route: ROUTE_LABELS[routeKey],
+            date: today,
+            arrived: null,
+            departed: timeNow,
+            status: 'on-route'
+        };
+        logs.push(log);
+    }
+    saveLS('ptAdmin_logs', logs);
+    renderOverview();
+    renderLogsTable();
+    showNotification('🛫 Bus Departed', `Bus ${driver.bus} on route ${ROUTE_LABELS[routeKey]} has departed from campus.`);
+}
+
+// ─── RENDER OVERVIEW ──────────────────────────────────────────────
+function renderOverview() {
+    const totalBuses = drivers.length;
+    let onRoute = 0;
+    let arrived = 0;
+    let delayed = 0;
+    let departed = 0;
+    const today = new Date().toISOString().slice(0,10);
+    
+    drivers.forEach(d => {
+        const sim = busSimState[d.route];
+        const log = logs.find(l => l.bus === d.bus && l.date === today);
+        const hasDelayAlert = alerts.some(a => a.bus === d.bus && (a.type === 'delay' || a.type === 'breakdown'));
+        
+        if (hasDelayAlert) delayed++;
+        if (log) {
+            if (log.departed) departed++;
+            if (log.arrived && log.status === 'arrived') arrived++;
+            else onRoute++;
+        } else {
+            onRoute++;
+        }
+    });
+    
+    document.getElementById('statTotal').innerText = totalBuses;
+    document.getElementById('statOnRoute').innerText = onRoute;
+    document.getElementById('statArrived').innerText = arrived;
+    document.getElementById('statDelayed').innerText = delayed;
+    document.getElementById('statDeparted').innerText = departed;
+    document.getElementById('statDrivers').innerText = drivers.length;
+    document.getElementById('statAlerts').innerText = alerts.length;
+    
+    renderAlertPreview();
+}
+
+function renderAlertPreview() {
+    const container = document.getElementById('alertPreviewList');
+    if (!container) return;
+    
+    if (alerts.length === 0) {
+        container.innerHTML = '<div style="color:var(--muted); font-size:12px; text-align:center; padding:10px 0;">No active alerts. All systems normal.</div>';
+        return;
+    }
+    
+    container.innerHTML = alerts.slice(0, 3).map(a => {
+        let icon = '🔴';
+        let cls = 'breakdown';
+        if (a.type === 'delay') { icon = '🟡'; cls = 'delay'; }
+        if (a.type === 'route') { icon = '🔵'; cls = 'route'; }
+        return `
+            <div class="alert-card ${cls}" style="margin-bottom: 8px;">
+                <div class="alert-card-icon">${icon}</div>
+                <div class="alert-card-body">
+                    <div class="alert-card-title">${a.bus === 'all' ? '📢 All Buses' : 'Bus ' + a.bus} - ${a.type.toUpperCase()}</div>
+                    <div class="alert-card-sub">${a.msg}</div>
+                    <div class="alert-card-time">${a.time}</div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// ─── EMERGENCY ALERTS ─────────────────────────────────────────────
+function renderAlertBusSelect() {
+    const select = document.getElementById('alertBus');
+    if (!select) return;
+    
+    select.innerHTML = '<option value="all">📢 Broadcast to All Buses</option>' + 
+        drivers.map(d => `<option value="${d.bus}">${d.bus} (${d.driver} - ${ROUTE_LABELS[d.route]})</option>`).join('');
+}
+
+function renderAlertHistory() {
+    const container = document.getElementById('alertHistoryList');
+    if (!container) return;
+    
+    if (alerts.length === 0) {
+        container.innerHTML = '<div style="color:var(--muted); font-size:12px; text-align:center; padding:15px 0;">No alert history found.</div>';
+        return;
+    }
+    
+    container.innerHTML = alerts.map(a => {
+        let icon = '🔴';
+        let cls = 'breakdown';
+        if (a.type === 'delay') { icon = '🟡'; cls = 'delay'; }
+        if (a.type === 'route') { icon = '🔵'; cls = 'route'; }
+        return `
+            <div class="alert-card ${cls}" style="margin-bottom: 10px;">
+                <div class="alert-card-icon">${icon}</div>
+                <div class="alert-card-body">
+                    <div class="alert-card-title" style="display:flex; justify-content:space-between; align-items:center;">
+                        <span>${a.bus === 'all' ? '📢 All Buses' : 'Bus ' + a.bus} - ${a.type.toUpperCase()}</span>
+                        <button class="btn-sm btn-sm-danger" style="padding: 2px 8px; font-size: 9px;" onclick="deleteAlert(${a.id})">Remove</button>
+                    </div>
+                    <div class="alert-card-sub">${a.msg}</div>
+                    <div class="alert-card-time">${a.time}</div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function deleteAlert(id) {
+    alerts = alerts.filter(a => a.id !== id);
+    saveLS('ptAdmin_alerts', alerts);
+    renderAlertHistory();
+    renderOverview();
+    showNotification('🚨 Alert Removed', 'Broadcast history entry deleted.');
+}
+
+function sendAlert() {
+    const type = document.getElementById('alertType').value;
+    const bus = document.getElementById('alertBus').value;
+    const msg = document.getElementById('alertMsg').value.trim();
+    
+    if (!msg) {
+        alert('Please enter an alert message.');
+        return;
+    }
+    
+    const timeNow = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+    const newAlert = {
+        id: Date.now(),
+        type: type,
+        bus: bus,
+        msg: msg,
+        time: timeNow
+    };
+    
+    alerts.unshift(newAlert);
+    saveLS('ptAdmin_alerts', alerts);
+    document.getElementById('alertMsg').value = '';
+    
+    renderAlertHistory();
+    renderOverview();
+    showNotification('🚨 Alert Broadcasted', `Emergency alert sent for ${bus === 'all' ? 'all routes' : 'Bus ' + bus}.`);
+}
+
+// ─── SCHEDULE UPLOAD ──────────────────────────────────────────────
+function renderUploadedFiles() {
+    const container = document.getElementById('uploadedFilesList');
+    if (!container) return;
+    
+    if (uploads.length === 0) {
+        container.innerHTML = '<div style="color:var(--muted); font-size:12px; text-align:center; padding:15px 0;">No schedule files uploaded yet.</div>';
+        return;
+    }
+    
+    container.innerHTML = uploads.map((file, idx) => `
+        <div class="file-item" style="margin-bottom: 8px;">
+            <div class="file-icon">📄</div>
+            <div class="file-name">${file.name}</div>
+            <div class="file-size">${file.size}</div>
+            <button class="btn-sm btn-sm-danger" style="margin-left:auto" onclick="deleteUpload(${idx})">🗑️</button>
+        </div>
+    `).join('');
+}
+
+function deleteUpload(idx) {
+    uploads.splice(idx, 1);
+    saveLS('ptAdmin_uploads', uploads);
+    renderUploadedFiles();
+    showNotification('📤 File Deleted', 'Schedule attachment removed.');
+}
+
+function handleUploadedFiles(fileList) {
+    for (let i = 0; i < fileList.length; i++) {
+        const file = fileList[i];
+        const sizeStr = file.size > 1024 * 1024 
+            ? (file.size / (1024 * 1024)).toFixed(1) + ' MB' 
+            : (file.size / 1024).toFixed(1) + ' KB';
+            
+        uploads.push({
+            name: file.name,
+            size: sizeStr
+        });
+    }
+    saveLS('ptAdmin_uploads', uploads);
+    renderUploadedFiles();
+    showNotification('📤 Files Uploaded', `${fileList.length} files added to system schedules.`);
+}
+
+function setupUploadZone() {
+    const zone = document.getElementById('uploadZone');
+    const input = document.getElementById('fileInput');
+    if (!zone || !input) return;
+    
+    zone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        zone.classList.add('drag-over');
+    });
+    zone.addEventListener('dragleave', () => {
+        zone.classList.remove('drag-over');
+    });
+    zone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        zone.classList.remove('drag-over');
+        if (e.dataTransfer.files.length > 0) {
+            handleUploadedFiles(e.dataTransfer.files);
+        }
+    });
+    input.addEventListener('change', () => {
+        if (input.files.length > 0) {
+            handleUploadedFiles(input.files);
+        }
+    });
+}
+
+// ─── LOGS MANAGEMENT ──────────────────────────────────────────────
+function renderLogsTable() {
+    const tableBody = document.getElementById('logTableBody');
+    const summaryBar = document.getElementById('logSummaryBar');
+    if (!tableBody) return;
+    
+    const filterDate = document.getElementById('logDateFilter').value;
+    let filteredLogs = logs;
+    if (filterDate) {
+        filteredLogs = logs.filter(l => l.date === filterDate);
+    }
+    
+    if (filteredLogs.length === 0) {
+        tableBody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--muted); padding:20px;">No logs found for this date.</td></tr>';
+        summaryBar.innerText = 'No logs available';
+        return;
+    }
+    
+    tableBody.innerHTML = filteredLogs.map(l => {
+        let statusBadge = '<span class="status-badge status-ontime">ON TIME</span>';
+        if (l.status === 'delayed') {
+            statusBadge = '<span class="status-badge status-delayed">DELAYED</span>';
+        } else if (l.status === 'arrived') {
+            statusBadge = '<span class="status-badge status-arrived">ARRIVED</span>';
+        }
+        
+        return `
+            <tr>
+                <td><strong>${l.bus}</strong></td>
+                <td>${l.driver}</td>
+                <td>${l.route}</td>
+                <td>${l.arrived || '--:--'}</td>
+                <td>${l.departed || '--:--'}</td>
+                <td>${statusBadge}</td>
+            </tr>
+        `;
+    }).join('');
+    
+    summaryBar.innerText = `Total: ${filteredLogs.length} records | Arrived: ${filteredLogs.filter(l => l.arrived).length} | Departed: ${filteredLogs.filter(l => l.departed).length}`;
+}
+
+function exportCSV() {
+    let csv = 'Bus,Driver,Route,Arrived,Departed,Status,Date\n';
+    logs.forEach(l => {
+        csv += `"${l.bus}","${l.driver}","${l.route}","${l.arrived || ''}","${l.departed || ''}","${l.status}","${l.date}"\n`;
+    });
+    
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.setAttribute("download", `panimalar_transit_logs_${new Date().toISOString().slice(0,10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showNotification('📥 CSV Exported', 'Transit logs exported as CSV file.');
+}
+
+function exportPDF() {
+    let text = 'PANIMALAR TRANSIT - TRANSIT LOG REPORT\n';
+    text += '========================================\n\n';
+    logs.forEach(l => {
+        text += `Bus: ${l.bus} | Driver: ${l.driver} | Route: ${l.route} | Date: ${l.date} | Arrived: ${l.arrived || '--:--'} | Departed: ${l.departed || '--:--'} | Status: ${l.status.toUpperCase()}\n`;
+    });
+    
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8;' });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.setAttribute("download", `panimalar_transit_report_${new Date().toISOString().slice(0,10)}.txt`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showNotification('📄 PDF Exported', 'Transit log summary exported as PDF/Text report.');
+}
+
+// ─── ROUTE MANAGEMENT ─────────────────────────────────────────────
+function renderRoutesList() {
+    const container = document.getElementById('routesList');
+    if (!container) return;
+    
+    container.innerHTML = routes.map(r => `
+        <div class="bus-card" style="margin-bottom: 10px;">
+            <div class="bus-card-top">
+                <div class="bus-card-meta">
+                    <span class="bus-card-num" style="color: ${r.color}">🛣️ ${r.name}</span>
+                    <span class="bus-card-sub" style="margin-top:4px; font-weight:600;">Stops (${r.stops.length}): ${r.stops.join(' ➔ ')}</span>
+                </div>
+            </div>
+            <div class="bus-card-actions">
+                <button class="btn-sm btn-sm-secondary" onclick="editRoute(${r.id})">✏️ Edit</button>
+                <button class="btn-sm btn-sm-danger" onclick="deleteRoute(${r.id})">🗑️ Delete</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function deleteRoute(id) {
+    if (confirm("Are you sure you want to delete this route?")) {
+        routes = routes.filter(r => r.id !== id);
+        saveLS('ptAdmin_routes', routes);
+        renderRoutesList();
+        showNotification('🛣️ Route Deleted', 'Route has been removed from registry.');
+    }
+}
+
+// ─── DRIVERS & BUSES MANAGEMENT ───────────────────────────────────
+function renderDriversList() {
+    const container = document.getElementById('driversList');
+    if (!container) return;
+    
+    container.innerHTML = drivers.map(d => `
+        <div class="bus-card" style="margin-bottom: 10px;">
+            <div class="bus-card-top">
+                <div class="bus-card-meta">
+                    <span class="bus-card-num">🚌 Bus ${d.bus} — ${d.driver}</span>
+                    <span class="bus-card-sub" style="margin-top:4px;">Route: ${ROUTE_LABELS[d.route] || d.route} | Contact: ${d.contact}</span>
+                </div>
+                <span class="badge ${d.type === 'boys' ? 'badge-blue' : d.type === 'girls' ? 'badge-pink' : 'badge-orange'}">${d.type.toUpperCase()}</span>
+            </div>
+            <div class="bus-card-actions">
+                <button class="btn-sm btn-sm-secondary" onclick="editDriver(${d.id})">✏️ Edit</button>
+                <button class="btn-sm btn-sm-danger" onclick="deleteDriver(${d.id})">🗑️ Delete</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function deleteDriver(id) {
+    if (confirm("Are you sure you want to delete this driver/bus registry?")) {
+        drivers = drivers.filter(d => d.id !== id);
+        saveLS('ptAdmin_drivers', drivers);
+        renderDriversList();
+        renderOverview();
+        showNotification('👨‍✈️ Driver Removed', 'Registry entry has been deleted.');
+    }
+}
+
+// ─── MODAL CONTROLLERS ────────────────────────────────────────────
+const modalOverlay = document.getElementById('modalOverlay');
+const modalTitle = document.getElementById('modalTitle');
+const modalBody = document.getElementById('modalBody');
+
+function openModal(title, contentHtml) {
+    modalTitle.innerText = title;
+    modalBody.innerHTML = contentHtml;
+    modalOverlay.classList.add('open');
+}
+
+function closeModal() {
+    modalOverlay.classList.remove('open');
+}
+
+function closeModalIfOutside(e) {
+    if (e.target === modalOverlay) closeModal();
+}
+
+function openRouteModal() {
+    const formHtml = `
+        <div style="display:flex; flex-direction:column; gap:12px;">
+            <div class="input-group">
+                <div class="input-label">Route Key (lowercase, e.g. 'avadi')</div>
+                <input type="text" id="routeKey" placeholder="e.g. avadi">
+            </div>
+            <div class="input-group">
+                <div class="input-label">Route Name</div>
+                <input type="text" id="routeName" placeholder="e.g. Avadi Route">
+            </div>
+            <div class="input-group">
+                <div class="input-label">Stops (comma separated, in order)</div>
+                <textarea id="routeStops" placeholder="Tambaram, Poonamallee, College"></textarea>
+            </div>
+            <div class="input-group">
+                <div class="input-label">Route Color Hex</div>
+                <input type="text" id="routeColor" value="#3b82f6">
+            </div>
+            <button class="btn btn-primary" style="margin-top:8px;" onclick="saveRoute()">💾 Save Route</button>
+        </div>
+    `;
+    openModal("Add New Route", formHtml);
+}
+
+function saveRoute() {
+    const key = document.getElementById('routeKey').value.trim().toLowerCase();
+    const name = document.getElementById('routeName').value.trim();
+    const stopsStr = document.getElementById('routeStops').value.trim();
+    const color = document.getElementById('routeColor').value.trim();
+    
+    if (!key || !name || !stopsStr) {
+        alert("Please fill all required fields.");
+        return;
+    }
+    
+    const stops = stopsStr.split(',').map(s => s.trim()).filter(s => s.length > 0);
+    ROUTE_STOPS[key] = stops;
+    ROUTE_LABELS[key] = name;
+    
+    stops.forEach(s => {
+        if (!COORDS[s]) {
+            COORDS[s] = [13.0489 + (Math.random() - 0.5) * 0.1, 80.0754 + (Math.random() - 0.5) * 0.1];
+        }
+    });
+    
+    routes.push({
+        id: Date.now(),
+        key: key,
+        name: name,
+        stops: stops,
+        color: color || '#2563eb'
+    });
+    
+    saveLS('ptAdmin_routes', routes);
+    renderRoutesList();
+    closeModal();
+    showNotification('🛣️ Route Created', `Route ${name} has been successfully added.`);
+}
+
+function openDriverModal() {
+    const routeOptions = Object.keys(ROUTE_LABELS).map(key => 
+        `<option value="${key}">${ROUTE_LABELS[key]}</option>`
+    ).join('');
+    
+    const formHtml = `
+        <div style="display:flex; flex-direction:column; gap:12px;">
+            <div class="input-group">
+                <div class="input-label">Bus Number</div>
+                <input type="text" id="driverBus" placeholder="e.g. B110">
+            </div>
+            <div class="input-group">
+                <div class="input-label">Driver Name</div>
+                <input type="text" id="driverName" placeholder="e.g. Rajesh Kumar">
+            </div>
+            <div class="input-group">
+                <div class="input-label">Contact Number</div>
+                <input type="tel" id="driverContact" placeholder="e.g. 9876543210">
+            </div>
+            <div class="input-group">
+                <div class="input-label">Assign Route</div>
+                <select id="driverRoute">${routeOptions}</select>
+            </div>
+            <div class="input-group">
+                <div class="input-label">Bus Type</div>
+                <select id="driverType">
+                    <option value="boys">Boys Bus</option>
+                    <option value="girls">Girls Bus</option>
+                    <option value="combined">Combined Bus</option>
+                </select>
+            </div>
+            <button class="btn btn-primary" style="margin-top:8px;" onclick="saveDriver()">💾 Save Registry</button>
+        </div>
+    `;
+    openModal("Add Driver & Bus Entry", formHtml);
+}
+
+function saveDriver() {
+    const bus = document.getElementById('driverBus').value.trim().toUpperCase();
+    const name = document.getElementById('driverName').value.trim();
+    const contact = document.getElementById('driverContact').value.trim();
+    const route = document.getElementById('driverRoute').value;
+    const type = document.getElementById('driverType').value;
+    
+    if (!bus || !name || !contact) {
+        alert("Please fill all fields.");
+        return;
+    }
+    
+    drivers.push({
+        id: Date.now(),
+        bus: bus,
+        driver: name,
+        contact: contact,
+        route: route,
+        type: type
+    });
+    
+    saveLS('ptAdmin_drivers', drivers);
+    if (!busSimState[route]) {
+        busSimState[route] = {
+            progress: 0.1,
+            lat: DEST_COORD[0], lng: DEST_COORD[1],
+            speed: 40,
+            near: false
+        };
+    }
+    
+    renderDriversList();
+    renderOverview();
+    closeModal();
+    showNotification('👨‍✈️ Driver Added', `Driver ${name} assigned to Bus ${bus}.`);
+}
+
+let currentEditId = null;
+function editDriver(id) {
+    const d = drivers.find(drv => drv.id === id);
+    if (!d) return;
+    currentEditId = id;
+    
+    const routeOptions = Object.keys(ROUTE_LABELS).map(key => 
+        `<option value="${key}" ${d.route === key ? 'selected' : ''}>${ROUTE_LABELS[key]}</option>`
+    ).join('');
+    
+    const formHtml = `
+        <div style="display:flex; flex-direction:column; gap:12px;">
+            <div class="input-group">
+                <div class="input-label">Bus Number</div>
+                <input type="text" id="driverBus" value="${d.bus}">
+            </div>
+            <div class="input-group">
+                <div class="input-label">Driver Name</div>
+                <input type="text" id="driverName" value="${d.driver}">
+            </div>
+            <div class="input-group">
+                <div class="input-label">Contact Number</div>
+                <input type="tel" id="driverContact" value="${d.contact}">
+            </div>
+            <div class="input-group">
+                <div class="input-label">Assign Route</div>
+                <select id="driverRoute">${routeOptions}</select>
+            </div>
+            <div class="input-group">
+                <div class="input-label">Bus Type</div>
+                <select id="driverType">
+                    <option value="boys" ${d.type === 'boys' ? 'selected' : ''}>Boys Bus</option>
+                    <option value="girls" ${d.type === 'girls' ? 'selected' : ''}>Girls Bus</option>
+                    <option value="combined" ${d.type === 'combined' ? 'selected' : ''}>Combined Bus</option>
+                </select>
+            </div>
+            <button class="btn btn-primary" style="margin-top:8px;" onclick="updateDriver()">💾 Update Registry</button>
+        </div>
+    `;
+    openModal("Edit Driver & Bus Entry", formHtml);
+}
+
+function updateDriver() {
+    const bus = document.getElementById('driverBus').value.trim().toUpperCase();
+    const name = document.getElementById('driverName').value.trim();
+    const contact = document.getElementById('driverContact').value.trim();
+    const route = document.getElementById('driverRoute').value;
+    const type = document.getElementById('driverType').value;
+    
+    if (!bus || !name || !contact) {
+        alert("Please fill all fields.");
+        return;
+    }
+    
+    const idx = drivers.findIndex(d => d.id === currentEditId);
+    if (idx !== -1) {
+        drivers[idx] = { ...drivers[idx], bus, driver: name, contact, route, type };
+        saveLS('ptAdmin_drivers', drivers);
+    }
+    
+    renderDriversList();
+    renderOverview();
+    closeModal();
+    showNotification('👨‍✈️ Driver Updated', `Entry for Bus ${bus} has been updated.`);
+}
+
+function editRoute(id) {
+    const r = routes.find(rt => rt.id === id);
+    if (!r) return;
+    currentEditId = id;
+    
+    const formHtml = `
+        <div style="display:flex; flex-direction:column; gap:12px;">
+            <div class="input-group">
+                <div class="input-label">Route Key</div>
+                <input type="text" id="routeKey" value="${r.key}" readonly style="background:#f1f5f9;">
+            </div>
+            <div class="input-group">
+                <div class="input-label">Route Name</div>
+                <input type="text" id="routeName" value="${r.name}">
+            </div>
+            <div class="input-group">
+                <div class="input-label">Stops (comma separated, in order)</div>
+                <textarea id="routeStops">${r.stops.join(', ')}</textarea>
+            </div>
+            <div class="input-group">
+                <div class="input-label">Route Color Hex</div>
+                <input type="text" id="routeColor" value="${r.color}">
+            </div>
+            <button class="btn btn-primary" style="margin-top:8px;" onclick="updateRoute()">💾 Update Route</button>
+        </div>
+    `;
+    openModal("Edit Route", formHtml);
+}
+
+function updateRoute() {
+    const name = document.getElementById('routeName').value.trim();
+    const stopsStr = document.getElementById('routeStops').value.trim();
+    const color = document.getElementById('routeColor').value.trim();
+    
+    if (!name || !stopsStr) {
+        alert("Please fill all fields.");
+        return;
+    }
+    
+    const stops = stopsStr.split(',').map(s => s.trim()).filter(s => s.length > 0);
+    
+    const idx = routes.findIndex(r => r.id === currentEditId);
+    if (idx !== -1) {
+        const key = routes[idx].key;
+        ROUTE_STOPS[key] = stops;
+        ROUTE_LABELS[key] = name;
+        routes[idx] = { ...routes[idx], name, stops, color };
+        saveLS('ptAdmin_routes', routes);
+    }
+    
+    renderRoutesList();
+    closeModal();
+    showNotification('🛣️ Route Updated', `Route ${name} has been updated.`);
+}
+
+// ─── LEAFLET LIVE MAP ─────────────────────────────────────────────
+function initAdminMap() {
+    if (adminMap) return;
+    
+    adminMap = L.map('adminLiveMap').setView([13.0489049, 80.0754642], 12);
+    
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors'
+    }).addTo(adminMap);
+    
+    const campusIcon = L.divIcon({
+        html: '<div style="font-size: 24px; text-shadow: 0 2px 4px rgba(0,0,0,0.3);">🏫</div>',
+        className: 'custom-div-icon',
+        iconSize: [30, 30],
+        iconAnchor: [15, 15]
+    });
+    L.marker([13.0489049, 80.0754642], { icon: campusIcon }).addTo(adminMap)
+        .bindPopup("<b>Panimalar Engineering College</b><br>Main Campus Gate").openPopup();
+        
+    routes.forEach(r => {
+        const pts = getBusPts(r.key);
+        const latlngs = pts.map(p => [p.lat, p.lng]);
+        
+        const polyline = L.polyline(latlngs, {
+            color: r.color || '#2563eb',
+            weight: 3,
+            opacity: 0.65
+        }).addTo(adminMap);
+        
+        routeLayers.push(polyline);
+    });
+    
+    const legend = document.getElementById('trackLegend');
+    if (legend) {
+        legend.innerHTML = routes.map(r => 
+            `<span style="margin-right: 12px; font-size: 10px; font-weight:700;"><span class="legend-dot" style="background:${r.color};"></span>${r.name}</span>`
+        ).join('');
+    }
+    
+    createBusMarkers();
+}
+
+function createBusMarkers() {
+    drivers.forEach(d => {
+        const s = busSimState[d.route];
+        if (!s) return;
+        
+        const busIcon = L.divIcon({
+            html: `
+                <div style="background: white; border: 2px solid ${routes.find(r=>r.key===d.route)?.color || '#2563eb'}; border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 800; box-shadow: 0 4px 10px rgba(0,0,0,0.25); color: #1e293b;">
+                    🚌
+                </div>
+            `,
+            className: 'custom-bus-icon',
+            iconSize: [28, 28],
+            iconAnchor: [14, 14]
+        });
+        
+        const marker = L.marker([s.lat || DEST_COORD[0], s.lng || DEST_COORD[1]], { icon: busIcon }).addTo(adminMap)
+            .bindPopup(`<b>Bus ${d.bus}</b><br>Driver: ${d.driver}<br>Route: ${ROUTE_LABELS[d.route]}`);
+            
+        busMarkers[d.route] = marker;
+    });
+    
+    renderLiveBusList();
+}
+
+function updateMapMarkers() {
+    drivers.forEach(d => {
+        const s = busSimState[d.route];
+        const marker = busMarkers[d.route];
+        if (s && marker) {
+            marker.setLatLng([s.lat, s.lng]);
+        }
+    });
+    renderLiveBusList();
+}
+
+function renderLiveBusList() {
+    const list = document.getElementById('liveBusList');
+    if (!list) return;
+    
+    list.innerHTML = drivers.map(d => {
+        const s = busSimState[d.route];
+        if (!s) return '';
+        const rColor = routes.find(r=>r.key===d.route)?.color || '#2563eb';
+        return `
+            <div class="bus-card" style="margin-bottom: 8px;" onclick="focusBus('${d.route}')">
+                <div class="bus-card-top">
+                    <div class="bus-card-meta">
+                        <span class="bus-card-num" style="display:flex; align-items:center; gap: 6px;">
+                            <span style="display:inline-block; width: 10px; height: 10px; border-radius:50%; background:${rColor};"></span>
+                            Bus ${d.bus} — ${ROUTE_LABELS[d.route]}
+                        </span>
+                        <span class="bus-card-sub">Driver: ${d.driver} | Speed: ${s.speed.toFixed(0)} km/h</span>
+                    </div>
+                    <span class="status-badge ${s.near ? 'status-arrived' : 'status-ontime'}">${s.near ? 'Arrived' : 'On Route'}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function focusBus(routeKey) {
+    const s = busSimState[routeKey];
+    if (s && adminMap) {
+        adminMap.setView([s.lat, s.lng], 14);
+        busMarkers[routeKey].openPopup();
+    }
+}
+
+// ─── ANALYTICS CHARTJS ────────────────────────────────────────────
+let arrivalChartObj = null;
+let punctualityChartObj = null;
+let routeChartObj = null;
+
+function initCharts() {
+    if (chartsInitialized) return;
+    chartsInitialized = true;
+    
+    const ctxArrival = document.getElementById('arrivalChart').getContext('2d');
+    arrivalChartObj = new Chart(ctxArrival, {
+        type: 'line',
+        data: {
+            labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+            datasets: [{
+                label: 'On-Time Arrivals',
+                data: [8, 9, 7, 9, 8],
+                borderColor: '#2563eb',
+                backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                tension: 0.3,
+                fill: true
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } }
+        }
+    });
+    
+    const ctxPunctual = document.getElementById('punctualityChart').getContext('2d');
+    punctualityChartObj = new Chart(ctxPunctual, {
+        type: 'doughnut',
+        data: {
+            labels: ['On Time', 'Delayed', 'Early'],
+            datasets: [{
+                data: [75, 15, 10],
+                backgroundColor: ['#22c55e', '#ef4444', '#3b82f6'],
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } } }
+        }
+    });
+    
+    const ctxRoute = document.getElementById('routeChart').getContext('2d');
+    routeChartObj = new Chart(ctxRoute, {
+        type: 'bar',
+        data: {
+            labels: ['Tambaram', 'Arakkonam', 'T.Nagar', 'Manali', 'Porur'],
+            datasets: [{
+                label: 'Average Delay (mins)',
+                data: [5, 12, 8, 18, 4],
+                backgroundColor: '#f97316'
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } }
+        }
+    });
+}
+
+// ─── SYSTEM NOTIFICATIONS ─────────────────────────────────────────
+function showNotification(title, msg) {
+    const container = document.getElementById('notifContainer');
+    if (!container) return;
+    
+    const id = 'notif_' + Date.now();
+    const notifHtml = `
+        <div class="notif-card" id="${id}">
+            <div class="notif-icon">🔔</div>
+            <div class="notif-body">
+                <div class="notif-app">PANIMALAR TRANSIT</div>
+                <div class="notif-title">${title}</div>
+                <div class="notif-sub">${msg}</div>
+                <div class="notif-progress"><div class="notif-progress-fill" id="${id}_fill"></div></div>
+            </div>
+        </div>
+    `;
+    
+    container.insertAdjacentHTML('beforeend', notifHtml);
+    const card = document.getElementById(id);
+    const fill = document.getElementById(id + '_fill');
+    
+    setTimeout(() => card.classList.add('show'), 10);
+    fill.style.width = '100%';
+    setTimeout(() => {
+        fill.style.transition = 'width 3s linear';
+        fill.style.width = '0%';
+    }, 50);
+    
+    setTimeout(() => {
+        card.classList.remove('show');
+        card.classList.add('hide');
+        setTimeout(() => card.remove(), 350);
+    }, 3050);
+}
+
+// ─── INITIAL ATTACHMENTS ──────────────────────────────────────────
+// Setup drag-and-drop once page loads
+document.addEventListener("DOMContentLoaded", () => {
+    setupUploadZone();
+});
+</script>
+</body>
+</html>
