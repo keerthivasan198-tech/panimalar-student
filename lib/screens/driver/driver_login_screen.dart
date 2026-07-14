@@ -27,7 +27,6 @@ class DriverLoginScreen extends StatefulWidget {
 
 class _DriverLoginScreenState extends State<DriverLoginScreen> {
   final TextEditingController _busController = TextEditingController();
-  final TextEditingController _passController = TextEditingController();
   String _errorMsg = "";
   bool _isLoading = false;
 
@@ -37,9 +36,8 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
 
   void _attemptLogin() async {
     final bus = _busController.text.trim().toUpperCase();
-    final pass = _passController.text.trim();
 
-    if (bus.isEmpty || pass.isEmpty) {
+    if (bus.isEmpty) {
       setState(() {
         _errorMsg = t('errorEnter');
       });
@@ -52,7 +50,6 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
     });
 
     try {
-      // 1. Try Firebase Authentication Sync from '/drivers' node
       if (Firebase.apps.isNotEmpty) {
         final snapshot = await FirebaseDatabase.instance.ref('drivers').get();
         if (snapshot.exists && snapshot.value != null) {
@@ -68,57 +65,34 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
           for (var item in driversList) {
             if (item is Map) {
               final dbBus = item['bus']?.toString().trim().toUpperCase();
-              final dbPass = item['password']?.toString().trim();
-              if (dbBus == bus && dbPass == pass) {
+              if (dbBus == bus) {
                 found = true;
                 break;
               }
             }
           }
+          
           if (found) {
             widget.onLogin(bus);
             return;
+          } else {
+            setState(() {
+              _errorMsg = "Route $bus not registered by Admin.";
+            });
+            return;
           }
-        }
-      }
-
-      // 2. Fallback: Check local SharedPreferences (cached drivers list)
-      final prefs = await SharedPreferences.getInstance();
-      final driversStr = prefs.getString('ptAdmin_drivers');
-      if (driversStr != null) {
-        final List decoded = json.decode(driversStr);
-        bool found = false;
-        for (var item in decoded) {
-          if (item is Map) {
-            final dbBus = item['bus']?.toString().trim().toUpperCase();
-            final dbPass = item['password']?.toString().trim();
-            if (dbBus == bus && dbPass == pass) {
-              found = true;
-              break;
-            }
-          }
-        }
-        if (found) {
-          widget.onLogin(bus);
+        } else {
+          setState(() {
+            _errorMsg = "No routes registered yet.";
+          });
           return;
         }
       }
 
-      // 3. Demoware / Development fallback defaults
-      if ((bus == 'B101' || bus == 'B202' || bus == 'B303' || bus == 'BUS101' || bus == 'BUS102') && pass == '1234') {
-        widget.onLogin(bus);
-        return;
-      }
-
       setState(() {
-        _errorMsg = t('errorInvalid');
+        _errorMsg = "Cannot connect to Firebase.";
       });
     } catch (e) {
-      // Offline fallback defaults
-      if ((bus == 'B101' || bus == 'B202' || bus == 'B303' || bus == 'BUS101' || bus == 'BUS102') && pass == '1234') {
-        widget.onLogin(bus);
-        return;
-      }
       setState(() {
         _errorMsg = "Login error: $e";
       });
@@ -221,63 +195,45 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
                         const SizedBox(height: 20),
 
                         Text(
-                          t('busNumber'),
+                          "Route Number / Bus No",
                           style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF334155)),
                         ),
                         const SizedBox(height: 6),
                         TextField(
                           controller: _busController,
                           decoration: InputDecoration(
-                            hintText: "e.g. B101",
+                            hintText: "e.g. 4 or 86",
                             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                             border: OutlineInputBorder(borderRadius: BorderRadius.circular(22)),
                           ),
                           style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
                         ),
-                        const SizedBox(height: 16),
-
-                        Text(
-                          t('busPassword'),
-                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF334155)),
-                        ),
-                        const SizedBox(height: 6),
-                        TextField(
-                          controller: _passController,
-                          obscureText: true,
-                          decoration: InputDecoration(
-                            hintText: "••••",
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(22)),
-                          ),
-                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 20),
+                        const SizedBox(height: 24),
 
                         if (_errorMsg.isNotEmpty)
                           Padding(
-                            padding: const EdgeInsets.only(bottom: 12.0),
+                            padding: const EdgeInsets.only(bottom: 16.0),
                             child: Text(
                               _errorMsg,
-                              style: const TextStyle(color: Colors.red, fontSize: 12, fontWeight: FontWeight.bold),
+                              style: const TextStyle(color: Color(0xFFEF4444), fontSize: 12, fontWeight: FontWeight.w600),
+                              textAlign: TextAlign.center,
                             ),
                           ),
 
                         ElevatedButton(
+                          onPressed: _isLoading ? null : _attemptLogin,
                           style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(0xFF2563EB),
-                            foregroundColor: Colors.white,
                             padding: const EdgeInsets.symmetric(vertical: 14),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
                             elevation: 0,
                           ),
-                          onPressed: _isLoading ? null : _attemptLogin,
                           child: _isLoading
-                              ? const SizedBox(
-                                  height: 20,
-                                  width: 20,
-                                  child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                                )
-                              : Text(t('signIn'), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+                              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                              : Text(
+                                  t('btnLogin'),
+                                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+                                ),
                         ),
                       ],
                     ),

@@ -84,6 +84,10 @@ class _MainShellState extends State<MainShell> {
   // Campus points search filter
   final TextEditingController _searchCtrl = TextEditingController();
   String _searchFilter = "";
+  
+  // Route search filter
+  final TextEditingController _routeSearchCtrl = TextEditingController();
+  String _routeSearchQuery = "";
   String _selectedNavPointName = "";
   Polyline? _campusRoute;
 
@@ -142,19 +146,21 @@ class _MainShellState extends State<MainShell> {
       }
     }
 
-    if (routeKey == 'route_15') {
-      _busFirebaseId = 'B101';
-      _routeColor = const Color(0xFF2563EB); // Blue
-    } else if (routeKey == 'route_52') {
-      _busFirebaseId = 'B202';
-      _routeColor = const Color(0xFF22C55E); // Green
-    } else if (routeKey == 'route_137') {
-      _busFirebaseId = 'B303';
-      _routeColor = const Color(0xFFF97316); // Orange
+    // Parse the number from 'route_15' to get '15' for Firebase mapping
+    final match = RegExp(r'route_(\d+)').firstMatch(routeKey);
+    if (match != null) {
+      _busFirebaseId = match.group(1)!;
     } else {
-      _busFirebaseId = 'B101';
-      _routeColor = const Color(0xFF2563EB);
+      _busFirebaseId = routeKey;
     }
+
+    // Set fallback colors based on some logic, or just a default
+    _routeColor = const Color(0xFF2563EB);
+    try {
+      if (routeColorsConfig.containsKey(routeKey)) {
+         _routeColor = Color(int.parse(routeColorsConfig[routeKey]!.replaceFirst('#', '0xFF')));
+      }
+    } catch (_) {}
 
     if (startListener) {
       _startFirebaseListener();
@@ -1110,38 +1116,101 @@ class _MainShellState extends State<MainShell> {
 
                 // Dynamic Route select list
                 const Text(
-                  "Assigned College Route",
-                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFF64748B)),
+                  "Find Your Bus & Route",
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900, color: Color(0xFF1E293B)),
                 ),
-                const SizedBox(height: 8),
-                Row(
-                  children: routeLabelsConfig.keys.map((routeKey) {
-                    final isSelected = _selectedRoute == routeKey;
-                    return Expanded(
-                      child: GestureDetector(
-                        onTap: () => _changeSelectedRoute(routeKey),
-                        child: Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 4),
-                          padding: const EdgeInsets.symmetric(vertical: 10),
-                          decoration: BoxDecoration(
-                            color: isSelected ? _routeColor : Colors.white,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: isSelected ? _routeColor : const Color(0xFFCBD5E1)),
-                          ),
-                          alignment: Alignment.center,
-                          child: Text(
-                            routeKey == 'route_15' ? "R15" : (routeKey == 'route_52' ? "R52" : "R137"),
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w900,
-                              color: isSelected ? Colors.white : const Color(0xFF475569),
-                            ),
-                          ),
-                        ),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF2563EB).withValues(alpha: 0.15),
+                        blurRadius: 16,
+                        offset: const Offset(0, 8),
                       ),
-                    );
-                  }).toList(),
+                    ],
+                    border: Border.all(color: const Color(0xFF2563EB).withValues(alpha: 0.3), width: 1.5),
+                  ),
+                  child: TextField(
+                    controller: _routeSearchCtrl,
+                    onChanged: (val) => setState(() => _routeSearchQuery = val),
+                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
+                    decoration: InputDecoration(
+                      hintText: "Search bus stop or route no...",
+                      hintStyle: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13, fontWeight: FontWeight.w600),
+                      border: InputBorder.none,
+                      icon: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEFF6FF),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(Icons.search_rounded, size: 20, color: Color(0xFF2563EB)),
+                      ),
+                    ),
+                  ),
                 ),
+                const SizedBox(height: 12),
+                if (_routeSearchQuery.isNotEmpty)
+                  Container(
+                    height: 150,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: Builder(
+                      builder: (context) {
+                        final query = _routeSearchQuery.toLowerCase();
+                        final matches = routeLabelsConfig.keys.where((key) {
+                          final label = routeLabelsConfig[key]?.toLowerCase() ?? '';
+                          final stops = routeStopsConfig[key] ?? [];
+                          final stopsMatch = stops.any((s) => s.toLowerCase().contains(query));
+                          return label.contains(query) || stopsMatch;
+                        }).toList();
+                        if (matches.isEmpty) {
+                          return const Center(child: Text("No routes found", style: TextStyle(fontSize: 12, color: Colors.grey)));
+                        }
+                        return ListView.separated(
+                          padding: const EdgeInsets.all(8),
+                          itemCount: matches.length,
+                          separatorBuilder: (_, __) => const Divider(height: 1),
+                          itemBuilder: (ctx, idx) {
+                            final key = matches[idx];
+                            final label = routeLabelsConfig[key] ?? key;
+                            return ListTile(
+                              dense: true,
+                              title: Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+                              trailing: _selectedRoute == key ? const Icon(Icons.check_circle, color: Colors.green, size: 18) : null,
+                              onTap: () {
+                                _changeSelectedRoute(key);
+                                _routeSearchCtrl.clear();
+                                setState(() => _routeSearchQuery = "");
+                              },
+                            );
+                          },
+                        );
+                      }
+                    ),
+                  ),
+                if (_routeSearchQuery.isEmpty)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEEF2FF),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.directions_bus, size: 18, color: Color(0xFF2563EB)),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text("Selected: ${routeLabelsConfig[_selectedRoute] ?? _selectedRoute}", style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Color(0xFF1E3A8A)))),
+                      ],
+                    ),
+                  ),
                 const SizedBox(height: 20),
 
                 Row(
@@ -1466,12 +1535,36 @@ class _MainShellState extends State<MainShell> {
 
     // Add user marker if we had one
     // Add bus marker
+    // Draw all route stops as dots instead of lines
+    for (var stopName in _routeStops) {
+      final coord = _coords[stopName];
+      if (coord != null && stopName != "COLLEGE" && stopName != "Panimalar Engineering College") {
+        markers.add(
+          Marker(
+            point: coord,
+            width: 24,
+            height: 24,
+            alignment: Alignment.center,
+            child: Container(
+              decoration: BoxDecoration(
+                color: _routeColor.withValues(alpha: 0.8),
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 1.5),
+              ),
+              child: const Icon(Icons.location_on, color: Colors.white, size: 14),
+            ),
+          ),
+        );
+      }
+    }
+
     if (_busLat != null && _busLng != null) {
       markers.add(
         Marker(
           point: LatLng(_busLat!, _busLng!),
-          width: 50,
-          height: 50,
+          width: 80,
+          height: 80,
+          alignment: Alignment.center,
           child: Column(
             children: [
               Container(
@@ -1539,17 +1632,7 @@ class _MainShellState extends State<MainShell> {
               urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
               subdomains: const ['a', 'b', 'c', 'd'],
             ),
-            PolylineLayer(
-              polylines: [
-                Polyline(
-                  points: _routeStops.map((name) => _coords[name]).whereType<LatLng>().toList(),
-                  color: _routeColor,
-                  strokeWidth: 4.0,
-                  borderColor: Colors.white,
-                  borderStrokeWidth: 1.5,
-                ),
-              ],
-            ),
+
             if (_busIsOnline && _renderLat != null && _renderLng != null && _busAccuracy != null)
               CircleLayer(
                 circles: [

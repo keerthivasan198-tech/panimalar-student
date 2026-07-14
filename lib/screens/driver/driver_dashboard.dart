@@ -43,7 +43,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
   String _updatedAt = "--";
   String _gpsStatus = "Offline";
   String _replacementBus = "";
-  bool _notifyRouteBusesEnabled = false;
+  Map<String, bool> _selectedNotifyBuses = {};
 
   bool _firebaseConnected = false;
   StreamSubscription? _connectedSubscription;
@@ -109,8 +109,48 @@ class _DriverDashboardState extends State<DriverDashboard> {
     _listenForAdminSettings();
   }
 
-  void _loadRouteDetails() {
+  void _loadRouteDetails() async {
+    // 1. Initial quick guess based on bus number
     _routeKey = _getRouteKeyForBus(widget.driverBus);
+    _updateStopsFromKey();
+
+    // 2. Fetch the true route from Firebase Driver Registry
+    if (Firebase.apps.isNotEmpty) {
+      try {
+        final snap = await FirebaseDatabase.instance.ref('drivers').get();
+        if (snap.exists && snap.value != null) {
+          final data = snap.value;
+          List driversList = [];
+          if (data is List) {
+            driversList = data;
+          } else if (data is Map) {
+            driversList = data.values.toList();
+          }
+
+          final bus = widget.driverBus.toUpperCase();
+          for (var item in driversList) {
+            if (item is Map) {
+              final dbBus = item['bus']?.toString().toUpperCase();
+              if (dbBus == bus && item['route'] != null) {
+                final String dbRoute = item['route'].toString();
+                if (mounted && dbRoute != _routeKey) {
+                  setState(() {
+                    _routeKey = dbRoute;
+                  });
+                  _updateStopsFromKey();
+                }
+                break;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint("Error fetching driver route: $e");
+      }
+    }
+  }
+
+  void _updateStopsFromKey() {
     final stops = routeStopsConfig[_routeKey] ?? [];
     setState(() {
       _routeStops = stops.map((name) {
@@ -132,11 +172,14 @@ class _DriverDashboardState extends State<DriverDashboard> {
     if (bus == 'B101' || bus == 'BUS101') return 'route_15';
     if (bus == 'B202' || bus == 'BUS102') return 'route_52';
     if (bus == 'B303') return 'route_137';
+    if (RegExp(r'^\d+$').hasMatch(busId)) {
+      if (routeLabelsConfig.containsKey('route_$busId')) return 'route_$busId';
+    }
     return 'route_15'; // default fallback
   }
 
   String _getRouteLabelForBus(String busId) {
-    return routeLabelsConfig[_getRouteKeyForBus(busId)] ?? "College Route";
+    return routeLabelsConfig[_routeKey] ?? "College Route";
   }
 
   String t(String key) {
@@ -627,12 +670,13 @@ class _DriverDashboardState extends State<DriverDashboard> {
   }
 
   void _sendBreakdownToRouteBuses() async {
+    final selectedBuses = _selectedNotifyBuses.entries.where((e) => e.value).map((e) => e.key).join(", ");
     setState(() {
       _routeNotifyStatus = "Notifying other buses on same route…";
     });
     await Future.delayed(const Duration(seconds: 1));
     setState(() {
-      _routeNotifyStatus = "✅ Notified buses BUS102, BUS105 to pick up stranded students.";
+      _routeNotifyStatus = "✅ Notified buses $selectedBuses to pick up stranded students.";
     });
     _showSnackBar("Notifications dispatched successfully.");
   }
@@ -852,11 +896,11 @@ class _DriverDashboardState extends State<DriverDashboard> {
             ),
           ),
           Switch(
-            value: _notifyRouteBusesEnabled,
+            value: _selectedNotifyBuses[bus] ?? false,
             activeColor: const Color(0xFFDC2626),
             onChanged: isDiffRoute ? null : (val) {
               setState(() {
-                _notifyRouteBusesEnabled = val;
+                _selectedNotifyBuses[bus] = val;
               });
             },
           ),
@@ -1713,7 +1757,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                         elevation: 0,
                       ),
-                      onPressed: _notifyRouteBusesEnabled ? _sendBreakdownToRouteBuses : null,
+                      onPressed: _selectedNotifyBuses.containsValue(true) ? _sendBreakdownToRouteBuses : null,
                       child: Text(t('sendBreakdownBuses'), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
                     ),
                     if (_routeNotifyStatus.isNotEmpty) ...[
