@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -11,6 +12,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:http/http.dart' as http;
 import 'dart:io';
 
 import '../../models/campus_point.dart';
@@ -19,6 +21,7 @@ import '../../models/alert_entry.dart';
 import '../../config/routes_config.dart';
 import '../../widgets/marquee_notice_bar.dart';
 import '../../widgets/legend_item.dart';
+import '../../services/campus_path_graph.dart';
 
 class MainShell extends StatefulWidget {
   final VoidCallback onSwitchRole;
@@ -86,6 +89,47 @@ class _MainShellState extends State<MainShell> {
   String _searchFilter = "";
   String _selectedNavPointName = "";
   Polyline? _campusRoute;
+  bool _routeLoading = false;        // true while OSRM fetch is in progress
+  double _routeDistanceM = 0;        // actual road distance from OSRM (metres)
+  int _routeWalkMinutes = 0;         // estimated walk time from OSRM (minutes)
+  double _routeRemainingM = 0;       // remaining distance to destination (metres)
+  String _routeError = '';           // last routing error message for UI display
+  List<Map<String, dynamic>> _navSteps = []; // turn-by-turn steps (future use)
+
+  // Route cache — prevents unnecessary API calls
+  String _cachedRouteDestName = '';  // name of destination when route was last fetched
+  double? _cachedFromLat;            // origin lat when route was last fetched
+  double? _cachedFromLng;            // origin lng when route was last fetched
+  static const double _rerouteThresholdM = 30.0; // reroute only after moving 30 m
+
+  // Student's own GPS location (for campus navigation)
+  double? _studentLat;
+  double? _studentLng;
+  StreamSubscription<Position>? _studentLocationSub;
+  bool _studentLocationDenied = false;
+
+  // ── Profile tab controllers — declared at state level so they survive rebuilds
+  late final TextEditingController _profileNameCtrl;
+  late final TextEditingController _profileBusCtrl;   // bus number input
+  String _profileTempYear = '';   // tracks dropdown selection before saving
+
+  /// Maps bus number (uppercase) → route key.
+  /// B101 → route_15, B202 → route_52, B303 → route_137
+  static const Map<String, String> _busToRouteKey = {
+    'B101': 'route_15',
+    'B202': 'route_52',
+    'B303': 'route_137',
+  };
+
+  /// Returns the stops list for the bus number the student typed, or empty.
+  List<String> get _profileBusStops {
+    final key = _busToRouteKey[_profileBusCtrl.text.trim().toUpperCase()];
+    if (key == null) return [];
+    return List<String>.from(routeStopsConfig[key] ?? []);
+  }
+  List<Map<String, dynamic>> _adminNotifications = [];
+  int _unreadNotifCount = 0;
+  StreamSubscription? _notifSub;
 
   // Real-time bus arrivals log feed
   List<LogEntry> _arrivalLogs = [];
@@ -96,9 +140,15 @@ class _MainShellState extends State<MainShell> {
   @override
   void initState() {
     super.initState();
+    // Profile controllers — empty initially; populated after prefs load
+    _profileNameCtrl = TextEditingController();
+    _profileBusCtrl  = TextEditingController();
+    _profileTempYear = '';
     _loadPreferences();
     _startLerpLoop();
     _listenForArrivalLogs();
+    _startStudentLocationTracking();
+    _listenForAdminNotifications();
   }
 
   @override
@@ -110,24 +160,605 @@ class _MainShellState extends State<MainShell> {
     _locationSub?.cancel();
     _pickupRequestSub?.cancel();
     _logsSub?.cancel();
+    _studentLocationSub?.cancel();
+    _notifSub?.cancel();
+    _profileNameCtrl.dispose();
+    _profileBusCtrl.dispose();
     _searchCtrl.dispose();
     super.dispose();
   }
 
+  /// Requests GPS permission and starts a continuous location stream.
+  /// Updates [_studentLat]/[_studentLng] on every significant movement.
+  /// Only triggers a new OSRM route fetch when the user moves > [_rerouteThresholdM].
+  void _startStudentLocationTracking() async {
+    try {
+      // ── 1. Check service enabled ──────────────────────────────────────────
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        if (mounted) setState(() {
+          _studentLocationDenied = true;
+          _routeError = 'GPS is disabled. Enable location in Settings.';
+        });
+        return;
+      }
+
+      // ── 2. Request permission ─────────────────────────────────────────────
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        if (mounted) setState(() {
+          _studentLocationDenied = true;
+          _routeError = permission == LocationPermission.deniedForever
+              ? 'Location permission permanently denied. Enable in app settings.'
+              : 'Location permission denied.';
+        });
+        return;
+      }
+
+      // ── 3. Get immediate first fix ────────────────────────────────────────
+      try {
+        final pos = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+        );
+        if (mounted) {
+          setState(() {
+            _studentLat = pos.latitude;
+            _studentLng = pos.longitude;
+            _routeError = '';
+          });
+        }
+      } catch (_) { /* first fix failed — stream will recover */ }
+
+      // ── 4. Continuous stream (update every 3 m for smooth dot movement) ──
+      _studentLocationSub = Geolocator.getPositionStream(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 3, // dot moves every 3 m
+        ),
+      ).listen((pos) {
+        if (!mounted) return;
+        final newLat = pos.latitude;
+        final newLng = pos.longitude;
+
+        // Only reroute when user has moved > threshold AND a destination is set
+        bool needsReroute = false;
+        if (_selectedNavPointName.isNotEmpty &&
+            _cachedFromLat != null && _cachedFromLng != null) {
+          final movedM = _haversineM(
+              _cachedFromLat!, _cachedFromLng!, newLat, newLng);
+          needsReroute = movedM > _rerouteThresholdM;
+        } else if (_selectedNavPointName.isNotEmpty) {
+          // No cached origin yet — fetch immediately
+          needsReroute = true;
+        }
+
+        setState(() {
+          _studentLat = newLat;
+          _studentLng = newLng;
+          _routeError = '';
+          // Update remaining distance from current position
+          if (_selectedNavPointName.isNotEmpty) {
+            try {
+              final dest = _campusPointsList
+                  .firstWhere((p) => p.name == _selectedNavPointName);
+              _routeRemainingM = _haversineM(
+                  newLat, newLng,
+                  dest.coords.latitude, dest.coords.longitude);
+            } catch (_) {}
+          }
+        });
+
+        if (needsReroute) _updateCampusRoute();
+      }, onError: (e) {
+        if (mounted) setState(() => _routeError = 'Location stream error: $e');
+      });
+    } catch (e) {
+      debugPrint("Student location error: $e");
+      if (mounted) setState(() {
+        _studentLocationDenied = true;
+        _routeError = 'Could not start location tracking.';
+      });
+    }
+  }
+
+  /// Fetches the exact road-following route from OSRM using the device's internet.
+  /// OSRM foot-profile uses OSM road data — the same roads visible on the map tile.
+  /// Falls back to the local graph if the network call fails.
+  Future<void> _updateCampusRoute() async {
+    if (_selectedNavPointName.isEmpty) {
+      setState(() => _campusRoute = null);
+      return;
+    }
+    CampusPoint dest;
+    try {
+      dest = _campusPointsList.firstWhere((p) => p.name == _selectedNavPointName);
+    } catch (_) {
+      setState(() { _campusRoute = null; _routeError = 'Invalid destination.'; });
+      return;
+    }
+    if (_studentLat == null || _studentLng == null) {
+      setState(() { _campusRoute = null; _routeError = 'Waiting for GPS fix…'; });
+      return;
+    }
+
+    // Cache check
+    if (_cachedRouteDestName == _selectedNavPointName &&
+        _cachedFromLat != null && _cachedFromLng != null) {
+      final movedM = _haversineM(
+          _cachedFromLat!, _cachedFromLng!, _studentLat!, _studentLng!);
+      if (movedM < _rerouteThresholdM) return;
+    }
+
+    setState(() { _routeLoading = true; _routeError = ''; });
+
+    // Straight-line fallback values
+    List<LatLng> points = [LatLng(_studentLat!, _studentLng!), dest.coords];
+    double distM = _haversineM(_studentLat!, _studentLng!,
+        dest.coords.latitude, dest.coords.longitude);
+    int walkMin = max(1, (distM / 70).ceil());
+
+    try {
+      // OSRM public foot-profile — runs on device, reaches internet fine
+      final url = Uri.parse(
+        'https://router.project-osrm.org/route/v1/foot/'
+        '${_studentLng!},${_studentLat!};'
+        '${dest.coords.longitude},${dest.coords.latitude}'
+        '?overview=full&geometries=geojson&steps=false',
+      );
+
+      final response = await http
+          .get(url, headers: {'Accept': 'application/json'})
+          .timeout(const Duration(seconds: 12));
+
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        if (data['code'] == 'Ok') {
+          final routes = data['routes'] as List?;
+          if (routes != null && routes.isNotEmpty) {
+            final route = routes[0] as Map<String, dynamic>;
+            final allCoords = (route['geometry']['coordinates'] as List)
+                .map((c) => LatLng(
+                      (c[1] as num).toDouble(),
+                      (c[0] as num).toDouble(),
+                    ))
+                .toList();
+
+            // ── Keep only waypoints inside the campus boundary ─────────────
+            // Campus bounding box (with small margin):
+            // lat: 13.0468 – 13.0552, lng: 80.0722 – 80.0772
+            const minLat = 13.0468, maxLat = 13.0552;
+            const minLng = 80.0722, maxLng = 80.0772;
+
+            bool inCampus(LatLng p) =>
+                p.latitude  >= minLat && p.latitude  <= maxLat &&
+                p.longitude >= minLng && p.longitude <= maxLng;
+
+            // Find the longest contiguous sub-sequence inside campus
+            // that connects origin side to destination side.
+            final inside = allCoords.where(inCampus).toList();
+
+            // Always include real origin and destination endpoints
+            final clipped = <LatLng>[LatLng(_studentLat!, _studentLng!)];
+            clipped.addAll(inside);
+            clipped.add(dest.coords);
+
+            if (clipped.length >= 2) {
+              points  = clipped;
+              // Recompute distance along clipped path
+              distM = 0;
+              for (int i = 0; i < clipped.length - 1; i++) {
+                distM += _haversineM(clipped[i].latitude, clipped[i].longitude,
+                    clipped[i+1].latitude, clipped[i+1].longitude);
+              }
+              final dur = ((route['duration'] as num?)?.toDouble()) ?? 0;
+              walkMin = dur > 0 ? max(1, (dur / 60).ceil())
+                                : max(1, (distM / 70).ceil());
+            }
+          }
+        }
+      }
+    } catch (_) {
+      // Network unavailable — fall back to local graph
+      final origin = LatLng(_studentLat!, _studentLng!);
+      points = campusPathGraph.shortestPath(origin, dest.coords, destName: dest.name);
+      distM  = campusPathGraph.pathDistanceM(points);
+      walkMin = max(1, (distM / 70).ceil());
+      setState(() => _routeError = 'Offline — using campus road estimate');
+    }
+
+    _cachedRouteDestName = _selectedNavPointName;
+    _cachedFromLat = _studentLat;
+    _cachedFromLng = _studentLng;
+
+    setState(() {
+      _campusRoute = Polyline(
+        points: points,
+        color: const Color(0xFF2563EB),
+        strokeWidth: 5.0,
+        strokeCap: StrokeCap.round,
+        strokeJoin: StrokeJoin.round,
+        borderColor: Colors.white,
+        borderStrokeWidth: 2.0,
+      );
+      _routeDistanceM   = distM;
+      _routeWalkMinutes = walkMin;
+      _routeRemainingM  = _haversineM(_studentLat!, _studentLng!,
+          dest.coords.latitude, dest.coords.longitude);
+      _navSteps    = [];
+      _routeLoading = false;
+    });
+  }
+
+  /// Haversine distance in metres between two lat/lng pairs.
+  double _haversineM(double lat1, double lng1, double lat2, double lng2) {
+    const r = 6371000.0;
+    final phi1 = lat1 * (pi / 180);
+    final phi2 = lat2 * (pi / 180);
+    final dPhi = (lat2 - lat1) * (pi / 180);
+    final dLambda = (lng2 - lng1) * (pi / 180);
+    final a = sin(dPhi / 2) * sin(dPhi / 2) +
+        cos(phi1) * cos(phi2) * sin(dLambda / 2) * sin(dLambda / 2);
+    return r * 2 * atan2(sqrt(a), sqrt(1 - a));
+  }
+
+  /// Straight-line distance (metres) from student GPS to a [CampusPoint].
+  double _distanceTo(CampusPoint cp) {
+    if (_studentLat == null || _studentLng == null) return 0.0;
+    return _haversineM(
+        _studentLat!, _studentLng!, cp.coords.latitude, cp.coords.longitude);
+  }
+
+  /// Clears cached route — called when destination changes so a fresh fetch runs.
+  void _clearRouteCache() {
+    _cachedRouteDestName = '';
+    _cachedFromLat = null;
+    _cachedFromLng = null;
+  }
+
+  void _listenForAdminNotifications() {
+    _notifSub?.cancel();
+    if (Firebase.apps.isEmpty) return;
+    try {
+      _notifSub = FirebaseDatabase.instance
+          .ref('student_notifications')
+          .onValue
+          .listen((event) {
+        final data = event.snapshot.value as Map?;
+        final List<Map<String, dynamic>> loaded = [];
+        if (data != null) {
+          data.forEach((key, val) {
+            if (val is Map) {
+              loaded.add({
+                'id': key.toString(),
+                'type': val['type']?.toString() ?? 'info',
+                'title': val['title']?.toString() ?? '',
+                'msg': val['msg']?.toString() ?? '',
+                'bus': val['bus']?.toString() ?? 'all',
+                'time': val['time']?.toString() ?? '',
+                'read': val['read'] == true,
+              });
+            }
+          });
+        }
+        // Sort newest first
+        loaded.sort((a, b) => b['id'].compareTo(a['id']));
+        if (!mounted) return;
+        setState(() {
+          _adminNotifications = loaded;
+          _unreadNotifCount = loaded.where((n) => n['read'] != true).length;
+        });
+      });
+    } catch (e) {
+      debugPrint("Notification listener error: $e");
+    }
+  }
+
+  void _markAllNotificationsRead() {
+    if (Firebase.apps.isEmpty) return;
+    for (final n in _adminNotifications) {
+      if (n['read'] != true) {
+        FirebaseDatabase.instance
+            .ref('student_notifications/${n['id']}/read')
+            .set(true);
+      }
+    }
+    setState(() {
+      for (final n in _adminNotifications) {
+        n['read'] = true;
+      }
+      _unreadNotifCount = 0;
+    });
+  }
+
+  void _showNotificationsPanel() {
+    _markAllNotificationsRead();
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => DraggableScrollableSheet(
+        initialChildSize: 0.75,
+        minChildSize: 0.4,
+        maxChildSize: 0.95,
+        expand: false,
+        builder: (_, scrollCtrl) => Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          child: Column(
+            children: [
+              // Handle bar
+              Container(
+                margin: const EdgeInsets.only(top: 12, bottom: 4),
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              // Header
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+                child: Row(
+                  children: [
+                    const Icon(Icons.notifications_rounded,
+                        color: Color(0xFF2563EB), size: 22),
+                    const SizedBox(width: 10),
+                    const Expanded(
+                      child: Text(
+                        "Notifications",
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w900,
+                          color: Color(0xFF0F172A),
+                        ),
+                      ),
+                    ),
+                    if (_adminNotifications.isNotEmpty)
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        child: const Text("Close",
+                            style: TextStyle(color: Color(0xFF64748B))),
+                      ),
+                  ],
+                ),
+              ),
+              // Category legend chips
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                child: Row(
+                  children: [
+                    _notifChip("🚌", "Delay", "delay"),
+                    _notifChip("⚠️", "Emergency", "emergency"),
+                    _notifChip("🔀", "Route Change", "route_change"),
+                    _notifChip("🛎️", "Arrival", "arrival"),
+                    _notifChip("🔧", "Breakdown", "breakdown"),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              // Notifications list
+              Expanded(
+                child: _adminNotifications.isEmpty
+                    ? const Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text("🔔", style: TextStyle(fontSize: 48)),
+                            SizedBox(height: 12),
+                            Text(
+                              "No notifications yet",
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                                color: Color(0xFF64748B),
+                              ),
+                            ),
+                            SizedBox(height: 4),
+                            Text(
+                              "Admin alerts will appear here",
+                              style: TextStyle(fontSize: 12, color: Colors.grey),
+                            ),
+                          ],
+                        ),
+                      )
+                    : ListView.separated(
+                        controller: scrollCtrl,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 8),
+                        itemCount: _adminNotifications.length,
+                        separatorBuilder: (_, __) =>
+                            const Divider(height: 1, indent: 56),
+                        itemBuilder: (_, i) =>
+                            _buildNotifTile(_adminNotifications[i]),
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _notifChip(String emoji, String label, String type) {
+    final config = _notifTypeConfig(type);
+    return Container(
+      margin: const EdgeInsets.only(right: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: config['bg'] as Color,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: (config['color'] as Color).withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(emoji, style: const TextStyle(fontSize: 12)),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              color: config['color'] as Color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNotifTile(Map<String, dynamic> n) {
+    final config = _notifTypeConfig(n['type'] as String);
+    final isUnread = n['read'] != true;
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      decoration: BoxDecoration(
+        color: isUnread
+            ? (config['bg'] as Color).withValues(alpha: 0.5)
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: config['bg'] as Color,
+              shape: BoxShape.circle,
+            ),
+            child: Center(
+              child: Text(
+                config['icon'] as String,
+                style: const TextStyle(fontSize: 18),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        n['title'] as String,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: isUnread
+                              ? FontWeight.w800
+                              : FontWeight.w600,
+                          color: const Color(0xFF0F172A),
+                        ),
+                      ),
+                    ),
+                    Text(
+                      n['time'] as String,
+                      style: const TextStyle(
+                          fontSize: 10, color: Color(0xFF94A3B8)),
+                    ),
+                    if (isUnread) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: BoxDecoration(
+                          color: config['color'] as Color,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ]
+                  ],
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  n['msg'] as String,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF475569),
+                    height: 1.4,
+                  ),
+                ),
+                if ((n['bus'] as String) != 'all') ...[
+                  const SizedBox(height: 4),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEFF6FF),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      "Bus ${n['bus']}",
+                      style: const TextStyle(
+                        fontSize: 9,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF2563EB),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Map<String, dynamic> _notifTypeConfig(String type) {
+    switch (type) {
+      case 'delay':
+        return {'icon': '🚌', 'color': const Color(0xFFF59E0B), 'bg': const Color(0xFFFFFBEB)};
+      case 'emergency':
+        return {'icon': '🚨', 'color': const Color(0xFFDC2626), 'bg': const Color(0xFFFEF2F2)};
+      case 'route_change':
+        return {'icon': '🔀', 'color': const Color(0xFF7C3AED), 'bg': const Color(0xFFF5F3FF)};
+      case 'arrival':
+        return {'icon': '🛎️', 'color': const Color(0xFF16A34A), 'bg': const Color(0xFFF0FDF4)};
+      case 'breakdown':
+        return {'icon': '🔧', 'color': const Color(0xFFEA580C), 'bg': const Color(0xFFFFF7ED)};
+      default:
+        return {'icon': '🔔', 'color': const Color(0xFF2563EB), 'bg': const Color(0xFFEFF6FF)};
+    }
+  }
+
   void _loadPreferences() async {
     final prefs = await SharedPreferences.getInstance();
+    final savedName = prefs.getString("studentName") ?? "";
+    final savedYear = prefs.getString("studentYear") ?? "3rd Year";
+    final savedDept = prefs.getString("studentDept") ?? "";
     setState(() {
       _selectedRoute = prefs.getString("student_route") ?? "route_15";
       _savedStop = prefs.getString("savedStop") ?? "";
-      _studentName = prefs.getString("studentName") ?? "Student Name";
-      _studentYear = prefs.getString("studentYear") ?? "3rd Year";
-      _studentDept = prefs.getString("studentDept") ?? "Computer Science (CSE)";
+      _studentName = savedName.isNotEmpty ? savedName : "Student Name";
+      _studentYear = savedYear;
+      _studentDept = savedDept.isNotEmpty ? savedDept : "Computer Science (CSE)";
       _studentId = prefs.getString("studentId") ?? "";
       if (_studentId.isEmpty) {
         _studentId = "STD_${DateTime.now().millisecondsSinceEpoch}";
         prefs.setString("studentId", _studentId);
       }
       _updateRouteDetails(_selectedRoute, startListener: false);
+      // Populate profile controllers with saved values (only if previously saved)
+      // Leave empty so placeholder shows when no real data exists yet
+      _profileNameCtrl.text = savedName; // empty string shows hint/placeholder
+      _profileTempYear = savedYear;
+      // Pre-fill bus number from saved route
+      final savedBus = prefs.getString("studentBusNo") ?? "";
+      _profileBusCtrl.text = savedBus;
     });
     _startPickupRequestListener();
     _startFirebaseListener();
@@ -185,15 +816,30 @@ class _MainShellState extends State<MainShell> {
     _showSnackBar("⭐ Boarding stop saved: $stopName");
   }
 
-  void _saveProfile(String name, String year, String dept) async {
+  void _saveProfile(String name, String year, String dept,
+      {String busNo = '', String boardingStop = ''}) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString("studentName", name);
     await prefs.setString("studentYear", year);
     await prefs.setString("studentDept", dept);
+    if (busNo.isNotEmpty) await prefs.setString("studentBusNo", busNo);
+    if (boardingStop.isNotEmpty) {
+      await prefs.setString("savedStop", boardingStop);
+      // Also switch the active route to match the bus
+      final routeKey = _busToRouteKey[busNo.toUpperCase()];
+      if (routeKey != null) {
+        await prefs.setString("student_route", routeKey);
+      }
+    }
     setState(() {
       _studentName = name;
       _studentYear = year;
       _studentDept = dept;
+      if (boardingStop.isNotEmpty) {
+        _savedStop = boardingStop;
+        final routeKey = _busToRouteKey[busNo.toUpperCase()];
+        if (routeKey != null) _changeSelectedRoute(routeKey);
+      }
     });
     _showSnackBar("✅ Profile saved successfully");
   }
@@ -472,57 +1118,42 @@ class _MainShellState extends State<MainShell> {
   }
 
   Widget _buildFirebaseStatusStrip() {
-    Color bgColor;
-    Color textColor;
-    String statusText;
-
-    if (_busIsOnline) {
-      bgColor = const Color(0xFFF0FDF4);
-      textColor = const Color(0xFF15803D);
-      statusText = "Firebase connected — live GPS data";
-    } else if (_busStatus == "offline") {
-      bgColor = const Color(0xFFFEF2F2);
-      textColor = const Color(0xFFDC2626);
-      statusText = "Bus $_busFirebaseId GPS offline — driver not tracking";
-    } else {
-      bgColor = const Color(0xFFFEFCE8);
-      textColor = const Color(0xFF92400E);
-      statusText = "Connecting to Firebase…";
-    }
+    // Only show when bus GPS is actively connected — hide completely otherwise
+    if (!_busIsOnline) return const SizedBox.shrink();
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
-      decoration: BoxDecoration(
-        color: bgColor,
-        border: const Border(bottom: BorderSide(color: Color(0xFFE8EDF8))),
+      decoration: const BoxDecoration(
+        color: Color(0xFFF0FDF4),
+        border: Border(bottom: BorderSide(color: Color(0xFFE8EDF8))),
       ),
       child: Row(
         children: [
           Container(
             width: 8,
             height: 8,
-            decoration: BoxDecoration(
-              color: textColor,
+            decoration: const BoxDecoration(
+              color: Color(0xFF15803D),
               shape: BoxShape.circle,
             ),
           ),
           const SizedBox(width: 8),
-          Expanded(
+          const Expanded(
             child: Text(
-              statusText,
+              "Firebase connected — live GPS data",
               style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.bold,
-                color: textColor,
+                color: Color(0xFF15803D),
               ),
             ),
           ),
           Text(
             _busUpdatedAt,
-            style: TextStyle(
+            style: const TextStyle(
               fontSize: 10,
               fontWeight: FontWeight.w500,
-              color: textColor.withValues(alpha: 0.7),
+              color: Color(0xFF15803D),
             ),
           ),
         ],
@@ -764,6 +1395,49 @@ class _MainShellState extends State<MainShell> {
           ],
         ),
         actions: [
+          // ── Notification bell with red unread badge ──────────────────────
+          SizedBox(
+            width: 48,
+            height: 48,
+            child: Stack(
+              clipBehavior: Clip.none,
+              alignment: Alignment.center,
+              children: [
+                IconButton(
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(
+                    Icons.notifications_rounded,
+                    color: Color(0xFF2563EB),
+                    size: 26,
+                  ),
+                  onPressed: _showNotificationsPanel,
+                ),
+                if (_unreadNotifCount > 0)
+                  Positioned(
+                    right: 4,
+                    top: 4,
+                    child: Container(
+                      width: 17,
+                      height: 17,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFDC2626),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Center(
+                        child: Text(
+                          _unreadNotifCount > 9 ? '9+' : '$_unreadNotifCount',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 8,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.refresh, color: Color(0xFF64748B)),
             onPressed: () {
@@ -771,14 +1445,13 @@ class _MainShellState extends State<MainShell> {
               _listenForArrivalLogs();
               _showSnackBar("Refreshed transit details");
             },
-          )
+          ),
         ],
       ),
       body: Stack(
         children: [
           Column(
             children: [
-              _buildFirebaseStatusStrip(),
               if (_savedStop.isNotEmpty) _buildGlobalMyStopBanner(),
               Expanded(child: pages[_currentIndex]),
             ],
@@ -1044,67 +1717,7 @@ class _MainShellState extends State<MainShell> {
                     ),
                   ),
                 ] else ...[
-                  GestureDetector(
-                    onTap: () => setState(() => _currentIndex = 1),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.03),
-                            blurRadius: 10,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 44,
-                            height: 44,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFEFF6FF),
-                              borderRadius: BorderRadius.circular(13),
-                            ),
-                            child: const Icon(
-                              Icons.location_on_outlined,
-                              color: Color(0xFF2563EB),
-                              size: 20,
-                            ),
-                          ),
-                          const SizedBox(width: 14),
-                          const Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  "Set your boarding stop",
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w800,
-                                    color: Color(0xFF1E293B),
-                                  ),
-                                ),
-                                SizedBox(height: 2),
-                                Text(
-                                  "Get ETA alerts when bus is near",
-                                  style: TextStyle(fontSize: 11, color: Color(0xFF94A3B8), fontWeight: FontWeight.bold),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const Icon(
-                            Icons.arrow_forward_ios_rounded,
-                            size: 13,
-                            color: Color(0xFF94A3B8),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+                  // Boarding stop set via Profile tab — nothing to show here
                 ],
                 const SizedBox(height: 20),
 
@@ -1388,6 +2001,7 @@ class _MainShellState extends State<MainShell> {
         borderRadius: BorderRadius.circular(22),
         child: Stack(
           children: [
+            // Background bus image
             Positioned.fill(
               child: Image.asset(
                 'assets/images/panimalar_bus2.jpeg',
@@ -1395,6 +2009,7 @@ class _MainShellState extends State<MainShell> {
                 alignment: Alignment.center,
               ),
             ),
+            // Blue gradient overlay
             Positioned.fill(
               child: Container(
                 decoration: BoxDecoration(
@@ -1410,11 +2025,98 @@ class _MainShellState extends State<MainShell> {
                 ),
               ),
             ),
+            // ── LIVE badge — top-right, visible only when driver is tracking
+            if (_busIsOnline)
+              Positioned(
+                top: 12,
+                right: 12,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFDC2626),
+                    borderRadius: BorderRadius.circular(6),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFFDC2626).withValues(alpha: 0.5),
+                        blurRadius: 8,
+                        spreadRadius: 1,
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 6,
+                        height: 6,
+                        decoration: const BoxDecoration(
+                          color: Colors.white,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      const Text(
+                        'LIVE',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 1.2,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            // Text content overlay
             Padding(
               padding: const EdgeInsets.all(20),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // Firebase connected chip — shown when GPS is active
+                  if (_busIsOnline)
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF16A34A).withValues(alpha: 0.85),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 6,
+                            height: 6,
+                            decoration: const BoxDecoration(
+                              color: Colors.white,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                          const Text(
+                            "Firebase connected — live GPS data",
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white,
+                              letterSpacing: 0.3,
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            _busUpdatedAt,
+                            style: const TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w500,
+                              color: Colors.white70,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  // BUS number chip
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
@@ -1750,23 +2452,32 @@ class _MainShellState extends State<MainShell> {
       selectedPoint = _campusPointsList.firstWhere((p) => p.name == _selectedNavPointName);
     } catch (_) {}
 
+    // Campus location markers
     for (var cp in _campusPointsList) {
       final isSelected = cp.name == _selectedNavPointName;
       markers.add(
         Marker(
           point: cp.coords,
-          width: 60,
-          height: 60,
+          width: 64,
+          height: 64,
           child: GestureDetector(
             onTap: () {
+              _clearRouteCache(); // destination changed — force fresh fetch
               setState(() {
                 _selectedNavPointName = cp.name;
-                if (_busLat != null && _busLng != null) {
-                  _campusRoute = Polyline(
-                    points: [LatLng(_busLat!, _busLng!), cp.coords],
-                    color: const Color(0xFFD97706),
-                    strokeWidth: 3.5,
-                  );
+                _searchCtrl.clear();
+                _searchFilter = "";
+                _routeDistanceM = 0;
+                _routeWalkMinutes = 0;
+                _routeRemainingM = 0;
+                _routeError = '';
+              });
+              _updateCampusRoute().then((_) {
+                if (mounted) {
+                  try {
+                    final dest = _campusPointsList.firstWhere((p) => p.name == cp.name);
+                    _fitMapToRoute(dest);
+                  } catch (_) {}
                 }
               });
             },
@@ -1775,20 +2486,37 @@ class _MainShellState extends State<MainShell> {
               children: [
                 AnimatedContainer(
                   duration: const Duration(milliseconds: 250),
-                  padding: const EdgeInsets.all(5),
+                  padding: const EdgeInsets.all(6),
                   decoration: BoxDecoration(
                     color: isSelected ? const Color(0xFF2563EB) : Colors.white,
                     shape: BoxShape.circle,
-                    boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)],
-                    border: Border.all(color: isSelected ? Colors.white : const Color(0xFF2563EB), width: 1.5),
+                    boxShadow: [
+                      BoxShadow(
+                        color: isSelected ? const Color(0xFF2563EB).withOpacity(0.4) : Colors.black26,
+                        blurRadius: isSelected ? 8 : 4,
+                      )
+                    ],
+                    border: Border.all(color: isSelected ? Colors.white : const Color(0xFF2563EB), width: 2),
                   ),
                   child: Text(cp.icon, style: const TextStyle(fontSize: 16)),
                 ),
                 const SizedBox(height: 2),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                  decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.grey.shade300, width: 0.5)),
-                  child: Text(cp.name, style: TextStyle(fontSize: 6, fontWeight: FontWeight.bold, color: isSelected ? const Color(0xFF2563EB) : const Color(0xFF0F172A)), maxLines: 1),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: Colors.grey.shade300, width: 0.5),
+                  ),
+                  child: Text(
+                    cp.name,
+                    style: TextStyle(
+                      fontSize: 6,
+                      fontWeight: FontWeight.bold,
+                      color: isSelected ? const Color(0xFF2563EB) : const Color(0xFF0F172A),
+                    ),
+                    maxLines: 1,
+                  ),
                 )
               ],
             ),
@@ -1797,11 +2525,60 @@ class _MainShellState extends State<MainShell> {
       );
     }
 
-    final filteredPoints = _campusPointsList.where((p) => p.name.toLowerCase().contains(_searchFilter.toLowerCase())).toList();
+    // Student location marker — blue pulsing dot
+    if (_studentLat != null && _studentLng != null) {
+      markers.add(
+        Marker(
+          point: LatLng(_studentLat!, _studentLng!),
+          width: 56,
+          height: 56,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              // Outer pulse ring
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2563EB).withOpacity(0.15),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xFF2563EB).withOpacity(0.3), width: 1.5),
+                ),
+              ),
+              // Inner solid dot
+              Container(
+                width: 18,
+                height: 18,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2563EB),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 2.5),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF2563EB).withOpacity(0.5),
+                      blurRadius: 6,
+                    )
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final filteredPoints = _campusPointsList
+        .where((p) => p.name.toLowerCase().contains(_searchFilter.toLowerCase()))
+        .toList();
+
+    // Use OSRM-computed distance/time if available, else straight-line estimate
+    final distanceM = _routeDistanceM > 0 ? _routeDistanceM : (selectedPoint != null ? _distanceTo(selectedPoint) : 0.0);
+    final walkMinutes = _routeWalkMinutes > 0 ? _routeWalkMinutes : max(1, (distanceM / 83).ceil());
 
     return Stack(
       children: [
         FlutterMap(
+          mapController: _mapController,
           options: const MapOptions(
             initialCenter: LatLng(13.049, 80.075),
             initialZoom: 16.5,
@@ -1841,8 +2618,15 @@ class _MainShellState extends State<MainShell> {
                         icon: const Icon(Icons.close, size: 16),
                         onPressed: () {
                           _searchCtrl.clear();
+                          _clearRouteCache();
                           setState(() {
                             _searchFilter = "";
+                            _selectedNavPointName = "";
+                            _campusRoute = null;
+                            _routeDistanceM = 0;
+                            _routeWalkMinutes = 0;
+                            _routeRemainingM = 0;
+                            _routeError = '';
                           });
                         },
                       )
@@ -1852,15 +2636,127 @@ class _MainShellState extends State<MainShell> {
               ),
               style: const TextStyle(fontSize: 12),
               onChanged: (val) {
+                final matches = _campusPointsList
+                    .where((p) => p.name.toLowerCase().contains(val.toLowerCase()))
+                    .toList();
+                final newDest = matches.length == 1 ? matches.first.name : '';
+                final destChanged = newDest != _selectedNavPointName && newDest.isNotEmpty;
+                if (destChanged) _clearRouteCache();
                 setState(() {
                   _searchFilter = val;
+                  if (newDest.isNotEmpty) {
+                    _selectedNavPointName = newDest;
+                    _routeDistanceM = 0;
+                    _routeWalkMinutes = 0;
+                    _routeRemainingM = 0;
+                    _routeError = '';
+                  }
                 });
+                if (_selectedNavPointName.isNotEmpty && destChanged) {
+                  _updateCampusRoute().then((_) {
+                    if (mounted) {
+                      try {
+                        final dest = _campusPointsList
+                            .firstWhere((p) => p.name == _selectedNavPointName);
+                        _fitMapToRoute(dest);
+                      } catch (_) {}
+                    }
+                  });
+                }
               },
             ),
           ),
         ),
 
-        // Bottom Detail Card
+        // No-location warning chip
+        if (_studentLocationDenied || _routeError.isNotEmpty)
+          Positioned(
+            top: 68,
+            left: 12,
+            right: 12,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFEF3C7),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFF59E0B), width: 1),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded, size: 14, color: Color(0xFFB45309)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      _routeError.isNotEmpty
+                          ? _routeError
+                          : 'Location permission denied — enable in Settings',
+                      style: const TextStyle(
+                          fontSize: 10, color: Color(0xFF92400E), fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+        // ── Navigation info card — shown when a route is active ─────────────
+        if (selectedPoint != null && _campusRoute != null && !_routeLoading)
+          Positioned(
+            top: _studentLocationDenied || _routeError.isNotEmpty ? 116 : 68,
+            left: 12,
+            right: 12,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 8, offset: Offset(0, 2))],
+              ),
+              child: Row(
+                children: [
+                  // Total distance
+                  _navInfoCell(
+                    Icons.straighten,
+                    'Total',
+                    distanceM < 1000
+                        ? '${distanceM.round()} m'
+                        : '${(distanceM / 1000).toStringAsFixed(1)} km',
+                    const Color(0xFF2563EB),
+                  ),
+                  _navDivider(),
+                  // Remaining distance
+                  _navInfoCell(
+                    Icons.near_me,
+                    'Remaining',
+                    _routeRemainingM < 1000
+                        ? '${_routeRemainingM.round()} m'
+                        : '${(_routeRemainingM / 1000).toStringAsFixed(1)} km',
+                    const Color(0xFF16A34A),
+                  ),
+                  _navDivider(),
+                  // Walk time
+                  _navInfoCell(
+                    Icons.directions_walk,
+                    'ETA',
+                    '$walkMinutes min',
+                    const Color(0xFFF59E0B),
+                  ),
+                  // Steps count (future voice nav indicator)
+                  if (_navSteps.isNotEmpty) ...[
+                    _navDivider(),
+                    _navInfoCell(
+                      Icons.turn_right,
+                      'Turns',
+                      '${_navSteps.length}',
+                      const Color(0xFF7C3AED),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+
+        // Bottom Detail Card — when a destination is selected
         if (selectedPoint != null)
           Positioned(
             left: 12,
@@ -1869,32 +2765,60 @@ class _MainShellState extends State<MainShell> {
             child: Card(
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
               color: Colors.white,
-              elevation: 8,
+              elevation: 10,
               child: Padding(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.fromLTRB(16, 14, 8, 14),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Row(
                       children: [
-                        Text(selectedPoint.icon, style: const TextStyle(fontSize: 32)),
+                        Container(
+                          width: 46,
+                          height: 46,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEFF6FF),
+                            shape: BoxShape.circle,
+                            border: Border.all(color: const Color(0xFF2563EB).withOpacity(0.3), width: 1.5),
+                          ),
+                          child: Center(
+                            child: Text(selectedPoint.icon, style: const TextStyle(fontSize: 24)),
+                          ),
+                        ),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(selectedPoint.name, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 14, color: Color(0xFF1E3A8A))),
-                              const Text("Panimalar Engineering College Campus", style: TextStyle(fontSize: 10, color: Colors.grey)),
+                              Text(
+                                selectedPoint.name,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 14,
+                                  color: Color(0xFF1E3A8A),
+                                ),
+                              ),
+                              const Text(
+                                "Panimalar Engineering College Campus",
+                                style: TextStyle(fontSize: 10, color: Colors.grey),
+                              ),
                             ],
                           ),
                         ),
                         IconButton(
                           icon: const Icon(Icons.close, size: 18),
                           onPressed: () {
+                            _clearRouteCache();
                             setState(() {
                               _selectedNavPointName = "";
                               _campusRoute = null;
+                              _routeDistanceM = 0;
+                              _routeWalkMinutes = 0;
+                              _routeRemainingM = 0;
+                              _routeError = '';
+                              _searchCtrl.clear();
+                              _searchFilter = "";
                             });
                           },
                         )
@@ -1903,19 +2827,102 @@ class _MainShellState extends State<MainShell> {
                     const SizedBox(height: 10),
                     Row(
                       children: [
-                        const Icon(Icons.my_location, size: 14, color: Colors.blue),
+                        const Icon(Icons.my_location, size: 14, color: Color(0xFF2563EB)),
                         const SizedBox(width: 6),
-                        Text(
-                          "Coords: ${selectedPoint.coords.latitude.toStringAsFixed(6)}, ${selectedPoint.coords.longitude.toStringAsFixed(6)}",
-                          style: const TextStyle(fontSize: 10, color: Color(0xFF475569), fontWeight: FontWeight.bold),
+                        Expanded(
+                          child: Text(
+                            "Coords: ${selectedPoint.coords.latitude.toStringAsFixed(6)}, ${selectedPoint.coords.longitude.toStringAsFixed(6)}",
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: Color(0xFF475569),
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                         ),
                       ],
                     ),
+                    if (_studentLat != null) ...[
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          // Walk time badge — shows OSRM data or loading
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFEFF6FF),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(color: const Color(0xFF2563EB).withOpacity(0.3)),
+                            ),
+                            child: _routeLoading
+                                ? const SizedBox(
+                                    width: 60,
+                                    height: 14,
+                                    child: LinearProgressIndicator(
+                                      backgroundColor: Color(0xFFBFDBFE),
+                                      color: Color(0xFF2563EB),
+                                    ),
+                                  )
+                                : Text(
+                                    "$walkMinutes min · ${distanceM < 1000 ? '${distanceM.round()} m' : '${(distanceM / 1000).toStringAsFixed(1)} km'}",
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      color: Color(0xFF1E3A8A),
+                                    ),
+                                  ),
+                          ),
+                          const Spacer(),
+                          // Navigate button — fully in-app via OSRM
+                          TextButton.icon(
+                            onPressed: _routeLoading
+                                ? null
+                                : () => _handleNavigationTap(selectedPoint!),
+                            style: TextButton.styleFrom(
+                              backgroundColor: _routeLoading
+                                  ? Colors.grey.shade300
+                                  : const Color(0xFF2563EB),
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                            ),
+                            icon: _routeLoading
+                                ? const SizedBox(
+                                    width: 12,
+                                    height: 12,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white,
+                                    ),
+                                  )
+                                : const Icon(Icons.directions_walk, size: 14),
+                            label: Text(
+                              _routeLoading ? "Routing…" : "Navigate →",
+                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+                            ),
+                          ),
+                        ],
+                      ),
+                     ] else ...[
+                       const SizedBox(height: 10),
+                       const Row(
+                         children: [
+                           Icon(Icons.info_outline, size: 12, color: Colors.grey),
+                           SizedBox(width: 4),
+                           Text(
+                             "Enable location to see distance & walking time",
+                             style: TextStyle(fontSize: 10, color: Colors.grey),
+                           ),
+                         ],
+                       ),
+                     ],
                   ],
                 ),
               ),
             ),
           )
+        // Search results list — shown when searching but no point selected yet
         else if (filteredPoints.isNotEmpty && _searchFilter.isNotEmpty)
           Positioned(
             left: 12,
@@ -1936,8 +2943,18 @@ class _MainShellState extends State<MainShell> {
                   final cp = filteredPoints[idx];
                   return GestureDetector(
                     onTap: () {
+                      _clearRouteCache();
                       setState(() {
                         _selectedNavPointName = cp.name;
+                        _searchCtrl.clear();
+                        _searchFilter = "";
+                        _routeDistanceM = 0;
+                        _routeWalkMinutes = 0;
+                        _routeRemainingM = 0;
+                        _routeError = '';
+                      });
+                      _updateCampusRoute().then((_) {
+                        if (mounted) _fitMapToRoute(cp);
                       });
                     },
                     child: Container(
@@ -1954,7 +2971,16 @@ class _MainShellState extends State<MainShell> {
                         children: [
                           Text(cp.icon, style: const TextStyle(fontSize: 22)),
                           const SizedBox(height: 4),
-                          Text(cp.name, style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)), maxLines: 1, overflow: TextOverflow.ellipsis),
+                          Text(
+                            cp.name,
+                            style: const TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF0F172A),
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ],
                       ),
                     ),
@@ -1967,16 +2993,102 @@ class _MainShellState extends State<MainShell> {
     );
   }
 
+  /// Small info cell used in the navigation info card.
+  Widget _navInfoCell(IconData icon, String label, String value, Color color) {
+    return Expanded(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(height: 2),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              color: color,
+            ),
+          ),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 8, color: Color(0xFF94A3B8)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Thin vertical divider for the nav info card.
+  Widget _navDivider() => Container(
+        width: 1,
+        height: 32,
+        color: const Color(0xFFE2E8F0),
+      );
+
+  /// Fits the map camera to show both the student's position and the destination.
+  void _fitMapToRoute(CampusPoint dest) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_studentLat != null && _studentLng != null) {
+        final minLat = min(_studentLat!, dest.coords.latitude);
+        final maxLat = max(_studentLat!, dest.coords.latitude);
+        final minLng = min(_studentLng!, dest.coords.longitude);
+        final maxLng = max(_studentLng!, dest.coords.longitude);
+        // Fit with padding
+        _mapController.fitCamera(
+          CameraFit.bounds(
+            bounds: LatLngBounds(
+              LatLng(minLat - 0.0004, minLng - 0.0004),
+              LatLng(maxLat + 0.0004, maxLng + 0.0004),
+            ),
+            padding: const EdgeInsets.fromLTRB(40, 80, 40, 200),
+          ),
+        );
+      } else {
+        _mapController.move(dest.coords, 17.5);
+      }
+    });
+  }
+
+  // Campus centre coordinate — used to decide if student is inside campus.
+  static const LatLng _campusCentre = LatLng(13.0508, 80.0754);
+  static const double _campusRadiusMetres = 600.0; // ~600 m covers the whole campus
+
+  /// Returns true if the student's current GPS fix is inside the campus boundary.
+  bool get _isInsideCampus {
+    if (_studentLat == null || _studentLng == null) return false;
+    final lat1 = _studentLat! * (pi / 180);
+    final lng1 = _studentLng! * (pi / 180);
+    final lat2 = _campusCentre.latitude * (pi / 180);
+    final lng2 = _campusCentre.longitude * (pi / 180);
+    const r = 6371000.0;
+    final dLat = lat2 - lat1;
+    final dLng = lng2 - lng1;
+    final a = sin(dLat / 2) * sin(dLat / 2) +
+        cos(lat1) * cos(lat2) * sin(dLng / 2) * sin(dLng / 2);
+    final dist = r * 2 * atan2(sqrt(a), sqrt(1 - a));
+    return dist <= _campusRadiusMetres;
+  }
+
+  /// Handles tapping the "Navigate" button — stays fully in-app.
+  /// Fetches the OSRM route and fits the map camera to show the full path.
+  void _handleNavigationTap(CampusPoint dest) {
+    _updateCampusRoute().then((_) {
+      if (mounted) _fitMapToRoute(dest);
+    });
+  }
+
+
   Widget _buildProfileTab() {
-    final TextEditingController nameCtrl = TextEditingController(text: _studentName);
-    final TextEditingController deptCtrl = TextEditingController(text: _studentDept);
-    String tempYear = _studentYear;
+    // Controllers are state-level (_profileNameCtrl, _profileTempYear)
+    // so they survive rebuilds and the user's typed text is preserved.
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // ── Avatar + display name ────────────────────────────────────────
           Center(
             child: Column(
               children: [
@@ -1988,22 +3100,35 @@ class _MainShellState extends State<MainShell> {
                     shape: BoxShape.circle,
                     border: Border.all(color: const Color(0xFF2563EB), width: 3),
                   ),
-                  child: const Center(child: Text("🎓", style: TextStyle(fontSize: 54))),
+                  child: const Center(
+                    child: Text("🎓", style: TextStyle(fontSize: 54)),
+                  ),
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  _studentName,
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                  _studentName == "Student Name" ? "Your Name" : _studentName,
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: _studentName == "Student Name"
+                        ? const Color(0xFFCBD5E1) // light grey when default
+                        : const Color(0xFF0F172A),
+                  ),
                 ),
                 const Text(
                   "Panimalar Smart Transit Account",
-                  style: TextStyle(color: Color(0xFF64748B), fontSize: 12, fontWeight: FontWeight.bold),
-                )
+                  style: TextStyle(
+                    color: Color(0xFF64748B),
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ],
             ),
           ),
           const SizedBox(height: 24),
 
+          // ── Student Details card ─────────────────────────────────────────
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
@@ -2014,30 +3139,95 @@ class _MainShellState extends State<MainShell> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text("STUDENT DETAILS", style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Color(0xFF64748B), letterSpacing: 0.5)),
-                const SizedBox(height: 16),
-
-                const Text("FULL NAME", style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Color(0xFF64748B))),
-                const SizedBox(height: 6),
-                TextField(
-                  controller: nameCtrl,
-                  decoration: InputDecoration(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(30)),
+                const Text(
+                  "STUDENT DETAILS",
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF64748B),
+                    letterSpacing: 0.5,
                   ),
-                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 16),
 
-                const Text("YEAR OF STUDY", style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Color(0xFF64748B))),
+                // ── Full Name ──────────────────────────────────────────────
+                const Text(
+                  "FULL NAME",
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _profileNameCtrl,
+                  textCapitalization: TextCapitalization.words,
+                  decoration: InputDecoration(
+                    hintText: "Enter your full name",          // placeholder
+                    hintStyle: const TextStyle(
+                      color: Color(0xFFCBD5E1),               // light colour
+                      fontSize: 13,
+                      fontWeight: FontWeight.normal,
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(30)),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(30),
+                      borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(30),
+                      borderSide: const BorderSide(
+                          color: Color(0xFF2563EB), width: 2),
+                    ),
+                  ),
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 16),
+
+                // ── Year of Study ──────────────────────────────────────────
+                const Text(
+                  "YEAR OF STUDY",
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
                 const SizedBox(height: 6),
                 DropdownButtonFormField<String>(
-                  initialValue: tempYear,
-                  decoration: InputDecoration(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(30)),
+                  value: _profileTempYear.isNotEmpty ? _profileTempYear : null,
+                  hint: const Text(
+                    "Select year of study",
+                    style: TextStyle(
+                      color: Color(0xFFCBD5E1),
+                      fontSize: 13,
+                    ),
                   ),
-                  style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF0F172A), fontSize: 13),
+                  decoration: InputDecoration(
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(30)),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(30),
+                      borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(30),
+                      borderSide: const BorderSide(
+                          color: Color(0xFF2563EB), width: 2),
+                    ),
+                  ),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF0F172A),
+                    fontSize: 13,
+                  ),
                   items: const [
                     DropdownMenuItem(value: "1st Year", child: Text("1st Year")),
                     DropdownMenuItem(value: "2nd Year", child: Text("2nd Year")),
@@ -2045,41 +3235,231 @@ class _MainShellState extends State<MainShell> {
                     DropdownMenuItem(value: "4th Year", child: Text("4th Year")),
                   ],
                   onChanged: (val) {
-                    if (val != null) {
-                      tempYear = val;
-                    }
+                    if (val != null) setState(() => _profileTempYear = val);
                   },
                 ),
                 const SizedBox(height: 16),
 
-                const Text("DEPARTMENT", style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Color(0xFF64748B))),
+                // ── Department dropdown (not free-text) ────────────────────
+                const Text(
+                  "DEPARTMENT",
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                DropdownButtonFormField<String>(
+                  value: _deptDropdownValue(),
+                  hint: const Text(
+                    "Select your department",
+                    style: TextStyle(
+                      color: Color(0xFFCBD5E1),
+                      fontSize: 13,
+                    ),
+                  ),
+                  decoration: InputDecoration(
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(30)),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(30),
+                      borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(30),
+                      borderSide: const BorderSide(
+                          color: Color(0xFF2563EB), width: 2),
+                    ),
+                  ),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF0F172A),
+                    fontSize: 13,
+                  ),
+                  isExpanded: true,
+                  items: const [
+                    DropdownMenuItem(value: "Computer Science (CSE)",            child: Text("Computer Science (CSE)")),
+                    DropdownMenuItem(value: "Artificial Intelligence & DS (AIDS)", child: Text("AI & Data Science (AIDS)")),
+                    DropdownMenuItem(value: "Computer Science & BS (CSBS)",      child: Text("CS & Business Systems (CSBS)")),
+                    DropdownMenuItem(value: "Electronics & Communication (ECE)", child: Text("Electronics & Communication (ECE)")),
+                    DropdownMenuItem(value: "Electrical & Electronics (EEE)",    child: Text("Electrical & Electronics (EEE)")),
+                    DropdownMenuItem(value: "Information Technology (IT)",       child: Text("Information Technology (IT)")),
+                    DropdownMenuItem(value: "Mechanical Engineering (MECH)",     child: Text("Mechanical Engineering (MECH)")),
+                    DropdownMenuItem(value: "Civil Engineering (CIVIL)",         child: Text("Civil Engineering (CIVIL)")),
+                    DropdownMenuItem(value: "MBA",                               child: Text("MBA")),
+                  ],
+                  onChanged: (val) {
+                    if (val != null) setState(() => _studentDept = val);
+                  },
+                ),
+                const SizedBox(height: 16),
+
+                // ── Bus Number ─────────────────────────────────────────────
+                const Text(
+                  "BUS NUMBER",
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
                 const SizedBox(height: 6),
                 TextField(
-                  controller: deptCtrl,
+                  controller: _profileBusCtrl,
+                  textCapitalization: TextCapitalization.characters,
+                  onChanged: (_) => setState(() {}), // rebuild for route dropdown
                   decoration: InputDecoration(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(30)),
+                    hintText: "e.g. B101, B202, B303",
+                    hintStyle: const TextStyle(
+                      color: Color(0xFFCBD5E1),
+                      fontSize: 13,
+                      fontWeight: FontWeight.normal,
+                    ),
+                    prefixIcon: const Icon(Icons.directions_bus_rounded,
+                        color: Color(0xFF2563EB), size: 18),
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(30)),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(30),
+                      borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(30),
+                      borderSide: const BorderSide(
+                          color: Color(0xFF2563EB), width: 2),
+                    ),
+                    // Show route label as helper text when bus is recognised
+                    helperText: () {
+                      final key = _busToRouteKey[
+                          _profileBusCtrl.text.trim().toUpperCase()];
+                      if (key == null) return null;
+                      return '✓  ${routeLabelsConfig[key]}';
+                    }(),
+                    helperStyle: const TextStyle(
+                      color: Color(0xFF16A34A),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    errorText: _profileBusCtrl.text.trim().isNotEmpty &&
+                            _busToRouteKey[_profileBusCtrl.text
+                                    .trim()
+                                    .toUpperCase()] ==
+                                null
+                        ? 'Unknown bus number'
+                        : null,
                   ),
-                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600),
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 16),
 
+                // ── Boarding Stop — shown only when bus number is valid ─────
+                if (_profileBusStops.isNotEmpty) ...[
+                  const Text(
+                    "BOARDING STOP",
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF64748B),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  DropdownButtonFormField<String>(
+                    value: _profileBusStops.contains(_savedStop)
+                        ? _savedStop
+                        : null,
+                    hint: const Text(
+                      "Select your boarding stop",
+                      style: TextStyle(
+                        color: Color(0xFFCBD5E1),
+                        fontSize: 13,
+                      ),
+                    ),
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(Icons.location_on_outlined,
+                          color: Color(0xFF2563EB), size: 18),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 12),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(30)),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(30),
+                        borderSide:
+                            const BorderSide(color: Color(0xFFE2E8F0)),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(30),
+                        borderSide: const BorderSide(
+                            color: Color(0xFF2563EB), width: 2),
+                      ),
+                    ),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF0F172A),
+                      fontSize: 13,
+                    ),
+                    isExpanded: true,
+                    items: _profileBusStops
+                        .map((stop) => DropdownMenuItem(
+                              value: stop,
+                              child: Text(stop),
+                            ))
+                        .toList(),
+                    onChanged: (val) {
+                      if (val != null) setState(() => _savedStop = val);
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                ],
+
+                const SizedBox(height: 8),
+
+                // ── Save button ────────────────────────────────────────────
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF2563EB),
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(30)),
                   ),
                   onPressed: () {
-                    _saveProfile(nameCtrl.text.trim(), tempYear, deptCtrl.text.trim());
+                    final name = _profileNameCtrl.text.trim();
+                    final year = _profileTempYear.isNotEmpty
+                        ? _profileTempYear
+                        : _studentYear;
+                    if (name.isEmpty) {
+                      _showSnackBar("Please enter your full name");
+                      return;
+                    }
+                    _saveProfile(
+                      name, year, _studentDept,
+                      busNo: _profileBusCtrl.text.trim().toUpperCase(),
+                      boardingStop: _savedStop,
+                    );
                   },
-                  child: const Text("💾 Save Profile", style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+                  child: const Text(
+                    "💾  Save Profile",
+                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
+                  ),
                 ),
                 const SizedBox(height: 16),
                 const Divider(),
                 const SizedBox(height: 12),
-                const Text("BUS PICKUP AUTHORIZATION", style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Color(0xFF1E3A8A), letterSpacing: 0.8)),
+                const Text(
+                  "BUS PICKUP AUTHORIZATION",
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF1E3A8A),
+                    letterSpacing: 0.8,
+                  ),
+                ),
                 const SizedBox(height: 10),
                 _buildPickupRequestCard(),
                 const SizedBox(height: 16),
@@ -2089,17 +3469,38 @@ class _MainShellState extends State<MainShell> {
                   style: OutlinedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 16),
                     side: const BorderSide(color: Color(0xFF2563EB)),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(30)),
                   ),
                   onPressed: widget.onSwitchRole,
-                  child: const Text("🔄 Switch to Driver Mode", style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
-                )
+                  child: const Text(
+                    "🔄  Logout",
+                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
+                  ),
+                ),
               ],
             ),
-          )
+          ),
         ],
       ),
     );
+  }
+
+  /// Returns the current department value only if it matches one of the
+  /// dropdown options — otherwise returns null so the hint shows.
+  String? _deptDropdownValue() {
+    const valid = [
+      "Computer Science (CSE)",
+      "Artificial Intelligence & DS (AIDS)",
+      "Computer Science & BS (CSBS)",
+      "Electronics & Communication (ECE)",
+      "Electrical & Electronics (EEE)",
+      "Information Technology (IT)",
+      "Mechanical Engineering (MECH)",
+      "Civil Engineering (CIVIL)",
+      "MBA",
+    ];
+    return valid.contains(_studentDept) ? _studentDept : null;
   }
 
   Widget _buildPickupRequestCard() {

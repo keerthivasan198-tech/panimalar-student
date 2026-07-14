@@ -2593,7 +2593,7 @@ class _MainShellState extends State<MainShell> {
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
                   ),
                   onPressed: widget.onSwitchRole,
-                  child: const Text("ðŸ”„ Switch to Driver Mode", style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+                  child: const Text("ðŸ”„ Logout", style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
                 )
               ],
             ),

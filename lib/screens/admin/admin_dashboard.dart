@@ -770,78 +770,215 @@ class _AdminDashboardState extends State<AdminDashboard> {
   }
 
   void _openAlertAddBottomSheet() {
-    final typeCtrl = TextEditingController(text: "delay");
+    String selectedType = "delay";
     final busCtrl = TextEditingController(text: "B101");
     final msgCtrl = TextEditingController();
+    final titleCtrl = TextEditingController();
+
+    // Notification type config
+    final types = [
+      {'value': 'delay',        'label': '🚌  Delay Alert',       'hint': 'e.g. Bus B101 delayed 20 min due to traffic'},
+      {'value': 'route_change', 'label': '🔀  Route Change',      'hint': 'e.g. Route 15 diverted via Ambattur today'},
+      {'value': 'emergency',    'label': '🚨  Emergency Alert',   'hint': 'e.g. Bus breakdown, alternate arranged'},
+      {'value': 'arrival',      'label': '🛎️  Arrival Notice',    'hint': 'e.g. Bus B202 arriving in 5 minutes'},
+      {'value': 'breakdown',    'label': '🔧  Breakdown Notice',  'hint': 'e.g. Bus B303 broke down near Koyambedu'},
+    ];
 
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
       builder: (ctx) => StatefulBuilder(
-        builder: (c, setSheetState) => Padding(
-          padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, top: 20, left: 20, right: 20),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Text("Broadcast Alert Notice", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A))),
-                const SizedBox(height: 16),
-                DropdownButtonFormField<String>(
-                  value: typeCtrl.text,
-                  decoration: const InputDecoration(labelText: "Alert Category"),
-                  items: const [
-                    DropdownMenuItem(value: "delay", child: Text("Traffic Delay")),
-                    DropdownMenuItem(value: "breakdown", child: Text("Mechanical Breakdown")),
-                    DropdownMenuItem(value: "route", child: Text("Route Change")),
-                  ],
-                  onChanged: (val) => setSheetState(() => typeCtrl.text = val!),
-                ),
-                const SizedBox(height: 8),
-                TextField(controller: busCtrl, decoration: const InputDecoration(labelText: "Affected Bus (or 'all')")),
-                const SizedBox(height: 8),
-                TextField(controller: msgCtrl, decoration: const InputDecoration(labelText: "Notice Message description")),
-                const SizedBox(height: 20),
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2563EB), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30))),
-                  onPressed: () {
-                    final t = typeCtrl.text;
-                    final b = busCtrl.text.trim().toUpperCase();
-                    final m = msgCtrl.text.trim();
-                    if (m.isEmpty) {
-                      _showAppSnackBar("Please enter alert message.");
-                      return;
-                    }
-                    setState(() {
-                      final timeNow = "${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}";
-                      final newAlert = AlertEntry(
-                        id: DateTime.now().millisecondsSinceEpoch.toDouble(),
-                        type: t,
-                        bus: b.isNotEmpty ? b : "all",
-                        msg: m,
-                        time: timeNow,
-                      );
-                      _alerts.add(newAlert);
-                      _saveAlerts();
+        builder: (c, setSheetState) {
+          final currentType = types.firstWhere((t) => t['value'] == selectedType);
+          return Padding(
+            padding: EdgeInsets.only(
+                bottom: MediaQuery.of(ctx).viewInsets.bottom,
+                top: 20, left: 20, right: 20),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Drag handle
+                  Center(
+                    child: Container(
+                      width: 40, height: 4,
+                      decoration: BoxDecoration(
+                          color: Colors.grey.shade300,
+                          borderRadius: BorderRadius.circular(2)),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text("Send Notification to Students",
+                      style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A))),
+                  const Text("Broadcast instant alerts to all student portals via Firebase",
+                      style: TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                  const SizedBox(height: 20),
 
-                      // Also publish alert to Firebase RTDB for real-time notifications
-                      if (Firebase.apps.isNotEmpty) {
-                        FirebaseDatabase.instance.ref('routeAlerts/${newAlert.id.round()}').set(newAlert.toJson());
+                  // Type selector grid
+                  const Text("NOTIFICATION TYPE",
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800,
+                          color: Color(0xFF64748B), letterSpacing: 0.5)),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: types.map((t) {
+                      final isSelected = selectedType == t['value'];
+                      return GestureDetector(
+                        onTap: () => setSheetState(() {
+                          selectedType = t['value']!;
+                          titleCtrl.text = _defaultNotifTitle(t['value']!);
+                        }),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: isSelected ? const Color(0xFF2563EB) : const Color(0xFFF8FAFC),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: isSelected ? const Color(0xFF2563EB) : const Color(0xFFE2E8F0),
+                            ),
+                          ),
+                          child: Text(
+                            t['label']!,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: isSelected ? Colors.white : const Color(0xFF0F172A),
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Title field
+                  const Text("TITLE",
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800,
+                          color: Color(0xFF64748B), letterSpacing: 0.5)),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: titleCtrl,
+                    decoration: InputDecoration(
+                      hintText: _defaultNotifTitle(selectedType),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    ),
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Message field
+                  const Text("MESSAGE",
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800,
+                          color: Color(0xFF64748B), letterSpacing: 0.5)),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: msgCtrl,
+                    maxLines: 3,
+                    decoration: InputDecoration(
+                      hintText: currentType['hint'],
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    ),
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Bus field
+                  TextField(
+                    controller: busCtrl,
+                    decoration: InputDecoration(
+                      labelText: "Affected Bus (or 'all')",
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    ),
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                  const SizedBox(height: 20),
+
+                  ElevatedButton.icon(
+                    icon: const Icon(Icons.send_rounded, size: 16),
+                    label: const Text("Send to All Students",
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF2563EB),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    onPressed: () {
+                      final t = selectedType;
+                      final b = busCtrl.text.trim().toUpperCase();
+                      final m = msgCtrl.text.trim();
+                      final title = titleCtrl.text.trim().isNotEmpty
+                          ? titleCtrl.text.trim()
+                          : _defaultNotifTitle(t);
+                      if (m.isEmpty) {
+                        _showAppSnackBar("Please enter notification message.");
+                        return;
                       }
-                    });
-                    Navigator.pop(context);
-                    _showAppSnackBar("Notice broadcasted to all channels.");
-                  },
-                  child: const Text("Broadcast Alert Notice", style: TextStyle(fontWeight: FontWeight.bold)),
-                ),
-                const SizedBox(height: 20),
-              ],
+
+                      final timeNow =
+                          "${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}";
+                      final id = DateTime.now().millisecondsSinceEpoch;
+
+                      setState(() {
+                        final newAlert = AlertEntry(
+                          id: id.toDouble(),
+                          type: t,
+                          bus: b.isNotEmpty ? b : "all",
+                          msg: m,
+                          time: timeNow,
+                        );
+                        _alerts.add(newAlert);
+                        _saveAlerts();
+                      });
+
+                      // Push to Firebase — student portals listen to student_notifications
+                      if (Firebase.apps.isNotEmpty) {
+                        FirebaseDatabase.instance
+                            .ref('student_notifications/$id')
+                            .set({
+                          'type': t,
+                          'title': title,
+                          'msg': m,
+                          'bus': b.isNotEmpty ? b : "all",
+                          'time': timeNow,
+                          'read': false,
+                          'sentAt': DateTime.now().toIso8601String(),
+                        });
+                        // Also write to legacy routeAlerts path
+                        FirebaseDatabase.instance
+                            .ref('routeAlerts/$id')
+                            .set({'type': t, 'bus': b, 'msg': m, 'time': timeNow});
+                      }
+
+                      Navigator.pop(context);
+                      _showAppSnackBar("✅ Notification sent to all students!");
+                    },
+                  ),
+                  const SizedBox(height: 20),
+                ],
+              ),
             ),
-          ),
-        ),
+          );
+        },
       ),
     );
+  }
+
+  String _defaultNotifTitle(String type) {
+    switch (type) {
+      case 'delay':        return 'Bus Delay Alert';
+      case 'route_change': return 'Route Change Notice';
+      case 'emergency':    return 'Emergency Alert';
+      case 'arrival':      return 'Bus Arrival Notice';
+      case 'breakdown':    return 'Bus Breakdown Alert';
+      default:             return 'Transit Notice';
+    }
   }
 
   // Upgraded document viewing preview dialog
