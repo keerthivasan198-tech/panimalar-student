@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
@@ -112,6 +113,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
   String? _playingMsgId;
   double _playbackProgress = 0.0;
   Timer? _playbackTimer;
+  final FlutterTts _flutterTts = FlutterTts();
 
   final double _warnThresholdPct = 20.0;
 
@@ -423,15 +425,27 @@ class _DriverDashboardState extends State<DriverDashboard> {
     _showSnackBar("Recording cancelled.");
   }
 
-  void _playVoiceMessage(String msgId, int durationSecs) {
+  void _playVoiceMessage(String msgId, String text, int durationSecs) {
     if (_playingMsgId == msgId) {
       _playbackTimer?.cancel();
+      _flutterTts.stop();
       setState(() {
         _playingMsgId = null;
       });
       return;
     }
     _playbackTimer?.cancel();
+    _flutterTts.stop();
+
+    String speakText = text;
+    if (text.startsWith('[Voice Message')) {
+      final index = text.indexOf(']');
+      if (index != -1 && index + 1 < text.length) {
+        speakText = text.substring(index + 1).replaceAll('"', '').trim();
+      }
+    }
+    _flutterTts.speak(speakText);
+
     setState(() {
       _playingMsgId = msgId;
       _playbackProgress = 0.0;
@@ -443,6 +457,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
       currentStep++;
       if (currentStep >= totalSteps) {
         timer.cancel();
+        _flutterTts.stop();
         if (mounted) {
           setState(() {
             _playingMsgId = null;
@@ -1220,7 +1235,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
                       size: 28,
                     ),
                     onPressed: () {
-                      _playVoiceMessage(msg['id'], msg['voiceDuration'] ?? 3);
+                      _playVoiceMessage(msg['id'], msg['msg'] ?? '', msg['voiceDuration'] ?? 3);
                     },
                   ),
                   Expanded(

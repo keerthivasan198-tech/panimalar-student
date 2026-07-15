@@ -15,6 +15,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:http/http.dart' as http;
 import 'dart:io';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 
 import '../../models/campus_point.dart';
 import '../../models/log_entry.dart';
@@ -86,6 +87,7 @@ class _MainShellState extends State<MainShell> {
   String? _playingMsgId;
   double _playbackProgress = 0.0;
   Timer? _playbackTimer;
+  final FlutterTts _flutterTts = FlutterTts();
 
   // Dynamic Route selections
   String _selectedRoute = "route_15"; // default
@@ -1035,15 +1037,27 @@ class _MainShellState extends State<MainShell> {
     _showSnackBar("Recording cancelled.");
   }
 
-  void _playVoiceMessage(String msgId, int durationSecs) {
+  void _playVoiceMessage(String msgId, String text, int durationSecs) {
     if (_playingMsgId == msgId) {
       _playbackTimer?.cancel();
+      _flutterTts.stop();
       setState(() {
         _playingMsgId = null;
       });
       return;
     }
     _playbackTimer?.cancel();
+    _flutterTts.stop();
+
+    String speakText = text;
+    if (text.startsWith('[Voice Message')) {
+      final index = text.indexOf(']');
+      if (index != -1 && index + 1 < text.length) {
+        speakText = text.substring(index + 1).replaceAll('"', '').trim();
+      }
+    }
+    _flutterTts.speak(speakText);
+
     setState(() {
       _playingMsgId = msgId;
       _playbackProgress = 0.0;
@@ -1055,6 +1069,7 @@ class _MainShellState extends State<MainShell> {
       currentStep++;
       if (currentStep >= totalSteps) {
         timer.cancel();
+        _flutterTts.stop();
         if (mounted) {
           setState(() {
             _playingMsgId = null;
@@ -4287,7 +4302,7 @@ class _MainShellState extends State<MainShell> {
                                           size: 28,
                                         ),
                                         onPressed: () {
-                                          _playVoiceMessage(msg['id'], msg['voiceDuration'] ?? 3);
+                                          _playVoiceMessage(msg['id'], msg['msg'] ?? '', msg['voiceDuration'] ?? 3);
                                         },
                                       ),
                                       Expanded(

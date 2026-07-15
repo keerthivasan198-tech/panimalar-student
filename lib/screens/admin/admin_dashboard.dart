@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import 'package:http/http.dart' as http;
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
@@ -62,6 +64,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
   String? _playingMsgId;
   double _playbackProgress = 0.0;
   Timer? _playbackTimer;
+  final FlutterTts _flutterTts = FlutterTts();
 
   // Live Bus Locations
   Map<String, Map<String, dynamic>> _liveBuses = {};
@@ -505,7 +508,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
       "Acknowledged, please report back on arrival.",
       "Understood, notify when passengers are boarded.",
     ];
-    final randomTranscript = transcripts[Random().nextInt(transcripts.length)];
+    final randomTranscript = transcripts.isNotEmpty ? transcripts[Random().nextInt(transcripts.length)] : '';
 
     final msgId = DateTime.now().millisecondsSinceEpoch.toString();
     try {
@@ -532,15 +535,27 @@ class _AdminDashboardState extends State<AdminDashboard> {
     _showAppSnackBar("Recording cancelled.");
   }
 
-  void _playAdminVoiceMessage(String msgId, int durationSecs) {
+  void _playAdminVoiceMessage(String msgId, String text, int durationSecs) {
     if (_playingMsgId == msgId) {
       _playbackTimer?.cancel();
+      _flutterTts.stop();
       setState(() {
         _playingMsgId = null;
       });
       return;
     }
     _playbackTimer?.cancel();
+    _flutterTts.stop();
+
+    String speakText = text;
+    if (text.startsWith('[Voice Message')) {
+      final index = text.indexOf(']');
+      if (index != -1 && index + 1 < text.length) {
+        speakText = text.substring(index + 1).replaceAll('"', '').trim();
+      }
+    }
+    _flutterTts.speak(speakText);
+
     setState(() {
       _playingMsgId = msgId;
       _playbackProgress = 0.0;
@@ -552,6 +567,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
       currentStep++;
       if (currentStep >= totalSteps) {
         timer.cancel();
+        _flutterTts.stop();
         if (mounted) {
           setState(() {
             _playingMsgId = null;
@@ -2208,8 +2224,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
                                                 size: 26,
                                               ),
                                               onPressed: () {
-                                                _playAdminVoiceMessage(m['id'], m['voiceDuration'] ?? 3);
-                                              },
+                                                 _playAdminVoiceMessage(m['id'], m['msg'] ?? '', m['voiceDuration'] ?? 3);
+                                               },
                                             ),
                                             Expanded(
                                               child: Column(
