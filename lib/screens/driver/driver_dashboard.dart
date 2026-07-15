@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
@@ -92,6 +94,28 @@ class _DriverDashboardState extends State<DriverDashboard> {
   List<Map<String, dynamic>> _intercomMessages = [];
   StreamSubscription? _intercomSub;
   final TextEditingController _driverChatInputCtrl = TextEditingController();
+
+  // Route Simulation State
+  bool _simulateRoute = false;
+  List<LatLng> _simulatedPath = [];
+  int _simRouteIndex = 0;
+  Timer? _simTimer;
+
+  // Safety Warnings State
+  bool _onPhoneCall = false;
+  bool _connectedToEarpods = false;
+  Timer? _safetyTimer;
+  int _callSecondsCounter = 0;
+
+  // Intercom Playback & Recording State
+  bool _isRecordingVoice = false;
+  int _recordingDurationSecs = 0;
+  Timer? _recordingTimer;
+  List<double> _recordingWaveforms = [];
+  String? _playingMsgId;
+  double _playbackProgress = 0.0;
+  Timer? _playbackTimer;
+  final FlutterTts _flutterTts = FlutterTts();
 
   final double _warnThresholdPct = 20.0;
 
@@ -293,6 +317,10 @@ class _DriverDashboardState extends State<DriverDashboard> {
     _waveTimer?.cancel();
     _busReadyTimer?.cancel();
     _busReadyCountdownTimer?.cancel();
+    _simTimer?.cancel();
+    _safetyTimer?.cancel();
+    _recordingTimer?.cancel();
+    _playbackTimer?.cancel();
     _replacementController.dispose();
     _intercomSub?.cancel();
     _driverChatInputCtrl.dispose();
@@ -302,7 +330,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
   void _listenForIntercomMessages() {
     if (Firebase.apps.isEmpty) return;
     try {
-      _intercomSub = FirebaseDatabase.instance.ref('voice_messages/${widget.driverBus}').onValue.listen((event) {
+      _intercomSub = FirebaseDatabase.instance.ref('voice_messages/driver_${widget.driverBus}').onValue.listen((event) {
         final data = event.snapshot.value as Map?;
         final List<Map<String, dynamic>> temp = [];
         if (data != null) {
@@ -314,6 +342,9 @@ class _DriverDashboardState extends State<DriverDashboard> {
                 'timestamp': val['timestamp'] ?? 0,
                 'msg': val['msg'] ?? '',
                 'senderName': val['senderName'] ?? '',
+                'isVoice': val['isVoice'] ?? false,
+                'voiceDuration': val['voiceDuration'] ?? 0,
+                'transcript': val['transcript'] ?? '',
               });
             }
           });
@@ -334,7 +365,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
     if (Firebase.apps.isEmpty) return;
     try {
       final msgId = DateTime.now().millisecondsSinceEpoch.toString();
-      await FirebaseDatabase.instance.ref('voice_messages/${widget.driverBus}/$msgId').set({
+      await FirebaseDatabase.instance.ref('voice_messages/driver_${widget.driverBus}/$msgId').set({
         'sender': 'driver',
         'senderName': 'Driver ${widget.driverBus}',
         'timestamp': DateTime.now().millisecondsSinceEpoch,
@@ -343,6 +374,116 @@ class _DriverDashboardState extends State<DriverDashboard> {
     } catch (e) {
       debugPrint("Error sending text message: $e");
     }
+  }
+
+  void _startRecordingVoice() {
+    setState(() {
+      _isRecordingVoice = true;
+      _recordingDurationSecs = 0;
+      _recordingWaveforms = [];
+    });
+    _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (mounted) {
+        setState(() {
+          _recordingDurationSecs++;
+          final rand = Random();
+          _recordingWaveforms.add(5.0 + rand.nextDouble() * 30.0);
+        });
+      }
+    });
+  }
+
+  void _stopAndSendRecordingVoice() async {
+    _recordingTimer?.cancel();
+    if (!_isRecordingVoice) return;
+    final duration = _recordingDurationSecs == 0 ? 3 : _recordingDurationSecs;
+    setState(() {
+      _isRecordingVoice = false;
+    });
+
+    if (Firebase.apps.isEmpty) return;
+
+    final transcripts = [
+      "Hello admin, route 15 bus starting from Manali.",
+      "Hi admin, reached rettri roundna just now.",
+      "Driver B101 here, heavy traffic near gate. ETA 15 mins.",
+      "Reporting minor delay for passenger boarding.",
+      "Admin, breakdown occurred near Tambaram depot, need assistance.",
+    ];
+    final randomTranscript = transcripts[Random().nextInt(transcripts.length)];
+
+    final msgId = DateTime.now().millisecondsSinceEpoch.toString();
+    try {
+      await FirebaseDatabase.instance.ref('voice_messages/driver_${widget.driverBus}/$msgId').set({
+        'sender': 'driver',
+        'senderName': 'Driver ${widget.driverBus}',
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'msg': '[Voice Message - 0:${duration.toString().padLeft(2, '0')}] "$randomTranscript"',
+        'isVoice': true,
+        'voiceDuration': duration,
+        'transcript': randomTranscript,
+      });
+    } catch (e) {
+      debugPrint("Error sending voice message: $e");
+    }
+  }
+
+  void _cancelRecordingVoice() {
+    _recordingTimer?.cancel();
+    setState(() {
+      _isRecordingVoice = false;
+      _recordingDurationSecs = 0;
+    });
+    _showSnackBar("Recording cancelled.");
+  }
+
+  void _playVoiceMessage(String msgId, String text, int durationSecs) {
+    if (_playingMsgId == msgId) {
+      _playbackTimer?.cancel();
+      _flutterTts.stop();
+      setState(() {
+        _playingMsgId = null;
+      });
+      return;
+    }
+    _playbackTimer?.cancel();
+    _flutterTts.stop();
+
+    String speakText = text;
+    if (text.startsWith('[Voice Message')) {
+      final index = text.indexOf(']');
+      if (index != -1 && index + 1 < text.length) {
+        speakText = text.substring(index + 1).replaceAll('"', '').trim();
+      }
+    }
+    _flutterTts.speak(speakText);
+
+    setState(() {
+      _playingMsgId = msgId;
+      _playbackProgress = 0.0;
+    });
+    
+    final int totalSteps = durationSecs * 10;
+    int currentStep = 0;
+    _playbackTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+      currentStep++;
+      if (currentStep >= totalSteps) {
+        timer.cancel();
+        _flutterTts.stop();
+        if (mounted) {
+          setState(() {
+            _playingMsgId = null;
+            _playbackProgress = 1.0;
+          });
+        }
+      } else {
+        if (mounted) {
+          setState(() {
+            _playbackProgress = currentStep / totalSteps;
+          });
+        }
+      }
+    });
   }
 
   void _showDriverPredefinedMessages() {
@@ -449,7 +590,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
     return "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
   }
 
-  Future<void> _fbUpdateLocation(Position pos) async {
+  Future<void> _fbUpdateLocationRaw(double lat, double lng, double acc) async {
     if (Firebase.apps.isEmpty) return;
     setState(() {
       _isSyncing = true;
@@ -457,9 +598,9 @@ class _DriverDashboardState extends State<DriverDashboard> {
     });
 
     final data = {
-      'lat': pos.latitude,
-      'lng': pos.longitude,
-      'acc': pos.accuracy,
+      'lat': lat,
+      'lng': lng,
+      'acc': acc,
       'status': _isTracking ? (_breakdownActive ? 'broken' : 'tracking') : 'offline',
       'updatedAt': DateTime.now().toIso8601String()
     };
@@ -480,6 +621,63 @@ class _DriverDashboardState extends State<DriverDashboard> {
           _syncStatusText = "❌ Sync failed — check connection";
         });
       }
+    }
+  }
+
+  Future<void> _fbUpdateLocation(Position pos) async {
+    await _fbUpdateLocationRaw(pos.latitude, pos.longitude, pos.accuracy);
+  }
+
+  void _startSafetyTimer() {
+    _safetyTimer?.cancel();
+    _safetyTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
+      if (!_isTracking) return;
+      
+      if (_onPhoneCall) {
+        _callSecondsCounter++;
+        if (_callSecondsCounter >= 60) {
+          await _sendSafetyAlert("phoneCall", "Driver is using phone (on call) for ${_callSecondsCounter}s while driving!");
+        }
+      } else {
+        _callSecondsCounter = 0;
+        await _clearSafetyAlert("phoneCall");
+      }
+
+      if (_connectedToEarpods) {
+        await _sendSafetyAlert("earpods", "Driver phone is connected to earpods/headphones!");
+      } else {
+        await _clearSafetyAlert("earpods");
+      }
+    });
+  }
+
+  void _stopSafetyTimer() async {
+    _safetyTimer?.cancel();
+    _safetyTimer = null;
+    _callSecondsCounter = 0;
+    await _clearSafetyAlert("phoneCall");
+    await _clearSafetyAlert("earpods");
+  }
+
+  Future<void> _sendSafetyAlert(String type, String message) async {
+    if (Firebase.apps.isEmpty) return;
+    try {
+      await FirebaseDatabase.instance.ref('drivers_alerts/${widget.driverBus}/$type').set({
+        'active': true,
+        'message': message,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      });
+    } catch (e) {
+      debugPrint("Error sending safety alert: $e");
+    }
+  }
+
+  Future<void> _clearSafetyAlert(String type) async {
+    if (Firebase.apps.isEmpty) return;
+    try {
+      await FirebaseDatabase.instance.ref('drivers_alerts/${widget.driverBus}/$type').remove();
+    } catch (e) {
+      debugPrint("Error clearing safety alert: $e");
     }
   }
 
@@ -510,16 +708,26 @@ class _DriverDashboardState extends State<DriverDashboard> {
     }
   }
 
-  void _startTracking() async {
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
-        _showDialog("Permission Required", "GPS Location permissions are required to start vehicle tracking.");
-        return;
+  List<LatLng> _interpolatePoints(List<Map<String, dynamic>> stops) {
+    List<LatLng> path = [];
+    if (stops.isEmpty) return path;
+    for (int i = 0; i < stops.length - 1; i++) {
+      final start = LatLng(stops[i]['lat'] as double, stops[i]['lng'] as double);
+      final end = LatLng(stops[i + 1]['lat'] as double, stops[i + 1]['lng'] as double);
+      int steps = 15;
+      for (int s = 0; s < steps; s++) {
+        double t = s / steps;
+        double lat = start.latitude + (end.latitude - start.latitude) * t;
+        double lng = start.longitude + (end.longitude - start.longitude) * t;
+        path.add(LatLng(lat, lng));
       }
     }
+    final last = stops.last;
+    path.add(LatLng(last['lat'] as double, last['lng'] as double));
+    return path;
+  }
 
+  void _startTracking() async {
     setState(() {
       _isTracking = true;
       _appStatus = "Online";
@@ -527,62 +735,124 @@ class _DriverDashboardState extends State<DriverDashboard> {
     });
 
     _showBusReadyNotification();
-
-    Position initialPos = await Geolocator.getCurrentPosition();
-    setState(() {
-      _currentPosition = initialPos;
-      _latitude = initialPos.latitude;
-      _longitude = initialPos.longitude;
-      _accuracy = initialPos.accuracy;
-      _updatedAt = _formattedTimeNow();
-      _gpsStatus = "Active";
-    });
-    await _fbUpdateLocation(initialPos);
-
-    LocationSettings locationSettings;
-    if (Platform.isAndroid) {
-      locationSettings = AndroidSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 5,
-        forceLocationManager: true,
-        intervalDuration: const Duration(seconds: 10),
-        foregroundNotificationConfig: const ForegroundNotificationConfig(
-          notificationText: "Tracking bus location in background",
-          notificationTitle: "Panimalar Transit Driver",
-          enableWakeLock: true,
-        ),
-      );
-    } else {
-      locationSettings = const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 5,
-      );
-    }
-
-    _positionSubscription = Geolocator.getPositionStream(
-      locationSettings: locationSettings,
-    ).listen((Position position) {
-      setState(() {
-        _currentPosition = position;
-        _latitude = position.latitude;
-        _longitude = position.longitude;
-        _accuracy = position.accuracy;
-        _updatedAt = _formattedTimeNow();
-        _mapController.move(LatLng(position.latitude, position.longitude), _mapController.camera.zoom);
-      });
-      _fbUpdateLocation(position);
-      _checkGeofences(position);
-      _checkCollegeArrival(position); // Auto arrival check
-    });
-
     _startSpeechMonitor();
+    _startSafetyTimer();
+
+    // Persist tracking state
     final prefs = await SharedPreferences.getInstance();
     prefs.setBool('driver_is_tracking_${widget.driverBus}', true);
+
+    if (_simulateRoute) {
+      _simulatedPath = _interpolatePoints(_routeStops);
+      _simRouteIndex = 0;
+      if (_simulatedPath.isNotEmpty) {
+        final firstPt = _simulatedPath[0];
+        setState(() {
+          _latitude = firstPt.latitude;
+          _longitude = firstPt.longitude;
+          _accuracy = 5.0;
+          _updatedAt = _formattedTimeNow();
+          _gpsStatus = "Simulated";
+        });
+        await _fbUpdateLocationRaw(_latitude, _longitude, _accuracy);
+        _mapController.move(firstPt, _mapController.camera.zoom);
+      }
+
+      _simTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
+        if (_simulatedPath.isEmpty || !_isTracking) {
+          timer.cancel();
+          return;
+        }
+        _simRouteIndex = (_simRouteIndex + 1) % _simulatedPath.length;
+        final pt = _simulatedPath[_simRouteIndex];
+        setState(() {
+          _latitude = pt.latitude;
+          _longitude = pt.longitude;
+          _accuracy = 5.0;
+          _updatedAt = _formattedTimeNow();
+        });
+        _fbUpdateLocationRaw(_latitude, _longitude, _accuracy);
+        _mapController.move(pt, _mapController.camera.zoom);
+        
+        final mockPos = Position(
+          latitude: pt.latitude,
+          longitude: pt.longitude,
+          timestamp: DateTime.now(),
+          accuracy: 5.0,
+          altitude: 0.0,
+          altitudeAccuracy: 0.0,
+          heading: 0.0,
+          headingAccuracy: 0.0,
+          speed: 10.0,
+          speedAccuracy: 0.0,
+        );
+        _checkGeofences(mockPos);
+        _checkCollegeArrival(mockPos);
+      });
+    } else {
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+          _showDialog("Permission Required", "GPS Location permissions are required to start vehicle tracking.");
+          return;
+        }
+      }
+
+      Position initialPos = await Geolocator.getCurrentPosition();
+      setState(() {
+        _currentPosition = initialPos;
+        _latitude = initialPos.latitude;
+        _longitude = initialPos.longitude;
+        _accuracy = initialPos.accuracy;
+        _updatedAt = _formattedTimeNow();
+        _gpsStatus = "Active";
+      });
+      await _fbUpdateLocationRaw(_latitude, _longitude, _accuracy);
+      _mapController.move(LatLng(initialPos.latitude, initialPos.longitude), _mapController.camera.zoom);
+
+      LocationSettings locationSettings;
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        locationSettings = AndroidSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 5,
+          intervalDuration: const Duration(seconds: 2),
+          foregroundNotificationConfig: const ForegroundNotificationConfig(
+            notificationText: "Panimalar Smart Transit is tracking location in background",
+            notificationTitle: "Live GPS Active",
+          ),
+        );
+      } else {
+        locationSettings = const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 5,
+        );
+      }
+
+      _positionSubscription = Geolocator.getPositionStream(
+        locationSettings: locationSettings,
+      ).listen((Position position) {
+        setState(() {
+          _currentPosition = position;
+          _latitude = position.latitude;
+          _longitude = position.longitude;
+          _accuracy = position.accuracy;
+          _updatedAt = _formattedTimeNow();
+          _mapController.move(LatLng(position.latitude, position.longitude), _mapController.camera.zoom);
+        });
+        _fbUpdateLocationRaw(position.latitude, position.longitude, position.accuracy);
+        _checkGeofences(position);
+        _checkCollegeArrival(position);
+      });
+    }
   }
 
   void _stopTracking() async {
     await _positionSubscription?.cancel();
     _positionSubscription = null;
+    _simTimer?.cancel();
+    _simTimer = null;
+    _stopSafetyTimer();
 
     setState(() {
       _isTracking = false;
@@ -943,11 +1213,13 @@ class _DriverDashboardState extends State<DriverDashboard> {
   }
 
   Widget _buildTextMessageBubble(Map<String, dynamic> msg, bool isMe) {
+    final isVoice = msg['isVoice'] == true;
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        width: isVoice ? 220 : null,
         decoration: BoxDecoration(
           color: isMe ? const Color(0xFFEFF6FF) : const Color(0xFFF1F5F9),
           borderRadius: BorderRadius.only(
@@ -959,18 +1231,85 @@ class _DriverDashboardState extends State<DriverDashboard> {
           border: Border.all(color: isMe ? const Color(0xFFBFDBFE) : const Color(0xFFE2E8F0)),
         ),
         child: Column(
-          crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
               msg['senderName'] ?? '',
               style: const TextStyle(fontSize: 8.5, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
             ),
-            const SizedBox(height: 2),
-            Text(
-              msg['msg'] ?? '',
-              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
-            ),
+            const SizedBox(height: 4),
+            if (isVoice) ...[
+              Row(
+                children: [
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    icon: Icon(
+                      _playingMsgId == msg['id']
+                          ? Icons.pause_circle_filled_rounded
+                          : Icons.play_circle_filled_rounded,
+                      color: isMe ? const Color(0xFF2563EB) : const Color(0xFF1E293B),
+                      size: 28,
+                    ),
+                    onPressed: () {
+                      _playVoiceMessage(msg['id'], msg['msg'] ?? '', msg['voiceDuration'] ?? 3);
+                    },
+                  ),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(2),
+                          child: LinearProgressIndicator(
+                            value: _playingMsgId == msg['id'] ? _playbackProgress : 0.0,
+                            backgroundColor: isMe ? const Color(0xFFDBEAFE) : const Color(0xFFE2E8F0),
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              isMe ? const Color(0xFF2563EB) : const Color(0xFF64748B),
+                            ),
+                            minHeight: 3,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              "0:${(msg['voiceDuration'] as int? ?? 3).toString().padLeft(2, '0')}",
+                              style: const TextStyle(fontSize: 8, color: Color(0xFF64748B), fontWeight: FontWeight.bold),
+                            ),
+                            const Icon(Icons.volume_up, size: 8, color: Color(0xFF64748B)),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                decoration: BoxDecoration(
+                  color: isMe ? const Color(0xFFDBEAFE).withValues(alpha: 0.3) : const Color(0xFFE2E8F0).withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  "Transcript: \"${msg['transcript'] ?? ''}\"",
+                  style: const TextStyle(
+                    fontSize: 9.5,
+                    fontStyle: FontStyle.italic,
+                    color: Color(0xFF334155),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+            ] else ...[
+              Text(
+                msg['msg'] ?? '',
+                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+              ),
+            ],
           ],
         ),
       ),
@@ -1271,7 +1610,71 @@ class _DriverDashboardState extends State<DriverDashboard> {
                         _buildFieldTile(t('updatedLabel'), _isTracking ? _updatedAt : "--"),
                       ],
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 12),
+                    SwitchListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text("Simulate Route Mode", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF1E293B))),
+                      subtitle: const Text("Interpolates path and broadcasts movement automatically", style: TextStyle(fontSize: 10, color: Color(0xFF64748B))),
+                      value: _simulateRoute,
+                      activeColor: const Color(0xFF2563EB),
+                      onChanged: _isTracking ? null : (val) {
+                        setState(() {
+                          _simulateRoute = val;
+                        });
+                      },
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      margin: const EdgeInsets.only(top: 8, bottom: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFF7ED),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFFFEDD5)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            "🚨 DRIVER SAFETY SIMULATOR CONSOLE",
+                            style: TextStyle(fontSize: 8.5, fontWeight: FontWeight.w900, color: Color(0xFFC2410C), letterSpacing: 0.5),
+                          ),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: CheckboxListTile(
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                  title: const Text("Speaking on Call", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF451A03))),
+                                  value: _onPhoneCall,
+                                  activeColor: const Color(0xFFC2410C),
+                                  onChanged: (val) {
+                                    setState(() {
+                                      _onPhoneCall = val ?? false;
+                                    });
+                                  },
+                                ),
+                              ),
+                              Expanded(
+                                child: CheckboxListTile(
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                  title: const Text("Earpods Connected", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF451A03))),
+                                  value: _connectedToEarpods,
+                                  activeColor: const Color(0xFFC2410C),
+                                  onChanged: (val) {
+                                    setState(() {
+                                      _connectedToEarpods = val ?? false;
+                                    });
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
                     Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
@@ -1930,52 +2333,120 @@ class _DriverDashboardState extends State<DriverDashboard> {
                         ),
                       ),
                       
-                    const SizedBox(height: 12),
-                    const Divider(height: 1),
-                    const SizedBox(height: 12),
-                    
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _driverChatInputCtrl,
-                            decoration: InputDecoration(
-                              hintText: "Type message or tap mic...",
-                              hintStyle: const TextStyle(fontSize: 11, color: Colors.grey),
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(30)),
-                              fillColor: const Color(0xFFF8FAFC),
-                              filled: true,
+                                    if (_isRecordingVoice)
+                      Container(
+                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFEF2F2),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: const Color(0xFFFCA5A5)),
+                        ),
+                        child: Row(
+                          children: [
+                            const _FlashingRedDot(),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    "Recording... 0:${_recordingDurationSecs.toString().padLeft(2, '0')}",
+                                    style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF991B1B)),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Row(
+                                    children: List.generate(8, (idx) {
+                                      final height = 3.0 + (idx % 2 == 0 ? 8.0 : 4.0) + (Random().nextDouble() * 5.0);
+                                      return Container(
+                                        width: 2,
+                                        height: height,
+                                        margin: const EdgeInsets.symmetric(horizontal: 1),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFEF4444),
+                                          borderRadius: BorderRadius.circular(1),
+                                        ),
+                                      );
+                                    }),
+                                  ),
+                                ],
+                              ),
                             ),
-                            style: const TextStyle(fontSize: 12),
-                          ),
+                            IconButton(
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              icon: const Icon(Icons.cancel, color: Color(0xFFEF4444), size: 20),
+                              onPressed: _cancelRecordingVoice,
+                            ),
+                            IconButton(
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              icon: const Icon(Icons.check_circle, color: Color(0xFF16A34A), size: 20),
+                              onPressed: _stopAndSendRecordingVoice,
+                            ),
+                          ],
                         ),
-                        const SizedBox(width: 8),
-                        IconButton(
-                          icon: const Icon(Icons.flash_on, color: Color(0xFF2563EB)),
-                          style: IconButton.styleFrom(
-                            backgroundColor: const Color(0xFFEFF6FF),
-                            padding: const EdgeInsets.all(10),
+                      )
+                    else
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _driverChatInputCtrl,
+                              decoration: InputDecoration(
+                                hintText: "Type message or hold mic...",
+                                hintStyle: const TextStyle(fontSize: 11, color: Colors.grey),
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(30)),
+                                fillColor: const Color(0xFFF8FAFC),
+                                filled: true,
+                              ),
+                              style: const TextStyle(fontSize: 12),
+                            ),
                           ),
-                          onPressed: _showDriverPredefinedMessages,
-                        ),
-                        const SizedBox(width: 4),
-                        IconButton(
-                          icon: const Icon(Icons.send, color: Colors.white),
-                          style: IconButton.styleFrom(
-                            backgroundColor: const Color(0xFF2563EB),
-                            padding: const EdgeInsets.all(10),
+                          const SizedBox(width: 8),
+                          IconButton(
+                            icon: const Icon(Icons.flash_on, color: Color(0xFF2563EB)),
+                            style: IconButton.styleFrom(
+                              backgroundColor: const Color(0xFFEFF6FF),
+                              padding: const EdgeInsets.all(10),
+                            ),
+                            onPressed: _showDriverPredefinedMessages,
                           ),
-                          onPressed: () {
-                            final text = _driverChatInputCtrl.text.trim();
-                            if (text.isNotEmpty) {
-                              _sendTextMessage(text);
-                              _driverChatInputCtrl.clear();
-                            }
-                          },
-                        ),
-                      ],
-                    ),
+                          const SizedBox(width: 4),
+                          IconButton(
+                            icon: const Icon(Icons.send, color: Colors.white),
+                            style: IconButton.styleFrom(
+                              backgroundColor: const Color(0xFF2563EB),
+                              padding: const EdgeInsets.all(10),
+                            ),
+                            onPressed: () {
+                              final text = _driverChatInputCtrl.text.trim();
+                              if (text.isNotEmpty) {
+                                _sendTextMessage(text);
+                                _driverChatInputCtrl.clear();
+                              }
+                            },
+                          ),
+                          const SizedBox(width: 4),
+                          GestureDetector(
+                            onLongPressStart: (_) {
+                              _startRecordingVoice();
+                              _showSnackBar("Recording... Release to send.");
+                            },
+                            onLongPressEnd: (_) {
+                              _stopAndSendRecordingVoice();
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: const BoxDecoration(
+                                color: Color(0xFFEFF6FF),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.mic, color: Color(0xFF2563EB), size: 20),
+                            ),
+                          ),
+                        ],
+                      ),
                   ],
                 ),
               ),
@@ -1999,6 +2470,52 @@ class _DriverDashboardState extends State<DriverDashboard> {
               const SizedBox(height: 16),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FlashingRedDot extends StatefulWidget {
+  const _FlashingRedDot();
+
+  @override
+  State<_FlashingRedDot> createState() => _FlashingRedDotState();
+}
+
+class _FlashingRedDotState extends State<_FlashingRedDot> {
+  bool _visible = true;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+      if (mounted) {
+        setState(() {
+          _visible = !_visible;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedOpacity(
+      opacity: _visible ? 1.0 : 0.2,
+      duration: const Duration(milliseconds: 200),
+      child: Container(
+        width: 10,
+        height: 10,
+        decoration: const BoxDecoration(
+          color: Colors.red,
+          shape: BoxShape.circle,
         ),
       ),
     );
