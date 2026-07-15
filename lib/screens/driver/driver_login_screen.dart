@@ -6,6 +6,7 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../config/routes_config.dart';
+import '../../config/lang_config.dart';
 
 class DriverLoginScreen extends StatefulWidget {
   final String currentLang;
@@ -31,7 +32,7 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
   bool _isLoading = false;
 
   String t(String key) {
-    return driverLang[widget.currentLang]?[key] ?? key;
+    return appLang[widget.currentLang]?[key] ?? appLang['en']?[key] ?? key;
   }
 
   void _attemptLogin() async {

@@ -16,17 +16,23 @@ import '../../models/alert_entry.dart';
 import '../../models/upload_entry.dart';
 import '../../models/bus_sim_state.dart';
 import '../../config/routes_config.dart';
+import '../../config/lang_config.dart';
 import '../../widgets/custom_charts.dart';
 
 class AdminDashboard extends StatefulWidget {
   final VoidCallback onSwitchRole;
-  const AdminDashboard({super.key, required this.onSwitchRole});
+  final String currentLang;
+  const AdminDashboard({super.key, required this.onSwitchRole, required this.currentLang});
 
   @override
   State<AdminDashboard> createState() => _AdminDashboardState();
 }
 
 class _AdminDashboardState extends State<AdminDashboard> {
+  String t(String key) {
+    return appLang[widget.currentLang]?[key] ?? appLang['en']?[key] ?? key;
+  }
+
   // Navigation & tabs
   int _currentTab = 0;
 
@@ -829,7 +835,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) => StatefulBuilder(
-<<<<<<< HEAD
         builder: (c, setSheetState) {
           final currentType = types.firstWhere((t) => t['value'] == selectedType);
           return Padding(
@@ -856,73 +861,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
                   const Text("Broadcast instant alerts to all student portals via Firebase",
                       style: TextStyle(fontSize: 11, color: Color(0xFF64748B))),
                   const SizedBox(height: 20),
-=======
-        builder: (c, setSheetState) => DraggableScrollableSheet(
-          initialChildSize: 0.75,
-          maxChildSize: 0.95,
-          minChildSize: 0.5,
-          builder: (_, scrollController) => Container(
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-            ),
-            padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, top: 20, left: 20, right: 20),
-            child: SingleChildScrollView(
-              controller: scrollController,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text("Broadcast Alert Notice", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A))),
-                    IconButton(
-                      icon: const Icon(Icons.close, color: Color(0xFF64748B)),
-                      onPressed: () => Navigator.pop(context),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                DropdownButtonFormField<String>(
-                  value: typeCtrl.text,
-                  decoration: const InputDecoration(labelText: "Alert Category"),
-                  items: const [
-                    DropdownMenuItem(value: "delay", child: Text("Traffic Delay")),
-                    DropdownMenuItem(value: "breakdown", child: Text("Mechanical Breakdown")),
-                    DropdownMenuItem(value: "route", child: Text("Route Change")),
-                  ],
-                  onChanged: (val) => setSheetState(() => typeCtrl.text = val!),
-                ),
-                const SizedBox(height: 8),
-                TextField(controller: busCtrl, decoration: const InputDecoration(labelText: "Affected Bus (or 'all')")),
-                const SizedBox(height: 8),
-                TextField(controller: msgCtrl, decoration: const InputDecoration(labelText: "Notice Message description")),
-                const SizedBox(height: 20),
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2563EB), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30))),
-                  onPressed: () {
-                    final t = typeCtrl.text;
-                    final b = busCtrl.text.trim().toUpperCase();
-                    final m = msgCtrl.text.trim();
-                    if (m.isEmpty) {
-                      _showAppSnackBar("Please enter alert message.");
-                      return;
-                    }
-                    setState(() {
-                      final timeNow = "${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}";
-                      final newAlert = AlertEntry(
-                        id: DateTime.now().millisecondsSinceEpoch.toDouble(),
-                        type: t,
-                        bus: b.isNotEmpty ? b : "all",
-                        msg: m,
-                        time: timeNow,
-                      );
-                      _alerts.add(newAlert);
-                      _saveAlerts();
->>>>>>> origin/feature/manoj-ui
 
                   // Type selector grid
                   const Text("NOTIFICATION TYPE",
@@ -1074,7 +1012,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
             ),
           );
         },
-      ),
       ),
     );
   }
@@ -1254,12 +1191,12 @@ class _AdminDashboardState extends State<AdminDashboard> {
               child: const Icon(Icons.admin_panel_settings, color: Color(0xFF2563EB), size: 22),
             ),
             const SizedBox(width: 10),
-            const Column(
+            Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text("Smart Transit Console", style: TextStyle(fontSize: 15, fontWeight: FontWeight.w900, color: Color(0xFF0F172A))),
-                Text("College Administration System", style: TextStyle(fontSize: 9, color: Color(0xFF64748B), fontWeight: FontWeight.bold)),
+                Text(t('appTitle'), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w900, color: Color(0xFF0F172A))),
+                Text(t('admin_subtitle'), style: TextStyle(fontSize: 9, color: Color(0xFF64748B), fontWeight: FontWeight.bold)),
               ],
             )
           ],
@@ -1283,12 +1220,12 @@ class _AdminDashboardState extends State<AdminDashboard> {
               _currentTab = idx;
             });
           },
-          destinations: const [
-            NavigationDestination(icon: Icon(Icons.analytics_outlined, color: Color(0xFF64748B)), selectedIcon: Icon(Icons.analytics, color: Color(0xFF2563EB)), label: "Overview"),
-            NavigationDestination(icon: Icon(Icons.map_outlined, color: Color(0xFF64748B)), selectedIcon: Icon(Icons.map, color: Color(0xFF2563EB)), label: "Live Tracker"),
-            NavigationDestination(icon: Icon(Icons.chat_bubble_outline, color: Color(0xFF64748B)), selectedIcon: Icon(Icons.chat_bubble, color: Color(0xFF2563EB)), label: "Intercom"),
-            NavigationDestination(icon: Icon(Icons.checklist_rtl_outlined, color: Color(0xFF64748B)), selectedIcon: Icon(Icons.checklist_rtl, color: Color(0xFF2563EB)), label: "Approvals"),
-            NavigationDestination(icon: Icon(Icons.app_registration_outlined, color: Color(0xFF64748B)), selectedIcon: Icon(Icons.app_registration, color: Color(0xFF2563EB)), label: "Registry"),
+          destinations: [
+            NavigationDestination(icon: const Icon(Icons.analytics_outlined, color: Color(0xFF64748B)), selectedIcon: const Icon(Icons.analytics, color: Color(0xFF2563EB)), label: t('admin_overview')),
+            NavigationDestination(icon: const Icon(Icons.map_outlined, color: Color(0xFF64748B)), selectedIcon: const Icon(Icons.map, color: Color(0xFF2563EB)), label: t('admin_live_tracker')),
+            NavigationDestination(icon: const Icon(Icons.chat_bubble_outline, color: Color(0xFF64748B)), selectedIcon: const Icon(Icons.chat_bubble, color: Color(0xFF2563EB)), label: t('admin_intercom')),
+            NavigationDestination(icon: const Icon(Icons.checklist_rtl_outlined, color: Color(0xFF64748B)), selectedIcon: const Icon(Icons.checklist_rtl, color: Color(0xFF2563EB)), label: t('admin_approvals')),
+            NavigationDestination(icon: const Icon(Icons.app_registration_outlined, color: Color(0xFF64748B)), selectedIcon: const Icon(Icons.app_registration, color: Color(0xFF2563EB)), label: t('admin_registry')),
           ],
         ),
       ),
@@ -1329,8 +1266,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
                     style: TextStyle(fontWeight: FontWeight.w900, fontSize: 11, color: Color(0xFF2563EB), letterSpacing: 1),
                   ),
                   SwitchListTile(
-                    title: const Text("Allow Drivers to Add Stops", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A))),
-                    subtitle: const Text("Enable to let drivers submit their current location as a new bus stop.", style: TextStyle(fontSize: 10, color: Color(0xFF64748B))),
+                    title: Text(t('admin_allow_stops'), style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A))),
+                    subtitle: Text(t('admin_enable_stops_desc'), style: TextStyle(fontSize: 10, color: Color(0xFF64748B))),
                     value: _allowDriversToAddStops,
                     activeColor: const Color(0xFF2563EB),
                     onChanged: (val) {
@@ -1342,7 +1279,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                   if (_newStops.isNotEmpty) ...[
                     const Divider(),
                     const SizedBox(height: 8),
-                    const Text("Suggested stops by Drivers (Grouped by Bus Card):", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF334155))),
+                    Text(t('admin_suggested_stops'), style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF334155))),
                     const SizedBox(height: 8),
                     _buildGroupedStopsWidget(),
                   ] else
@@ -1376,7 +1313,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                       ),
                       TextButton.icon(
                         icon: const Icon(Icons.add, size: 14),
-                        label: const Text("Broadcast Notice", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                        label: Text(t('admin_broadcast_notice'), style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
                         onPressed: _openAlertAddBottomSheet,
                       ),
                     ],
@@ -1862,7 +1799,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text("Route $_selectedIntercomBus", style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                                const Text("online", style: TextStyle(fontSize: 12, color: Colors.grey)),
+                                Text(t('admin_online'), style: TextStyle(fontSize: 12, color: Colors.grey)),
                               ],
                             ),
                           ],

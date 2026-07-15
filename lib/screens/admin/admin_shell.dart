@@ -115,6 +115,9 @@ class _AdminShellState extends State<AdminShell> {
       );
     }
 
-    return AdminDashboard(onSwitchRole: widget.onSwitchRole);
+    return AdminDashboard(
+      onSwitchRole: widget.onSwitchRole,
+      currentLang: widget.currentLang,
+    );
   }
 }

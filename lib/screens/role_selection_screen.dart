@@ -4,12 +4,54 @@ class RoleSelectionScreen extends StatelessWidget {
   final Function(String) onSelectRole;
   final String currentLang;
   final Function(String) onLanguageChanged;
-  const RoleSelectionScreen({
+  
+  RoleSelectionScreen({
     super.key,
     required this.onSelectRole,
     required this.currentLang,
     required this.onLanguageChanged,
   });
+
+  // Local translations for the role selection screen
+  final Map<String, Map<String, String>> _translations = {
+    'en': {
+      'title': 'Smart Transit Platform',
+      'subtitle': 'SELECT YOUR ROLE',
+      'student_title': 'I am a Student',
+      'student_desc': 'Track live buses, find routes, and view schedules.',
+      'driver_title': 'I am a Driver',
+      'driver_desc': 'Share live GPS location, log boarding, and report alerts.',
+      'admin_title': 'I am an Admin',
+      'admin_desc': 'Review permission letters, confirm pickup requests.',
+      'footer': 'Panimalar Engineering College',
+    },
+    'ta': {
+      'title': 'ஸ்மார்ட் போக்குவரத்து தளம்',
+      'subtitle': 'உங்கள் பாத்திரத்தை தேர்ந்தெடுக்கவும்',
+      'student_title': 'நான் ஒரு மாணவர்',
+      'student_desc': 'பேருந்துகளைத் தடம் காணவும், வழிகளைக் கண்டறியவும்.',
+      'driver_title': 'நான் ஒரு ஓட்டுநர்',
+      'driver_desc': 'GPS இருப்பிடத்தைப் பகிரவும் மற்றும் எச்சரிக்கைகளை தெரிவிக்கவும்.',
+      'admin_title': 'நான் ஒரு நிர்வாகி',
+      'admin_desc': 'அனுமதி கடிதங்களை மதிப்பாய்வு செய்யவும்.',
+      'footer': 'பனிமலர் பொறியியல் கல்லூரி',
+    },
+    'te': {
+      'title': 'స్మార్ట్ రవాణా వేదిక',
+      'subtitle': 'మీ పాత్రను ఎంచుకోండి',
+      'student_title': 'నేను విద్యార్థిని',
+      'student_desc': 'బస్సులను ట్రాక్ చేయండి, మార్గాలను కనుగొనండి.',
+      'driver_title': 'నేను డ్రైవర్‌ను',
+      'driver_desc': 'GPS స్థానాన్ని పంచుకోండి మరియు హెచ్చరికలను నివేదించండి.',
+      'admin_title': 'నేను అడ్మిన్‌ను',
+      'admin_desc': 'అనుమతి లేఖలను సమీక్షించండి.',
+      'footer': 'పనిమలర్ ఇంజనీరింగ్ కళాశాల',
+    }
+  };
+
+  String t(String key) {
+    return _translations[currentLang]?[key] ?? _translations['en']![key]!;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -87,20 +129,20 @@ class RoleSelectionScreen extends StatelessWidget {
                     color: Color(0xFF1E3A8A),
                   ),
                 ),
-                const Text(
-                  "Smart Transit Platform",
+                Text(
+                  t('title'),
                   textAlign: TextAlign.center,
-                  style: TextStyle(
+                  style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w700,
                     color: Color(0xFF64748B),
                   ),
                 ),
                 const Spacer(),
-                const Text(
-                  "SELECT YOUR ROLE",
+                Text(
+                  t('subtitle'),
                   textAlign: TextAlign.center,
-                  style: TextStyle(
+                  style: const TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w800,
                     letterSpacing: 1.5,
@@ -137,22 +179,22 @@ class RoleSelectionScreen extends StatelessWidget {
                           child: const Text("🎓", style: TextStyle(fontSize: 28)),
                         ),
                         const SizedBox(width: 16),
-                        const Expanded(
+                        Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                "I am a Student",
-                                style: TextStyle(
+                                t('student_title'),
+                                style: const TextStyle(
                                   fontSize: 16,
                                   fontWeight: FontWeight.w800,
                                   color: Color(0xFF0F172A),
                                 ),
                               ),
-                              SizedBox(height: 4),
+                              const SizedBox(height: 4),
                               Text(
-                                "Track live buses, find routes, and view schedules.",
-                                style: TextStyle(
+                                t('student_desc'),
+                                style: const TextStyle(
                                   fontSize: 12,
                                   color: Color(0xFF64748B),
                                   fontWeight: FontWeight.w500,
@@ -196,22 +238,22 @@ class RoleSelectionScreen extends StatelessWidget {
                           child: const Text("👔", style: TextStyle(fontSize: 28)),
                         ),
                         const SizedBox(width: 16),
-                        const Expanded(
+                        Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                "I am a Driver",
-                                style: TextStyle(
+                                t('driver_title'),
+                                style: const TextStyle(
                                   fontSize: 16,
                                   fontWeight: FontWeight.w800,
                                   color: Color(0xFF0F172A),
                                 ),
                               ),
-                              SizedBox(height: 4),
+                              const SizedBox(height: 4),
                               Text(
-                                "Share live GPS location, log boarding, and report alerts.",
-                                style: TextStyle(
+                                t('driver_desc'),
+                                style: const TextStyle(
                                   fontSize: 12,
                                   color: Color(0xFF64748B),
                                   fontWeight: FontWeight.w500,
@@ -255,22 +297,22 @@ class RoleSelectionScreen extends StatelessWidget {
                           child: const Text("🔑", style: TextStyle(fontSize: 28)),
                         ),
                         const SizedBox(width: 16),
-                        const Expanded(
+                        Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                "I am an Admin",
-                                style: TextStyle(
+                                t('admin_title'),
+                                style: const TextStyle(
                                   fontSize: 16,
                                   fontWeight: FontWeight.w800,
                                   color: Color(0xFF0F172A),
                                 ),
                               ),
-                              SizedBox(height: 4),
+                              const SizedBox(height: 4),
                               Text(
-                                "Review permission letters, confirm pickup requests.",
-                                style: TextStyle(
+                                t('admin_desc'),
+                                style: const TextStyle(
                                   fontSize: 12,
                                   color: Color(0xFF64748B),
                                   fontWeight: FontWeight.w500,
@@ -285,16 +327,16 @@ class RoleSelectionScreen extends StatelessWidget {
                   ),
                 ),
                 const Spacer(),
-                const Text(
-                  "Panimalar Engineering College",
+                Text(
+                  t('footer'),
                   textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 12,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
                     color: Color(0xFF64748B),
-                    fontWeight: FontWeight.bold,
                   ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 16),
               ],
             ),
           ),
