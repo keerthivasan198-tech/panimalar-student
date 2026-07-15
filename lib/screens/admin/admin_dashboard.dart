@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -47,6 +48,11 @@ class _AdminDashboardState extends State<AdminDashboard> {
   bool _isAdminSttListening = false;
   String _selectedAdminSttLang = 'en';
   final TextEditingController _adminChatInputCtrl = TextEditingController();
+  
+  // WhatsApp Style Intercom UI State
+  String? _selectedIntercomBus;
+  final TextEditingController _intercomSearchCtrl = TextEditingController();
+  String _intercomSearchQuery = "";
 
   // Live Bus Locations
   Map<String, Map<String, dynamic>> _liveBuses = {};
@@ -57,6 +63,13 @@ class _AdminDashboardState extends State<AdminDashboard> {
 
   // Registry sub-toggle
   int _registryViewMode = 0; // 0 = Drivers, 1 = Routes
+  final TextEditingController _adminRouteSearchCtrl = TextEditingController();
+  String _adminRouteSearchQuery = "";
+
+  // Live map search
+  final TextEditingController _liveMapSearchCtrl = TextEditingController();
+  String _liveMapSearchQuery = "";
+  RouteEntry? _selectedLiveRoute;
 
   // Logs Filter
   String _selectedLogDate = DateTime.now().toIso8601String().substring(0, 10);
@@ -104,16 +117,29 @@ class _AdminDashboardState extends State<AdminDashboard> {
     final prefs = await SharedPreferences.getInstance();
     
     // Drivers
-    final driversStr = prefs.getString('ptAdmin_drivers');
-    if (driversStr != null) {
+    _drivers = [];
+    if (Firebase.apps.isNotEmpty) {
       try {
-        final List decoded = json.decode(driversStr);
-        _drivers = decoded.map((e) => DriverEntry.fromJson(e)).toList();
+        final snap = await FirebaseDatabase.instance.ref('drivers').get();
+        if (snap.exists && snap.value != null) {
+          final data = snap.value;
+          List driversList = [];
+          if (data is List) {
+            driversList = data;
+          } else if (data is Map) {
+            driversList = data.values.toList();
+          }
+          if (mounted) {
+            setState(() {
+              _drivers = driversList.map((e) {
+                return DriverEntry.fromJson(Map<String, dynamic>.from(e as Map));
+              }).toList();
+            });
+          }
+        }
       } catch (e) {
-        _drivers = _getDefaultDrivers();
+        debugPrint("Firebase drivers load error: $e");
       }
-    } else {
-      _drivers = _getDefaultDrivers();
     }
 
     // Routes
@@ -122,6 +148,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
       try {
         final List decoded = json.decode(routesStr);
         _routes = decoded.map((e) => RouteEntry.fromJson(e)).toList();
+        if (_routes.length < 50) { // Since we have 77 routes, if it's less than 50, it's stale data.
+          _routes = _getDefaultRoutes();
+          _saveRoutes();
+        }
       } catch (e) {
         _routes = _getDefaultRoutes();
       }
@@ -204,21 +234,23 @@ class _AdminDashboardState extends State<AdminDashboard> {
     prefs.setString('ptAdmin_uploads', json.encode(_uploads.map((e) => e.toJson()).toList()));
   }
 
-  // ─── DEFAULT METRICS ──────────────────────────────────────────────
   List<DriverEntry> _getDefaultDrivers() {
-    return [
-      DriverEntry(id: 1, bus: 'B101', driver: 'Rajan Kumar', contact: '9876543210', route: 'route_15', type: 'combined', password: '1234'),
-      DriverEntry(id: 2, bus: 'B202', driver: 'Selvam P', contact: '9876543211', route: 'route_52', type: 'combined', password: '1234'),
-      DriverEntry(id: 3, bus: 'B303', driver: 'Murugan S', contact: '9876543212', route: 'route_137', type: 'combined', password: '1234'),
-    ];
+    return [];
   }
 
   List<RouteEntry> _getDefaultRoutes() {
-    return [
-      RouteEntry(id: 1, key: 'route_15', name: 'Route 15 - Manali 2', stops: routeStopsConfig['route_15']!, color: '#2563EB'),
-      RouteEntry(id: 2, key: 'route_52', name: 'Route 52 - Padappai', stops: routeStopsConfig['route_52']!, color: '#22C55E'),
-      RouteEntry(id: 3, key: 'route_137', name: 'Route 137 - Porur', stops: routeStopsConfig['route_137']!, color: '#F97316'),
-    ];
+    int id = 1;
+    final List<RouteEntry> routes = [];
+    for (var key in routeLabelsConfig.keys) {
+      routes.add(RouteEntry(
+        id: (id++).toDouble(),
+        key: key,
+        name: routeLabelsConfig[key]!,
+        stops: routeStopsConfig[key] ?? [],
+        color: routeColorsConfig[key] ?? '#2563EB',
+      ));
+    }
+    return routes;
   }
 
   List<LogEntry> _getDefaultLogs() {
@@ -424,40 +456,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
     }
   }
 
-  List<LatLng> _getRoutePointsCached(String routeKey) {
-    if (_routeGeometries.containsKey(routeKey)) {
-      return _routeGeometries[routeKey]!;
-    }
-    final points = _getLinearRoutePoints(routeKey);
-    _routeGeometries[routeKey] = points;
-    return points;
-  }
-
-  List<LatLng> _getLinearRoutePoints(String routeKey) {
-    final route = _routes.firstWhere((r) => r.key == routeKey, orElse: () => _getDefaultRoutes()[0]);
-    final stops = route.stops;
-    final List<LatLng> pts = [];
-    for (int i = 0; i < stops.length; i++) {
-      final name = stops[i];
-      final coord = coordsConfig[name];
-      if (coord == null) continue;
-      if (i == 0) {
-        pts.add(coord);
-        continue;
-      }
-      final prevName = stops[i - 1];
-      final prevCoord = coordsConfig[prevName];
-      if (prevCoord == null) continue;
-      
-      for (int s = 1; s <= 40; s++) {
-        double t = s / 40.0;
-        double lat = prevCoord.latitude + (coord.latitude - prevCoord.latitude) * t;
-        double lng = prevCoord.longitude + (coord.longitude - prevCoord.longitude) * t;
-        pts.add(LatLng(lat, lng));
-      }
-    }
-    return pts;
-  }
 
   void _showAppSnackBar(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -482,16 +480,36 @@ class _AdminDashboardState extends State<AdminDashboard> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      backgroundColor: Colors.transparent,
       builder: (ctx) => StatefulBuilder(
-        builder: (c, setSheetState) => Padding(
-          padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, top: 20, left: 20, right: 20),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Text("Add Driver & Bus Entry", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A))),
+        builder: (c, setSheetState) => DraggableScrollableSheet(
+          initialChildSize: 0.75,
+          maxChildSize: 0.95,
+          minChildSize: 0.5,
+          builder: (_, scrollController) => Container(
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            ),
+            padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, top: 20, left: 20, right: 20),
+            child: SingleChildScrollView(
+              controller: scrollController,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("Add Driver & Bus Entry", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A))),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Color(0xFF64748B)),
+                        onPressed: () => Navigator.pop(context),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
+                    ],
+                  ),
                 const SizedBox(height: 16),
                 TextField(controller: busCtrl, decoration: const InputDecoration(labelText: "Bus Number (e.g. B110)")),
                 const SizedBox(height: 8),
@@ -552,6 +570,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
             ),
           ),
         ),
+      ),
       ),
     );
   }
@@ -653,15 +672,35 @@ class _AdminDashboardState extends State<AdminDashboard> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, top: 20, left: 20, right: 20),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text("Add College Transit Route", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A))),
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => DraggableScrollableSheet(
+        initialChildSize: 0.75,
+        maxChildSize: 0.95,
+        minChildSize: 0.5,
+        builder: (_, scrollController) => Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, top: 20, left: 20, right: 20),
+          child: SingleChildScrollView(
+            controller: scrollController,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text("Add College Transit Route", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A))),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Color(0xFF64748B)),
+                      onPressed: () => Navigator.pop(context),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                  ],
+                ),
               const SizedBox(height: 16),
               TextField(controller: keyCtrl, decoration: const InputDecoration(labelText: "Route Key (e.g. route_15)")),
               const SizedBox(height: 8),
@@ -701,6 +740,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
             ],
           ),
         ),
+      ),
       ),
     );
   }
@@ -787,8 +827,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      backgroundColor: Colors.transparent,
       builder: (ctx) => StatefulBuilder(
+<<<<<<< HEAD
         builder: (c, setSheetState) {
           final currentType = types.firstWhere((t) => t['value'] == selectedType);
           return Padding(
@@ -815,6 +856,73 @@ class _AdminDashboardState extends State<AdminDashboard> {
                   const Text("Broadcast instant alerts to all student portals via Firebase",
                       style: TextStyle(fontSize: 11, color: Color(0xFF64748B))),
                   const SizedBox(height: 20),
+=======
+        builder: (c, setSheetState) => DraggableScrollableSheet(
+          initialChildSize: 0.75,
+          maxChildSize: 0.95,
+          minChildSize: 0.5,
+          builder: (_, scrollController) => Container(
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            ),
+            padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, top: 20, left: 20, right: 20),
+            child: SingleChildScrollView(
+              controller: scrollController,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text("Broadcast Alert Notice", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A))),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Color(0xFF64748B)),
+                      onPressed: () => Navigator.pop(context),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<String>(
+                  value: typeCtrl.text,
+                  decoration: const InputDecoration(labelText: "Alert Category"),
+                  items: const [
+                    DropdownMenuItem(value: "delay", child: Text("Traffic Delay")),
+                    DropdownMenuItem(value: "breakdown", child: Text("Mechanical Breakdown")),
+                    DropdownMenuItem(value: "route", child: Text("Route Change")),
+                  ],
+                  onChanged: (val) => setSheetState(() => typeCtrl.text = val!),
+                ),
+                const SizedBox(height: 8),
+                TextField(controller: busCtrl, decoration: const InputDecoration(labelText: "Affected Bus (or 'all')")),
+                const SizedBox(height: 8),
+                TextField(controller: msgCtrl, decoration: const InputDecoration(labelText: "Notice Message description")),
+                const SizedBox(height: 20),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2563EB), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30))),
+                  onPressed: () {
+                    final t = typeCtrl.text;
+                    final b = busCtrl.text.trim().toUpperCase();
+                    final m = msgCtrl.text.trim();
+                    if (m.isEmpty) {
+                      _showAppSnackBar("Please enter alert message.");
+                      return;
+                    }
+                    setState(() {
+                      final timeNow = "${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}";
+                      final newAlert = AlertEntry(
+                        id: DateTime.now().millisecondsSinceEpoch.toDouble(),
+                        type: t,
+                        bus: b.isNotEmpty ? b : "all",
+                        msg: m,
+                        time: timeNow,
+                      );
+                      _alerts.add(newAlert);
+                      _saveAlerts();
+>>>>>>> origin/feature/manoj-ui
 
                   // Type selector grid
                   const Text("NOTIFICATION TYPE",
@@ -966,6 +1074,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
             ),
           );
         },
+      ),
       ),
     );
   }
@@ -1435,7 +1544,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
 
   Widget _buildLiveTrackTab() {
     final List<Marker> markers = [];
-    final List<Polyline> polylines = [];
 
     // Add college campus pin
     markers.add(
@@ -1451,22 +1559,33 @@ class _AdminDashboardState extends State<AdminDashboard> {
       ),
     );
 
-    // Draw route polylines
-    for (var r in _routes) {
-      final points = _getRoutePointsCached(r.key);
+    // Draw route stops for selected route only
+    if (_selectedLiveRoute != null) {
       Color c = const Color(0xFF2563EB);
       try {
-        c = Color(int.parse(r.color.replaceFirst('#', '0xFF')));
+        c = Color(int.parse(_selectedLiveRoute!.color.replaceFirst('#', '0xFF')));
       } catch (_) {}
 
-      if (points.isNotEmpty) {
-        polylines.add(
-          Polyline(
-            points: points,
-            color: c.withValues(alpha: 0.8),
-            strokeWidth: 3.5,
-          ),
-        );
+      for (var stop in _selectedLiveRoute!.stops) {
+        final coord = coordsConfig[stop];
+        if (coord != null && stop != "COLLEGE" && stop != "Panimalar Engineering College") {
+          markers.add(
+            Marker(
+              point: coord,
+              width: 24,
+              height: 24,
+              alignment: Alignment.center,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: c.withValues(alpha: 0.8),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 1.5),
+                ),
+                child: const Icon(Icons.location_on, color: Colors.white, size: 14),
+              ),
+            ),
+          );
+        }
       }
     }
 
@@ -1479,8 +1598,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
         markers.add(
           Marker(
             point: LatLng(lat, lng),
-            width: 40,
-            height: 40,
+            width: 80,
+            height: 80,
+            alignment: Alignment.center,
             child: Column(
               children: [
                 Container(
@@ -1496,149 +1616,351 @@ class _AdminDashboardState extends State<AdminDashboard> {
       }
     });
 
-    return FlutterMap(
-      mapController: _mapController,
-      options: const MapOptions(
-        initialCenter: LatLng(13.047, 80.11),
-        initialZoom: 12.0,
-      ),
+    final query = _liveMapSearchQuery.toLowerCase();
+    final matches = _routes.where((r) {
+      return r.name.toLowerCase().contains(query) || r.key.toLowerCase().contains(query) || r.stops.any((s) => s.toLowerCase().contains(query));
+    }).toList();
+
+    return Stack(
       children: [
-        TileLayer(
-          urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-          subdomains: const ['a', 'b', 'c', 'd'],
+        FlutterMap(
+          mapController: _mapController,
+          options: const MapOptions(
+            initialCenter: LatLng(13.047, 80.11),
+            initialZoom: 12.0,
+          ),
+          children: [
+            TileLayer(
+              urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+              subdomains: const ['a', 'b', 'c', 'd'],
+            ),
+            MarkerLayer(markers: markers),
+          ],
         ),
-        PolylineLayer(polylines: polylines),
-        MarkerLayer(markers: markers),
+        
+        // Search Bar Overlay
+        Positioned(
+          top: 16,
+          left: 16,
+          right: 16,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF2563EB).withValues(alpha: 0.15),
+                      blurRadius: 16,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                  border: Border.all(color: const Color(0xFF2563EB).withValues(alpha: 0.3), width: 1.5),
+                ),
+                child: TextField(
+                  controller: _liveMapSearchCtrl,
+                  onChanged: (val) => setState(() => _liveMapSearchQuery = val),
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
+                  decoration: InputDecoration(
+                    hintText: "Search route or bus stop...",
+                    hintStyle: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13, fontWeight: FontWeight.w600),
+                    border: InputBorder.none,
+                    suffixIcon: _liveMapSearchQuery.isNotEmpty || _selectedLiveRoute != null
+                        ? IconButton(
+                            icon: const Icon(Icons.clear, color: Colors.grey),
+                            onPressed: () {
+                              setState(() {
+                                _liveMapSearchCtrl.clear();
+                                _liveMapSearchQuery = "";
+                                _selectedLiveRoute = null;
+                              });
+                            },
+                          )
+                        : null,
+                    icon: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEFF6FF),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.search_rounded, size: 20, color: Color(0xFF2563EB)),
+                    ),
+                  ),
+                ),
+              ),
+              
+              if (_liveMapSearchQuery.isNotEmpty)
+                Container(
+                  margin: const EdgeInsets.only(top: 8),
+                  constraints: const BoxConstraints(maxHeight: 250),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, 4))],
+                  ),
+                  child: matches.isEmpty
+                      ? const Padding(padding: EdgeInsets.all(16), child: Text("No routes found", style: TextStyle(color: Colors.grey)))
+                      : ListView.separated(
+                          shrinkWrap: true,
+                          itemCount: matches.length,
+                          separatorBuilder: (_, __) => const Divider(height: 1),
+                          itemBuilder: (ctx, idx) {
+                            final r = matches[idx];
+                            return ListTile(
+                              leading: const Icon(Icons.directions_bus, color: Color(0xFF2563EB)),
+                              title: Text(r.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                              subtitle: Text(r.stops.take(3).join(', ') + '...', style: const TextStyle(fontSize: 11)),
+                              onTap: () {
+                                setState(() {
+                                  _selectedLiveRoute = r;
+                                  _liveMapSearchQuery = "";
+                                  _liveMapSearchCtrl.text = r.name;
+                                  
+                                  // Optional: Center map on first stop of the route
+                                  if (r.stops.isNotEmpty && coordsConfig[r.stops[0]] != null) {
+                                    _mapController.move(coordsConfig[r.stops[0]]!, 12.0);
+                                  }
+                                });
+                              },
+                            );
+                          },
+                        ),
+                ),
+            ],
+          ),
+        ),
       ],
     );
   }
 
   Widget _buildSTTIntercomTab() {
-    final List<String> activeBusIds = _adminIntercomMessages.keys.toList();
+    // Get list of all registered bus routes from the driver registry
+    final List<String> activeBusIds = _drivers.map((d) => d.bus).toList();
+    
+    // Filter by search query
+    final query = _intercomSearchQuery.toLowerCase();
+    final filteredBusIds = activeBusIds.where((bus) => bus.toLowerCase().contains(query)).toList();
 
-    return Row(
-      children: [
-        // Left Column - Bus list
-        Container(
-          width: 140,
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            border: Border(right: BorderSide(color: Color(0xFFE2E8F0))),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Padding(
-                padding: EdgeInsets.all(12.0),
-                child: Text("ACTIVE BUSES", style: TextStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Color(0xFF64748B))),
-              ),
-              const Divider(height: 1),
-              Expanded(
-                child: activeBusIds.isEmpty
-                    ? const Center(child: Padding(padding: EdgeInsets.all(8.0), child: Text("No driver text channel active", style: TextStyle(fontSize: 10, color: Colors.grey))))
-                    : ListView.builder(
-                        itemCount: activeBusIds.length,
-                        itemBuilder: (ctx, idx) {
-                          final bus = activeBusIds[idx];
-                          return ListTile(
-                            dense: true,
-                            title: Text("Bus $bus", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
-                            trailing: const Icon(Icons.circle, size: 8, color: Colors.green),
-                            onTap: () {
-                              setState(() {
-                                _adminChatInputCtrl.text = ""; // clear input
-                              });
-                            },
-                          );
-                        },
+    return Container(
+      color: const Color(0xFFF0F2F5), // WhatsApp web background color
+      child: Row(
+        children: [
+          // Left Column - Chat List
+          Container(
+            width: 300,
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              border: Border(right: BorderSide(color: Color(0xFFE2E8F0))),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Header & Search
+                Container(
+                  color: const Color(0xFFF0F2F5),
+                  padding: const EdgeInsets.all(12),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: TextField(
+                      controller: _intercomSearchCtrl,
+                      onChanged: (val) => setState(() => _intercomSearchQuery = val),
+                      decoration: const InputDecoration(
+                        hintText: "Search or start new chat",
+                        hintStyle: TextStyle(fontSize: 13, color: Colors.grey),
+                        prefixIcon: Icon(Icons.search, size: 20, color: Colors.grey),
+                        border: InputBorder.none,
+                        contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                       ),
-              )
-            ],
-          ),
-        ),
-
-        // Right Column - Intercom chat panels
-        Expanded(
-          child: activeBusIds.isEmpty
-              ? const Center(child: Text("Select an active bus to send notices.", style: TextStyle(fontSize: 11, color: Colors.grey, fontWeight: FontWeight.bold)))
-              : Column(
-                  children: [
-                    Expanded(
-                      child: ListView.builder(
-                        padding: const EdgeInsets.all(12),
-                        itemCount: activeBusIds.length,
-                        itemBuilder: (ctx, idx) {
-                          final bus = activeBusIds[idx];
-                          final msgs = _adminIntercomMessages[bus] ?? [];
-                          return Card(
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                            margin: const EdgeInsets.only(bottom: 12),
-                            color: Colors.white,
-                            elevation: 0,
-                            borderOnForeground: true,
-                            child: Padding(
-                              padding: const EdgeInsets.all(12),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ),
+                ),
+                const Divider(height: 1),
+                
+                // Chat List
+                Expanded(
+                  child: activeBusIds.isEmpty
+                      ? const Center(child: Padding(padding: EdgeInsets.all(16.0), child: Text("No active drivers found.", style: TextStyle(fontSize: 13, color: Colors.grey))))
+                      : ListView.separated(
+                          itemCount: filteredBusIds.length,
+                          separatorBuilder: (ctx, idx) => const Divider(height: 1, indent: 64),
+                          itemBuilder: (ctx, idx) {
+                            final bus = filteredBusIds[idx];
+                            final msgs = _adminIntercomMessages[bus] ?? [];
+                            final lastMsg = msgs.isNotEmpty ? msgs.last['msg'] : '';
+                            
+                            final isSelected = _selectedIntercomBus == bus;
+                            
+                            return ListTile(
+                              tileColor: isSelected ? const Color(0xFFF0F2F5) : Colors.white,
+                              leading: const CircleAvatar(
+                                backgroundColor: Color(0xFFDFE5E7),
+                                child: Icon(Icons.person, color: Colors.white),
+                              ),
+                              title: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                    children: [
-                                      Text("Channel Bus $bus", style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 12, color: Color(0xFF1E3A8A))),
-                                      const Icon(Icons.circle, size: 8, color: Colors.green),
-                                    ],
-                                  ),
-                                  const Divider(),
-                                  const SizedBox(height: 6),
-                                  Column(
-                                    children: msgs.map((m) {
-                                      final isMe = m['sender'] == 'admin';
-                                      return Align(
-                                        alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-                                        child: Container(
-                                          margin: const EdgeInsets.symmetric(vertical: 2),
-                                          padding: const EdgeInsets.all(8),
-                                          decoration: BoxDecoration(
-                                            color: isMe ? const Color(0xFFEFF6FF) : const Color(0xFFF1F5F9),
-                                            borderRadius: BorderRadius.circular(10),
-                                          ),
-                                          child: Text("${isMe ? 'You' : 'Driver'}: ${m['msg']}", style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                                        ),
-                                      );
-                                    }).toList(),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Row(
-                                    children: [
-                                      Expanded(
-                                        child: TextField(
-                                          decoration: const InputDecoration(
-                                            hintText: "Type note details...",
-                                            hintStyle: TextStyle(fontSize: 10),
-                                            contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                            border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(20))),
-                                          ),
-                                          style: const TextStyle(fontSize: 11),
-                                          onSubmitted: (val) {
-                                            if (val.trim().isNotEmpty) {
-                                              _sendAdminTextMessage(bus, val.trim());
-                                            }
-                                          },
-                                        ),
-                                      ),
-                                    ],
-                                  ),
+                                  Text("Route $bus", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.black87)),
+                                  const Icon(Icons.circle, size: 10, color: Color(0xFF25D366)),
                                 ],
                               ),
-                            ),
-                          );
-                        },
+                              subtitle: Text(
+                                lastMsg,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 13, color: Colors.grey),
+                              ),
+                              onTap: () {
+                                setState(() {
+                                  _selectedIntercomBus = bus;
+                                });
+                              },
+                            );
+                          },
+                        ),
+                )
+              ],
+            ),
+          ),
+
+          // Right Column - Chat Window
+          Expanded(
+            child: _selectedIntercomBus == null
+                ? Container(
+                    color: const Color(0xFFF0F2F5),
+                    child: Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: const [
+                          Icon(Icons.chat_bubble_outline, size: 64, color: Colors.black26),
+                          SizedBox(height: 16),
+                          Text("Select a driver to start messaging", style: TextStyle(fontSize: 16, color: Colors.black54)),
+                        ],
                       ),
                     ),
-                  ],
-                ),
-        )
-      ],
+                  )
+                : Column(
+                    children: [
+                      // Chat Header
+                      Container(
+                        color: const Color(0xFFF0F2F5),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        child: Row(
+                          children: [
+                            const CircleAvatar(
+                              backgroundColor: Color(0xFFDFE5E7),
+                              child: Icon(Icons.person, color: Colors.white),
+                            ),
+                            const SizedBox(width: 12),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text("Route $_selectedIntercomBus", style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                                const Text("online", style: TextStyle(fontSize: 12, color: Colors.grey)),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      
+                      // Chat Messages
+                      Expanded(
+                        child: Container(
+                          decoration: const BoxDecoration(
+                            image: DecorationImage(
+                              image: NetworkImage("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png"),
+                              fit: BoxFit.cover,
+                              opacity: 0.5,
+                            ),
+                          ),
+                          child: ListView.builder(
+                            padding: const EdgeInsets.all(16),
+                            itemCount: (_adminIntercomMessages[_selectedIntercomBus] ?? []).length,
+                            itemBuilder: (ctx, idx) {
+                              final m = _adminIntercomMessages[_selectedIntercomBus!]![idx];
+                              final isMe = m['sender'] == 'admin';
+                              return Align(
+                                alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                                child: Container(
+                                  margin: const EdgeInsets.symmetric(vertical: 4),
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                  decoration: BoxDecoration(
+                                    color: isMe ? const Color(0xFFDCF8C6) : Colors.white,
+                                    borderRadius: BorderRadius.circular(12).copyWith(
+                                      topRight: isMe ? const Radius.circular(0) : const Radius.circular(12),
+                                      topLeft: isMe ? const Radius.circular(12) : const Radius.circular(0),
+                                    ),
+                                    boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 1, offset: Offset(0, 1))],
+                                  ),
+                                  child: Text("${m['msg']}", style: const TextStyle(fontSize: 14, color: Colors.black87)),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                      
+                      // Chat Input
+                      Container(
+                        color: const Color(0xFFF0F2F5),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.emoji_emotions_outlined, color: Colors.grey, size: 26),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(24),
+                                ),
+                                child: TextField(
+                                  controller: _adminChatInputCtrl,
+                                  decoration: const InputDecoration(
+                                    hintText: "Type a message",
+                                    hintStyle: TextStyle(fontSize: 14, color: Colors.grey),
+                                    contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                    border: InputBorder.none,
+                                  ),
+                                  style: const TextStyle(fontSize: 14),
+                                  onSubmitted: (val) {
+                                    if (val.trim().isNotEmpty) {
+                                      _sendAdminTextMessage(_selectedIntercomBus!, val.trim());
+                                      _adminChatInputCtrl.clear();
+                                    }
+                                  },
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            InkWell(
+                              onTap: () {
+                                final val = _adminChatInputCtrl.text;
+                                if (val.trim().isNotEmpty && _selectedIntercomBus != null) {
+                                  _sendAdminTextMessage(_selectedIntercomBus!, val.trim());
+                                  _adminChatInputCtrl.clear();
+                                }
+                              },
+                              child: const CircleAvatar(
+                                backgroundColor: Color(0xFF00A884),
+                                radius: 20,
+                                child: Icon(Icons.send, color: Colors.white, size: 20),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+          )
+        ],
+      ),
     );
   }
 
@@ -1912,79 +2234,115 @@ class _AdminDashboardState extends State<AdminDashboard> {
   }
 
   Widget _buildRoutesRegistrySubTab() {
+    final query = _adminRouteSearchQuery.toLowerCase();
+    final displayedRoutes = _routes.where((r) {
+      if (query.isEmpty) return true;
+      final nameMatch = r.name.toLowerCase().contains(query);
+      final stopMatch = r.stops.any((s) => s.toLowerCase().contains(query));
+      return nameMatch || stopMatch;
+    }).toList();
+
     return Scaffold(
       backgroundColor: Colors.transparent,
-      body: ListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: _routes.length,
-        itemBuilder: (ctx, idx) {
-          final r = _routes[idx];
-          Color c = const Color(0xFF2563EB);
-          try {
-            c = Color(int.parse(r.color.replaceFirst('#', '0xFF')));
-          } catch (_) {}
-          return Card(
-            color: Colors.white,
-            elevation: 0,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: const BorderSide(color: Color(0xFFEEF2FF), width: 1.5)),
-            margin: const EdgeInsets.only(bottom: 10),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text("🛣️ ${r.name}", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13, color: c)),
-                      Text("${r.stops.length} Stops", style: const TextStyle(fontSize: 10, color: Color(0xFF64748B), fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  Text("Path: ${r.stops.join(' ➔ ')}", style: const TextStyle(fontSize: 10, color: Color(0xFF475569), height: 1.3, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      TextButton.icon(
-                        icon: const Icon(Icons.edit, size: 14),
-                        label: const Text("Edit", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
-                        onPressed: () => _openRouteEditBottomSheet(r),
-                      ),
-                      TextButton.icon(
-                        icon: const Icon(Icons.delete_outline, size: 14, color: Colors.red),
-                        label: const Text("Delete", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.red)),
-                        onPressed: () {
-                          showDialog(
-                            context: context,
-                            builder: (diag) => AlertDialog(
-                              title: const Text("Confirm Delete", style: TextStyle(fontWeight: FontWeight.bold)),
-                              content: Text("Are you sure you want to delete the ${r.name} Route?"),
-                              actions: [
-                               TextButton(onPressed: () => Navigator.pop(diag), child: const Text("Cancel")),
-                                TextButton(
-                                  onPressed: () {
-                                    setState(() {
-                                      _routes.removeWhere((item) => item.id == r.id);
-                                      _saveRoutes();
-                                    });
-                                    Navigator.pop(diag);
-                                    _showAppSnackBar("Route deleted.");
-                                  },
-                                  child: const Text("Delete", style: TextStyle(color: Colors.red)),
-                                ),
-                              ],
-                            ),
-                          );
-                        },
-                      ),
-                    ],
-                  ),
-                ],
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFE2E8F0)),
+              ),
+              child: TextField(
+                controller: _adminRouteSearchCtrl,
+                onChanged: (val) => setState(() => _adminRouteSearchQuery = val),
+                style: const TextStyle(fontSize: 12),
+                decoration: const InputDecoration(
+                  hintText: "Search by route name or bus stop...",
+                  hintStyle: TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                  border: InputBorder.none,
+                  icon: Icon(Icons.search, size: 16, color: Color(0xFF94A3B8)),
+                ),
               ),
             ),
-          );
-        },
+          ),
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              itemCount: displayedRoutes.length,
+              itemBuilder: (ctx, idx) {
+                final r = displayedRoutes[idx];
+                Color c = const Color(0xFF2563EB);
+                try {
+                  c = Color(int.parse(r.color.replaceFirst('#', '0xFF')));
+                } catch (_) {}
+                return Card(
+                  color: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: const BorderSide(color: Color(0xFFEEF2FF), width: 1.5)),
+                  margin: const EdgeInsets.only(bottom: 10),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text("🛣️ ${r.name}", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13, color: c)),
+                            Text("${r.stops.length} Stops", style: const TextStyle(fontSize: 10, color: Color(0xFF64748B), fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Text("Path: ${r.stops.join(' ➔ ')}", style: const TextStyle(fontSize: 10, color: Color(0xFF475569), height: 1.3, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            TextButton.icon(
+                              icon: const Icon(Icons.edit, size: 14),
+                              label: const Text("Edit", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                              onPressed: () => _openRouteEditBottomSheet(r),
+                            ),
+                            TextButton.icon(
+                              icon: const Icon(Icons.delete_outline, size: 14, color: Colors.red),
+                              label: const Text("Delete", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.red)),
+                              onPressed: () {
+                                showDialog(
+                                  context: context,
+                                  builder: (diag) => AlertDialog(
+                                    title: const Text("Confirm Delete", style: TextStyle(fontWeight: FontWeight.bold)),
+                                    content: Text("Are you sure you want to delete the ${r.name} Route?"),
+                                    actions: [
+                                     TextButton(onPressed: () => Navigator.pop(diag), child: const Text("Cancel")),
+                                      TextButton(
+                                        onPressed: () {
+                                          setState(() {
+                                            _routes.removeWhere((item) => item.id == r.id);
+                                            _saveRoutes();
+                                          });
+                                          Navigator.pop(diag);
+                                          _showAppSnackBar("Route deleted.");
+                                        },
+                                        child: const Text("Delete", style: TextStyle(color: Colors.red)),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
       ),
       floatingActionButton: FloatingActionButton(
         backgroundColor: const Color(0xFF2563EB),
