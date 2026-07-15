@@ -66,9 +66,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
   int _recordingDurationSecs = 0;
   Timer? _recordingTimer;
   List<double> _recordingWaveforms = [];
-  String? _playingMsgId;
-  double _playbackProgress = 0.0;
-  Timer? _playbackTimer;
 
   // Admin STT Intercom State
   Map<String, List<Map<String, dynamic>>> _adminIntercomMessages = {};
@@ -713,6 +710,62 @@ class _AdminDashboardState extends State<AdminDashboard> {
       });
     } catch (e) {
       debugPrint("Error listening to new stops: $e");
+    }
+  }
+
+  void _listenForSafetyAlerts() {
+    _safetyAlertsSub?.cancel();
+    if (Firebase.apps.isEmpty) return;
+    try {
+      _safetyAlertsSub = FirebaseDatabase.instance.ref('safety_alerts').onValue.listen((event) {
+        final data = event.snapshot.value as Map?;
+        final Map<String, dynamic> temp = {};
+        if (data != null) {
+          data.forEach((busId, alertsMap) {
+            if (alertsMap is Map) {
+              final Map<String, dynamic> alerts = {};
+              alertsMap.forEach((alertType, alertVal) {
+                if (alertVal is Map) {
+                  alerts[alertType.toString()] = Map<String, dynamic>.from(alertVal);
+                }
+              });
+              temp[busId.toString()] = alerts;
+            }
+          });
+        }
+        if (mounted) {
+          setState(() {
+            _safetyAlerts = temp;
+          });
+        }
+      });
+    } catch (e) {
+      debugPrint("Error listening to safety alerts: $e");
+    }
+  }
+
+  void _listenForAdminStudents() {
+    _adminStudentsSub?.cancel();
+    if (Firebase.apps.isEmpty) return;
+    try {
+      _adminStudentsSub = FirebaseDatabase.instance.ref('students').onValue.listen((event) {
+        final data = event.snapshot.value as Map?;
+        final Map<String, dynamic> temp = {};
+        if (data != null) {
+          data.forEach((studentId, profileVal) {
+            if (profileVal is Map) {
+              temp[studentId.toString()] = Map<String, dynamic>.from(profileVal);
+            }
+          });
+        }
+        if (mounted) {
+          setState(() {
+            _adminStudentsList = temp;
+          });
+        }
+      });
+    } catch (e) {
+      debugPrint("Error listening to admin students: $e");
     }
   }
 
