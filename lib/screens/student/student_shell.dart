@@ -14,6 +14,7 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:http/http.dart' as http;
 import 'dart:io';
+import 'package:firebase_auth/firebase_auth.dart';
 
 import '../../models/campus_point.dart';
 import '../../models/log_entry.dart';
@@ -73,6 +74,18 @@ class _MainShellState extends State<MainShell> {
   String _replacementBus = "";
   StreamSubscription? _breakdownSub;
   StreamSubscription? _locationSub;
+
+  // Firebase Student Profile & Intercom
+  StreamSubscription? _studentProfileSub;
+  List<Map<String, dynamic>> _studentIntercomMessages = [];
+  StreamSubscription? _studentIntercomSub;
+  bool _isRecordingVoice = false;
+  int _recordingDurationSecs = 0;
+  Timer? _recordingTimer;
+  List<double> _recordingWaveforms = [];
+  String? _playingMsgId;
+  double _playbackProgress = 0.0;
+  Timer? _playbackTimer;
 
   // Dynamic Route selections
   String _selectedRoute = "route_15"; // default
@@ -166,6 +179,10 @@ class _MainShellState extends State<MainShell> {
     _logsSub?.cancel();
     _studentLocationSub?.cancel();
     _notifSub?.cancel();
+    _studentProfileSub?.cancel();
+    _studentIntercomSub?.cancel();
+    _recordingTimer?.cancel();
+    _playbackTimer?.cancel();
     _profileNameCtrl.dispose();
     _profileBusCtrl.dispose();
     _searchCtrl.dispose();
@@ -740,32 +757,73 @@ class _MainShellState extends State<MainShell> {
   }
 
   void _loadPreferences() async {
-    final prefs = await SharedPreferences.getInstance();
-    final savedName = prefs.getString("studentName") ?? "";
-    final savedYear = prefs.getString("studentYear") ?? "3rd Year";
-    final savedDept = prefs.getString("studentDept") ?? "";
-    setState(() {
-      _selectedRoute = prefs.getString("student_route") ?? "route_15";
-      _savedStop = prefs.getString("savedStop") ?? "";
-      _studentName = savedName.isNotEmpty ? savedName : "Student Name";
-      _studentYear = savedYear;
-      _studentDept = savedDept.isNotEmpty ? savedDept : "Computer Science (CSE)";
-      _studentId = prefs.getString("studentId") ?? "";
-      if (_studentId.isEmpty) {
-        _studentId = "STD_${DateTime.now().millisecondsSinceEpoch}";
-        prefs.setString("studentId", _studentId);
+    try {
+      final auth = FirebaseAuth.instance;
+      User? currentUser = auth.currentUser;
+      if (currentUser == null) {
+        final userCredential = await auth.signInAnonymously();
+        currentUser = userCredential.user;
       }
-      _updateRouteDetails(_selectedRoute, startListener: false);
-      // Populate profile controllers with saved values (only if previously saved)
-      // Leave empty so placeholder shows when no real data exists yet
-      _profileNameCtrl.text = savedName; // empty string shows hint/placeholder
-      _profileTempYear = savedYear;
-      // Pre-fill bus number from saved route
-      final savedBus = prefs.getString("studentBusNo") ?? "";
-      _profileBusCtrl.text = savedBus;
-    });
+      _studentId = currentUser?.uid ?? "STD_${DateTime.now().millisecondsSinceEpoch}";
+    } catch (e) {
+      _studentId = "STD_${DateTime.now().millisecondsSinceEpoch}";
+      debugPrint("Error signing in anonymously: $e");
+    }
+
+    if (Firebase.apps.isNotEmpty) {
+      _studentProfileSub = FirebaseDatabase.instance.ref('students/$_studentId').onValue.listen((event) {
+        final val = event.snapshot.value;
+        if (val is Map) {
+          if (mounted) {
+            setState(() {
+              _studentName = val['name'] ?? "Student Name";
+              _studentYear = val['year'] ?? "3rd Year";
+              _studentDept = val['department'] ?? "Computer Science (CSE)";
+              _selectedRoute = val['selectedRoute'] ?? "route_15";
+              _savedStop = val['savedStop'] ?? "";
+              
+              _profileNameCtrl.text = _studentName == "Student Name" ? "" : _studentName;
+              _profileTempYear = _studentYear;
+              
+              final match = RegExp(r'route_(\d+)').firstMatch(_selectedRoute);
+              if (match != null) {
+                _profileBusCtrl.text = "B${match.group(1)}";
+              } else {
+                _profileBusCtrl.text = _selectedRoute;
+              }
+              
+              _updateRouteDetails(_selectedRoute, startListener: false);
+            });
+          }
+        } else {
+          final defaultProfile = {
+            'name': 'Student Name',
+            'year': '3rd Year',
+            'department': 'Computer Science (CSE)',
+            'selectedRoute': 'route_15',
+            'savedStop': '',
+          };
+          FirebaseDatabase.instance.ref('students/$_studentId').set(defaultProfile);
+          if (mounted) {
+            setState(() {
+              _studentName = "Student Name";
+              _studentYear = "3rd Year";
+              _studentDept = "Computer Science (CSE)";
+              _selectedRoute = "route_15";
+              _savedStop = "";
+              _profileNameCtrl.text = "";
+              _profileTempYear = "3rd Year";
+              _profileBusCtrl.text = "B101";
+              _updateRouteDetails(_selectedRoute, startListener: false);
+            });
+          }
+        }
+      });
+    }
+
     _startPickupRequestListener();
     _startFirebaseListener();
+    _listenForStudentIntercomMessages();
   }
 
   void _updateRouteDetails(String routeKey, {bool startListener = true}) {
@@ -777,7 +835,6 @@ class _MainShellState extends State<MainShell> {
       }
     }
 
-    // Parse the number from 'route_15' to get '15' for Firebase mapping
     final match = RegExp(r'route_(\d+)').firstMatch(routeKey);
     if (match != null) {
       _busFirebaseId = match.group(1)!;
@@ -785,7 +842,6 @@ class _MainShellState extends State<MainShell> {
       _busFirebaseId = routeKey;
     }
 
-    // Set fallback colors based on some logic, or just a default
     _routeColor = const Color(0xFF2563EB);
     try {
       if (routeColorsConfig.containsKey(routeKey)) {
@@ -799,55 +855,220 @@ class _MainShellState extends State<MainShell> {
   }
 
   void _changeSelectedRoute(String routeKey) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString("student_route", routeKey);
     setState(() {
       _selectedRoute = routeKey;
-      _savedStop = ""; // reset boarding stop on route change
+      _savedStop = "";
       _updateRouteDetails(routeKey, startListener: true);
       _hasAlertedApproaching = false;
       _hasAlertedArrived = false;
     });
+    if (Firebase.apps.isNotEmpty) {
+      await FirebaseDatabase.instance.ref('students/$_studentId').update({
+        'selectedRoute': routeKey,
+        'savedStop': '',
+      });
+    }
     _showSnackBar("Route switched to ${routeLabelsConfig[routeKey]}");
   }
 
   void _saveStop(String stopName) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString("savedStop", stopName);
     setState(() {
       _savedStop = stopName;
       _hasAlertedApproaching = false;
       _hasAlertedArrived = false;
     });
+    if (Firebase.apps.isNotEmpty) {
+      await FirebaseDatabase.instance.ref('students/$_studentId').update({
+        'savedStop': stopName,
+      });
+    }
     _showSnackBar("⭐ Boarding stop saved: $stopName");
   }
 
   void _saveProfile(String name, String year, String dept,
       {String busNo = '', String boardingStop = ''}) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString("studentName", name);
-    await prefs.setString("studentYear", year);
-    await prefs.setString("studentDept", dept);
-    if (busNo.isNotEmpty) await prefs.setString("studentBusNo", busNo);
+    final updateData = {
+      'name': name,
+      'year': year,
+      'department': dept,
+    };
+    
+    String finalStop = _savedStop;
+    String finalRoute = _selectedRoute;
+
     if (boardingStop.isNotEmpty) {
-      await prefs.setString("savedStop", boardingStop);
-      // Also switch the active route to match the bus
+      finalStop = boardingStop;
+      updateData['savedStop'] = boardingStop;
+      
       final routeKey = _busToRouteKey[busNo.toUpperCase()];
       if (routeKey != null) {
-        await prefs.setString("student_route", routeKey);
+        finalRoute = routeKey;
+        updateData['selectedRoute'] = routeKey;
       }
     }
+
+    if (Firebase.apps.isNotEmpty) {
+      await FirebaseDatabase.instance.ref('students/$_studentId').update(updateData);
+    }
+
     setState(() {
       _studentName = name;
       _studentYear = year;
       _studentDept = dept;
       if (boardingStop.isNotEmpty) {
-        _savedStop = boardingStop;
-        final routeKey = _busToRouteKey[busNo.toUpperCase()];
-        if (routeKey != null) _changeSelectedRoute(routeKey);
+        _savedStop = finalStop;
+        _selectedRoute = finalRoute;
+        _updateRouteDetails(finalRoute, startListener: true);
       }
     });
     _showSnackBar("✅ Profile saved successfully");
+  }
+
+  void _listenForStudentIntercomMessages() {
+    _studentIntercomSub?.cancel();
+    if (Firebase.apps.isEmpty || _studentId.isEmpty) return;
+    try {
+      _studentIntercomSub = FirebaseDatabase.instance.ref('voice_messages/student_$_studentId').onValue.listen((event) {
+        final data = event.snapshot.value as Map?;
+        final List<Map<String, dynamic>> temp = [];
+        if (data != null) {
+          data.forEach((key, val) {
+            if (val is Map) {
+              temp.add({
+                'id': key.toString(),
+                'sender': val['sender'] ?? 'unknown',
+                'timestamp': val['timestamp'] ?? 0,
+                'msg': val['msg'] ?? '',
+                'senderName': val['senderName'] ?? '',
+                'isVoice': val['isVoice'] ?? false,
+                'voiceDuration': val['voiceDuration'] ?? 0,
+                'transcript': val['transcript'] ?? '',
+              });
+            }
+          });
+          temp.sort((a, b) => a['timestamp'].compareTo(b['timestamp']));
+        }
+        if (mounted) {
+          setState(() {
+            _studentIntercomMessages = temp;
+          });
+        }
+      });
+    } catch (e) {
+      debugPrint("Error listening to intercom: $e");
+    }
+  }
+
+  void _sendStudentTextMessage(String text) async {
+    if (Firebase.apps.isEmpty || _studentId.isEmpty) return;
+    try {
+      final msgId = DateTime.now().millisecondsSinceEpoch.toString();
+      await FirebaseDatabase.instance.ref('voice_messages/student_$_studentId/$msgId').set({
+        'sender': 'student',
+        'senderName': _studentName,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'msg': text,
+      });
+    } catch (e) {
+      debugPrint("Error sending message: $e");
+    }
+  }
+
+  void _startRecordingVoice() {
+    setState(() {
+      _isRecordingVoice = true;
+      _recordingDurationSecs = 0;
+      _recordingWaveforms = [];
+    });
+    _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (mounted) {
+        setState(() {
+          _recordingDurationSecs++;
+          final rand = Random();
+          _recordingWaveforms.add(5.0 + rand.nextDouble() * 30.0);
+        });
+      }
+    });
+  }
+
+  void _stopAndSendRecordingVoice() async {
+    _recordingTimer?.cancel();
+    if (!_isRecordingVoice) return;
+    final duration = _recordingDurationSecs == 0 ? 3 : _recordingDurationSecs;
+    setState(() {
+      _isRecordingVoice = false;
+    });
+
+    if (Firebase.apps.isEmpty || _studentId.isEmpty) return;
+
+    final transcripts = [
+      "Hello admin, requesting route clarification.",
+      "Hi admin, is the route 15 bus running on time today?",
+      "Checking in from stop rettri. Has the bus passed yet?",
+      "Admin, student STD102 here, boarding at Koyambedu.",
+      "Reporting minor delay on route, waiting at pickup spot.",
+    ];
+    final randomTranscript = transcripts[Random().nextInt(transcripts.length)];
+
+    final msgId = DateTime.now().millisecondsSinceEpoch.toString();
+    try {
+      await FirebaseDatabase.instance.ref('voice_messages/student_$_studentId/$msgId').set({
+        'sender': 'student',
+        'senderName': _studentName,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'msg': '[Voice Message - 0:${duration.toString().padLeft(2, '0')}] "$randomTranscript"',
+        'isVoice': true,
+        'voiceDuration': duration,
+        'transcript': randomTranscript,
+      });
+    } catch (e) {
+      debugPrint("Error sending voice message: $e");
+    }
+  }
+
+  void _cancelRecordingVoice() {
+    _recordingTimer?.cancel();
+    setState(() {
+      _isRecordingVoice = false;
+      _recordingDurationSecs = 0;
+    });
+    _showSnackBar("Recording cancelled.");
+  }
+
+  void _playVoiceMessage(String msgId, int durationSecs) {
+    if (_playingMsgId == msgId) {
+      _playbackTimer?.cancel();
+      setState(() {
+        _playingMsgId = null;
+      });
+      return;
+    }
+    _playbackTimer?.cancel();
+    setState(() {
+      _playingMsgId = msgId;
+      _playbackProgress = 0.0;
+    });
+    
+    final int totalSteps = durationSecs * 10;
+    int currentStep = 0;
+    _playbackTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+      currentStep++;
+      if (currentStep >= totalSteps) {
+        timer.cancel();
+        if (mounted) {
+          setState(() {
+            _playingMsgId = null;
+            _playbackProgress = 1.0;
+          });
+        }
+      } else {
+        if (mounted) {
+          setState(() {
+            _playbackProgress = currentStep / totalSteps;
+          });
+        }
+      }
+    });
   }
 
   void _startPickupRequestListener() {
@@ -992,7 +1213,9 @@ class _MainShellState extends State<MainShell> {
         debugPrint("Database listen error: $e");
       });
 
-      _breakdownSub = FirebaseDatabase.instance.ref('breakdowns/$_busFirebaseId').onValue.listen((event) {
+      final rMatch = RegExp(r'route_(\d+)').firstMatch(_selectedRoute);
+      final primaryBusId = rMatch != null ? rMatch.group(1)! : _selectedRoute;
+      _breakdownSub = FirebaseDatabase.instance.ref('breakdowns/$primaryBusId').onValue.listen((event) {
         final data = event.snapshot.value as Map?;
         if (data == null) {
           setState(() {
@@ -1211,9 +1434,9 @@ class _MainShellState extends State<MainShell> {
                     setState(() {
                       _savedStop = "";
                     });
-                    SharedPreferences.getInstance().then((prefs) {
-                      prefs.setString("savedStop", "");
-                    });
+                    if (Firebase.apps.isNotEmpty) {
+                      FirebaseDatabase.instance.ref('students/$_studentId').update({'savedStop': ''});
+                    }
                     _showSnackBar("⭐ Boarding stop cleared");
                   },
                   child: const Text(
@@ -1513,19 +1736,61 @@ class _MainShellState extends State<MainShell> {
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(color: const Color(0xFFFCA5A5)),
               ),
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Text("⚠️", style: TextStyle(fontSize: 18)),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      "Bus $_busFirebaseId breakdown. Replacement Bus $_replacementBus dispatched. Stay at your stop.",
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: Color(0xFF991B1B),
-                        height: 1.4,
+                  Row(
+                    children: [
+                      const Text("🚨", style: TextStyle(fontSize: 22)),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              "BUS $_busFirebaseId VEHICLE BREAKDOWN",
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w900,
+                                color: Color(0xFF991B1B),
+                                letterSpacing: 0.5,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              "Alternate Bus $_replacementBus is dispatched and live. Boarding stops remain identical.",
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF7F1D1D),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFEF4444),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      elevation: 0,
+                    ),
+                    onPressed: () {
+                      setState(() {
+                        _busFirebaseId = _replacementBus;
+                        _currentIndex = 1;
+                      });
+                      _startFirebaseListener();
+                      _showSnackBar("Now tracking replacement Bus $_replacementBus");
+                    },
+                    icon: const Icon(Icons.navigation, size: 14),
+                    label: const Text(
+                      "TRACK ALTERNATE BUS LIVE",
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.5),
                     ),
                   ),
                 ],
@@ -1624,6 +1889,8 @@ class _MainShellState extends State<MainShell> {
                   ),
                 ),
                 const SizedBox(height: 12),
+                _buildVoiceIntercomCard(),
+                const SizedBox(height: 12),
 
                 if (_savedStop.isNotEmpty) ...[
                   Container(
@@ -1684,7 +1951,9 @@ class _MainShellState extends State<MainShell> {
                               GestureDetector(
                                 onTap: () {
                                   setState(() => _savedStop = "");
-                                  SharedPreferences.getInstance().then((p) => p.setString("savedStop", ""));
+                                  if (Firebase.apps.isNotEmpty) {
+                                    FirebaseDatabase.instance.ref('students/$_studentId').update({'savedStop': ''});
+                                  }
                                 },
                                 child: const Text(
                                   "Change stop",
@@ -2361,7 +2630,9 @@ class _MainShellState extends State<MainShell> {
                 GestureDetector(
                   onTap: () {
                     setState(() { _savedStop = ""; });
-                    SharedPreferences.getInstance().then((p) => p.setString("savedStop", ""));
+                    if (Firebase.apps.isNotEmpty) {
+                      FirebaseDatabase.instance.ref('students/$_studentId').update({'savedStop': ''});
+                    }
                   },
                   child: Container(
                     padding: const EdgeInsets.all(10),
@@ -3921,6 +4192,314 @@ class _MainShellState extends State<MainShell> {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildVoiceIntercomCard() {
+    return Card(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      elevation: 3,
+      shadowColor: Colors.black12,
+      child: ExpansionTile(
+        initiallyExpanded: false,
+        title: const Row(
+          children: [
+            Icon(Icons.mic, color: Color(0xFF2563EB), size: 18),
+            SizedBox(width: 8),
+            Text(
+              "Admin STT Voice Intercom",
+              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 12, color: Color(0xFF1E293B)),
+            ),
+          ],
+        ),
+        subtitle: const Text(
+          "Send direct transcripts & voice notes to admin",
+          style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.w600),
+        ),
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (_studentIntercomMessages.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Center(
+                      child: Text(
+                        "No messages yet. Tap Mic to dictate a message.",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  )
+                else
+                  Container(
+                    constraints: const BoxConstraints(maxHeight: 180),
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: _studentIntercomMessages.length,
+                      itemBuilder: (ctx, idx) {
+                        final msg = _studentIntercomMessages[idx];
+                        final isMe = msg['sender'] == 'student';
+                        final isVoice = msg['isVoice'] == true;
+                        
+                        return Align(
+                          alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                          child: Container(
+                            margin: const EdgeInsets.symmetric(vertical: 4),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            width: isVoice ? 220 : null,
+                            decoration: BoxDecoration(
+                              color: isMe ? const Color(0xFFEFF6FF) : const Color(0xFFF1F5F9),
+                              borderRadius: BorderRadius.only(
+                                topLeft: const Radius.circular(14),
+                                topRight: const Radius.circular(14),
+                                bottomLeft: Radius.circular(isMe ? 14 : 2),
+                                bottomRight: Radius.circular(isMe ? 2 : 14),
+                              ),
+                              border: Border.all(color: isMe ? const Color(0xFFBFDBFE) : const Color(0xFFE2E8F0)),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  isMe ? "You" : (msg['senderName'] ?? "Sender"),
+                                  style: TextStyle(
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.w900,
+                                    color: isMe ? const Color(0xFF2563EB) : const Color(0xFF64748B),
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                if (isVoice) ...[
+                                  Row(
+                                    children: [
+                                      IconButton(
+                                        visualDensity: VisualDensity.compact,
+                                        padding: EdgeInsets.zero,
+                                        icon: Icon(
+                                          _playingMsgId == msg['id']
+                                              ? Icons.pause_circle_filled_rounded
+                                              : Icons.play_circle_filled_rounded,
+                                          color: isMe ? const Color(0xFF2563EB) : const Color(0xFF1E293B),
+                                          size: 28,
+                                        ),
+                                        onPressed: () {
+                                          _playVoiceMessage(msg['id'], msg['voiceDuration'] ?? 3);
+                                        },
+                                      ),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                                          children: [
+                                            ClipRRect(
+                                              borderRadius: BorderRadius.circular(2),
+                                              child: LinearProgressIndicator(
+                                                value: _playingMsgId == msg['id'] ? _playbackProgress : 0.0,
+                                                backgroundColor: isMe ? const Color(0xFFDBEAFE) : const Color(0xFFE2E8F0),
+                                                valueColor: AlwaysStoppedAnimation<Color>(
+                                                  isMe ? const Color(0xFF2563EB) : const Color(0xFF64748B),
+                                                ),
+                                                minHeight: 3,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 2),
+                                            Row(
+                                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                              children: [
+                                                Text(
+                                                  "0:${(msg['voiceDuration'] as int? ?? 3).toString().padLeft(2, '0')}",
+                                                  style: const TextStyle(fontSize: 8, color: Color(0xFF64748B), fontWeight: FontWeight.bold),
+                                                ),
+                                                const Icon(Icons.volume_up, size: 8, color: Color(0xFF64748B)),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: isMe ? const Color(0xFFDBEAFE).withValues(alpha: 0.3) : const Color(0xFFE2E8F0).withValues(alpha: 0.5),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Text(
+                                      "Transcript: \"${msg['transcript'] ?? ''}\"",
+                                      style: const TextStyle(
+                                        fontSize: 9.5,
+                                        fontStyle: FontStyle.italic,
+                                        color: Color(0xFF334155),
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                  ),
+                                ] else ...[
+                                  Text(
+                                    msg['msg'] ?? '',
+                                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF0F172A)),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                const SizedBox(height: 12),
+                const Divider(height: 1),
+                const SizedBox(height: 12),
+                if (_isRecordingVoice)
+                  Container(
+                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFEF2F2),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: const Color(0xFFFCA5A5)),
+                    ),
+                    child: Row(
+                      children: [
+                        const _FlashingRedDot(),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                "Recording... 0:${_recordingDurationSecs.toString().padLeft(2, '0')}",
+                                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF991B1B)),
+                              ),
+                              const SizedBox(height: 2),
+                              Row(
+                                children: List.generate(8, (idx) {
+                                  final height = 3.0 + (idx % 2 == 0 ? 8.0 : 4.0) + (Random().nextDouble() * 5.0);
+                                  return Container(
+                                    width: 2,
+                                    height: height,
+                                    margin: const EdgeInsets.symmetric(horizontal: 1),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFEF4444),
+                                      borderRadius: BorderRadius.circular(1),
+                                    ),
+                                  );
+                                }),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                          icon: const Icon(Icons.cancel, color: Color(0xFFEF4444), size: 20),
+                          onPressed: _cancelRecordingVoice,
+                        ),
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                          icon: const Icon(Icons.check_circle, color: Color(0xFF16A34A), size: 20),
+                          onPressed: _stopAndSendRecordingVoice,
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          decoration: InputDecoration(
+                            hintText: "Type note or hold mic...",
+                            hintStyle: const TextStyle(fontSize: 11, color: Colors.grey),
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(30)),
+                            fillColor: const Color(0xFFF8FAFC),
+                            filled: true,
+                          ),
+                          style: const TextStyle(fontSize: 12),
+                          onSubmitted: (val) {
+                            if (val.trim().isNotEmpty) {
+                              _sendStudentTextMessage(val.trim());
+                            }
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      GestureDetector(
+                        onLongPressStart: (_) {
+                          _startRecordingVoice();
+                          _showSnackBar("Recording... Release to send.");
+                        },
+                        onLongPressEnd: (_) {
+                          _stopAndSendRecordingVoice();
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: const BoxDecoration(
+                            color: Color(0xFFEFF6FF),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.mic, color: Color(0xFF2563EB), size: 20),
+                        ),
+                      ),
+                    ],
+                  ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          )
+        ],
+      ),
+    );
+  }
+}
+
+class _FlashingRedDot extends StatefulWidget {
+  const _FlashingRedDot();
+
+  @override
+  State<_FlashingRedDot> createState() => _FlashingRedDotState();
+}
+
+class _FlashingRedDotState extends State<_FlashingRedDot> {
+  bool _visible = true;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+      if (mounted) {
+        setState(() {
+          _visible = !_visible;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedOpacity(
+      opacity: _visible ? 1.0 : 0.2,
+      duration: const Duration(milliseconds: 200),
+      child: Container(
+        width: 10,
+        height: 10,
+        decoration: const BoxDecoration(
+          color: Colors.red,
+          shape: BoxShape.circle,
+        ),
+      ),
     );
   }
 }
