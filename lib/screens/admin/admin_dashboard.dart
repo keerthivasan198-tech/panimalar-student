@@ -44,11 +44,31 @@ class _AdminDashboardState extends State<AdminDashboard> {
   StreamSubscription? _requestsSub;
 
   // Persistence State Lists
+  // Persistence State Lists
   List<DriverEntry> _drivers = [];
   List<RouteEntry> _routes = [];
   List<LogEntry> _logs = [];
   List<AlertEntry> _alerts = [];
   List<UploadEntry> _uploads = [];
+
+  // Safety Warnings
+  Map<String, dynamic> _safetyAlerts = {};
+  StreamSubscription? _safetyAlertsSub;
+
+  // Segmented Intercom State
+  int _intercomViewMode = 0; // 0 = Drivers, 1 = Students
+  String? _selectedChatId; // e.g. driver_B101 or student_STD123
+  Map<String, dynamic> _adminStudentsList = {};
+  StreamSubscription? _adminStudentsSub;
+
+  // Voice recording & playback states
+  bool _isRecordingVoice = false;
+  int _recordingDurationSecs = 0;
+  Timer? _recordingTimer;
+  List<double> _recordingWaveforms = [];
+  String? _playingMsgId;
+  double _playbackProgress = 0.0;
+  Timer? _playbackTimer;
 
   // Admin STT Intercom State
   Map<String, List<Map<String, dynamic>>> _adminIntercomMessages = {};
@@ -121,6 +141,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
     _listenForDriversAlerts();
     _listenForAdminSettings();
     _listenForNewStops();
+    _listenForSafetyAlerts();
+    _listenForAdminStudents();
   }
 
   @override
@@ -1541,6 +1563,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
               Expanded(child: _buildStatCard("🎫", "$pendingReqs pending", "Pickup Letters Queue", const Color(0xFFEAB308))),
             ],
           ),
+          _buildFlashingSafetyAlertsWidget(),
           const SizedBox(height: 16),
 
           // Suggest stops card
@@ -2792,6 +2815,68 @@ class _AdminDashboardState extends State<AdminDashboard> {
         onPressed: _openRouteAddBottomSheet,
         child: const Icon(Icons.add),
       ),
+    );
+  }
+
+  Widget _buildFlashingSafetyAlertsWidget() {
+    List<Widget> alertTiles = [];
+    _safetyAlerts.forEach((busId, alertsMap) {
+      if (alertsMap is Map) {
+        alertsMap.forEach((alertType, alertData) {
+          if (alertData is Map && alertData['active'] == true) {
+            final msg = alertData['message'] ?? "";
+            alertTiles.add(
+              Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEF2F2),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFEF4444), width: 1.5),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.warning_amber_rounded, color: Color(0xFFEF4444), size: 24),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            "CRITICAL SAFETY WARNING: BUS $busId",
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w900,
+                              fontSize: 10,
+                              color: Color(0xFF991B1B),
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            msg,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Color(0xFF7F1D1D),
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+        });
+      }
+    });
+
+    if (alertTiles.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: alertTiles,
     );
   }
 }

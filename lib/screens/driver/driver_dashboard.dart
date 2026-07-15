@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -12,6 +11,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
 
+import 'dart:io';
 import '../../config/routes_config.dart';
 import '../../config/lang_config.dart';
 
@@ -135,7 +135,6 @@ class _DriverDashboardState extends State<DriverDashboard> {
     _listenForAdminSettings();
     _restoreTrackingState();
   }
-
 
   void _restoreTrackingState() async {
     final prefs = await SharedPreferences.getInstance();
@@ -737,10 +736,6 @@ class _DriverDashboardState extends State<DriverDashboard> {
     _showBusReadyNotification();
     _startSpeechMonitor();
     _startSafetyTimer();
-
-    // Persist tracking state
-    final prefs = await SharedPreferences.getInstance();
-    prefs.setBool('driver_is_tracking_${widget.driverBus}', true);
 
     if (_simulateRoute) {
       _simulatedPath = _interpolatePoints(_routeStops);

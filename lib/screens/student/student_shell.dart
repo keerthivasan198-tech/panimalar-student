@@ -2494,7 +2494,7 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
                   const Spacer(),
                   Text(
                     t('appTitle'),
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w900,
                       color: Colors.white,
