@@ -1,12 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
 
 import '../../config/routes_config.dart';
@@ -41,15 +42,16 @@ class _DriverDashboardState extends State<DriverDashboard> {
   double _longitude = 0.0;
   double _accuracy = 0.0;
   String _updatedAt = "--";
-  String _gpsStatus = "Offline";
-  String _replacementBus = "";
   Map<String, bool> _selectedNotifyBuses = {};
+  String _gpsStatus = "Offline";
+  String? _replacementBus;
+  String _syncStatusText = "Idle";
+  String _syncTimestamp = "--";
+  bool _isSyncing = false;
+  bool _showBusReadyBanner = false;
 
   bool _firebaseConnected = false;
   StreamSubscription? _connectedSubscription;
-  String _syncStatusText = "Firebase sync ready";
-  String _syncTimestamp = "--";
-  bool _isSyncing = false;
 
   String _nextStop = "COLLEGE";
   String _eta = "--";
@@ -61,7 +63,6 @@ class _DriverDashboardState extends State<DriverDashboard> {
   final TextEditingController _replacementController = TextEditingController();
   String _routeNotifyStatus = "";
 
-  bool _showBusReadyBanner = false;
   int _busReadyCountdown = 10;
   Timer? _busReadyTimer;
   Timer? _busReadyCountdownTimer;
@@ -96,6 +97,15 @@ class _DriverDashboardState extends State<DriverDashboard> {
   List<Map<String, dynamic>> _routeStops = [];
   String _routeKey = "route_15";
 
+  // OSRM road-snapped route polyline points
+  List<LatLng> _osrmRoutePoints = [];
+  bool _osrmLoading = false;
+
+  // Same-route buses: busId -> {lat, lng, status, busId}
+  Map<String, Map<String, dynamic>> _sameRouteBuses = {};
+  StreamSubscription? _liveLocationsSub;
+  Map<String, String> _busRouteMap = {}; // busId -> routeKey
+
   bool _allowLocationCapture = false;
   StreamSubscription? _adminSettingsSub;
 
@@ -107,6 +117,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
     _listenForConfirmedPickups();
     _listenForIntercomMessages();
     _listenForAdminSettings();
+    _listenForSameRouteBuses();
   }
 
   void _loadRouteDetails() async {
@@ -152,34 +163,227 @@ class _DriverDashboardState extends State<DriverDashboard> {
 
   void _updateStopsFromKey() {
     final stops = routeStopsConfig[_routeKey] ?? [];
+    final List<Map<String, dynamic>> newStops = stops.map((name) {
+      final coord = coordsConfig[name] ?? const LatLng(13.0489049, 80.0754642);
+      return <String, dynamic>{
+        'name': name,
+        'lat': coord.latitude,
+        'lng': coord.longitude,
+      };
+    }).toList();
     setState(() {
-      _routeStops = stops.map((name) {
-        final coord = coordsConfig[name] ?? const LatLng(13.0489049, 80.0754642);
-        return {
-          'name': name,
-          'lat': coord.latitude,
-          'lng': coord.longitude,
-        };
-      }).toList();
+      _routeStops = newStops;
+      _osrmRoutePoints = []; // Reset road route — will re-fetch
       if (_routeStops.isNotEmpty) {
         _nextStop = _routeStops[0]['name'];
       }
     });
+    // Move the map to center on the route center
+    if (newStops.isNotEmpty) {
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (mounted && !_isTracking) {
+          double avgLat = newStops.map((s) => s['lat'] as double).reduce((a, b) => a + b) / newStops.length;
+          double avgLng = newStops.map((s) => s['lng'] as double).reduce((a, b) => a + b) / newStops.length;
+          try {
+            _mapController.move(LatLng(avgLat, avgLng), 11.5);
+          } catch (_) {}
+        }
+      });
+      // Fetch road-snapped route from OSRM
+      _fetchOsrmRoute(newStops);
+    }
+  }
+
+  /// Fetches a road-following polyline from the OSRM routing API.
+  /// Uses the free demo server — no API key needed.
+  Future<void> _fetchOsrmRoute(List<Map<String, dynamic>> stops) async {
+    if (stops.length < 2) return;
+    if (!mounted) return;
+    setState(() => _osrmLoading = true);
+
+    try {
+      // Build coordinate string: lng,lat;lng,lat;...
+      // OSRM accepts max ~100 waypoints comfortably
+      final coords = stops.map((s) {
+        final lat = (s['lat'] as double).toStringAsFixed(6);
+        final lng = (s['lng'] as double).toStringAsFixed(6);
+        return '$lng,$lat';
+      }).join(';');
+
+      final url = Uri.parse(
+        'http://router.project-osrm.org/route/v1/driving/$coords'
+        '?overview=full&geometries=geojson',
+      );
+
+      final response = await http.get(url).timeout(const Duration(seconds: 15));
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body) as Map<String, dynamic>;
+        final routes = json['routes'] as List?;
+        if (routes != null && routes.isNotEmpty) {
+          final geometry = routes[0]['geometry'] as Map<String, dynamic>?;
+          final coordinates = geometry?['coordinates'] as List?;
+          if (coordinates != null) {
+            final points = coordinates.map((c) {
+              final lng = (c[0] as num).toDouble();
+              final lat = (c[1] as num).toDouble();
+              return LatLng(lat, lng);
+            }).toList();
+            if (mounted) {
+              setState(() {
+                _osrmRoutePoints = points;
+                _osrmLoading = false;
+              });
+            }
+            return;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('OSRM route fetch error: $e');
+    }
+
+    // Fallback: use straight-line stop connections
+    if (mounted) {
+      setState(() {
+        _osrmRoutePoints = stops
+            .map((s) => LatLng(s['lat'] as double, s['lng'] as double))
+            .toList();
+        _osrmLoading = false;
+      });
+    }
+  }
+
+  /// Listens to Firebase liveLocations and filters buses on the same route.
+  void _listenForSameRouteBuses() {
+    if (Firebase.apps.isEmpty) return;
+    // First load the driver-to-route mapping, then start live location listener
+    _loadBusRouteMap().then((_) => _startLiveLocationsListener());
+  }
+
+  Future<void> _loadBusRouteMap() async {
+    if (Firebase.apps.isEmpty) return;
+    try {
+      final snap = await FirebaseDatabase.instance.ref('drivers').get();
+      if (snap.exists && snap.value != null) {
+        final data = snap.value;
+        List driversList = [];
+        if (data is List) {
+          driversList = data;
+        } else if (data is Map) {
+          driversList = data.values.toList();
+        }
+        final Map<String, String> map = {};
+        for (var item in driversList) {
+          if (item is Map) {
+            final bus = item['bus']?.toString().trim().toUpperCase();
+            final route = item['route']?.toString();
+            if (bus != null && route != null) {
+              map[bus] = route;
+            }
+          }
+        }
+        if (mounted) {
+          setState(() => _busRouteMap = map);
+        }
+      }
+    } catch (e) {
+      debugPrint('Error loading bus-route map: $e');
+    }
+  }
+
+  void _startLiveLocationsListener() {
+    if (Firebase.apps.isEmpty) return;
+    try {
+      _liveLocationsSub = FirebaseDatabase.instance
+          .ref('liveLocations')
+          .onValue
+          .listen((event) {
+        final data = event.snapshot.value as Map?;
+        if (!mounted) return;
+        final Map<String, Map<String, dynamic>> nearby = {};
+        if (data != null) {
+          data.forEach((busId, val) {
+            if (val is Map) {
+              final bId = busId.toString().toUpperCase();
+              // Skip current bus
+              if (bId == widget.driverBus.toUpperCase()) return;
+              // Check if same route
+              final busRoute = _busRouteMap[bId];
+              if (busRoute == _routeKey) {
+                nearby[bId] = {
+                  'busId': bId,
+                  'lat': (val['lat'] as num?)?.toDouble() ?? 0.0,
+                  'lng': (val['lng'] as num?)?.toDouble() ?? 0.0,
+                  'status': val['status']?.toString() ?? 'offline',
+                  'updatedAt': val['updatedAt']?.toString() ?? '--',
+                };
+              }
+            }
+          });
+        }
+        setState(() => _sameRouteBuses = nearby);
+      });
+    } catch (e) {
+      debugPrint('Error listening to live locations: $e');
+    }
+  }
+
+  /// Sends a breakdown alert to admin referencing a specific nearby bus.
+  Future<void> _sendBreakdownAlertWithNearby(String nearbyBusId) async {
+    if (Firebase.apps.isEmpty) {
+      _showSnackBar('Cannot connect to Firebase.');
+      return;
+    }
+    try {
+      final alertData = {
+        'brokenBus': widget.driverBus,
+        'nearbyBus': nearbyBusId,
+        'route': _routeKey,
+        'routeLabel': _getRouteLabelForBus(widget.driverBus),
+        'lat': _latitude,
+        'lng': _longitude,
+        'message':
+            'Bus ${widget.driverBus} has broken down on ${_getRouteLabelForBus(widget.driverBus)}. '
+            'Requesting Bus $nearbyBusId to cover the remaining stops.',
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'status': 'pending',
+      };
+      await FirebaseDatabase.instance
+          .ref('breakdownAlerts/${widget.driverBus}_${DateTime.now().millisecondsSinceEpoch}')
+          .set(alertData);
+      _showSnackBar('✅ Alert sent! Requested Bus $nearbyBusId to cover route.');
+    } catch (e) {
+      _showSnackBar('Failed to send alert: $e');
+    }
   }
 
   String _getRouteKeyForBus(String busId) {
-    final bus = busId.toUpperCase();
+    final bus = busId.trim().toUpperCase();
+    // Try direct numeric match (e.g. bus "15" -> route_15)
+    if (RegExp(r'^\d+$').hasMatch(busId)) {
+      final key = 'route_$busId';
+      if (routeLabelsConfig.containsKey(key)) return key;
+    }
+    // Legacy named bus IDs
     if (bus == 'B101' || bus == 'BUS101') return 'route_15';
     if (bus == 'B202' || bus == 'BUS102') return 'route_52';
     if (bus == 'B303') return 'route_137';
-    if (RegExp(r'^\d+$').hasMatch(busId)) {
-      if (routeLabelsConfig.containsKey('route_$busId')) return 'route_$busId';
-    }
     return 'route_15'; // default fallback
   }
 
   String _getRouteLabelForBus(String busId) {
-    return routeLabelsConfig[_routeKey] ?? "College Route";
+    return routeLabelsConfig[_routeKey] ?? "College Route ($busId)";
+  }
+
+  Color _getRouteColor() {
+    final hexStr = routeColorsConfig[_routeKey] ?? '#2563EB';
+    try {
+      return Color(int.parse(hexStr.replaceAll('#', '0xFF')));
+    } catch (_) {
+      return const Color(0xFF2563EB);
+    }
   }
 
   String t(String key) {
@@ -277,6 +481,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
     _connectedSubscription?.cancel();
     _confirmedSub?.cancel();
     _adminSettingsSub?.cancel();
+    _liveLocationsSub?.cancel();
     _smSimulationTimer?.cancel();
     _waveTimer?.cancel();
     _busReadyTimer?.cancel();
@@ -421,12 +626,6 @@ class _DriverDashboardState extends State<DriverDashboard> {
       if (mounted) {
         setState(() {
           _firebaseConnected = connected;
-          if (connected) {
-            _syncStatusText = "Connected to Firebase Realtime Database";
-            _syncTimestamp = _formattedTimeNow();
-          } else {
-            _syncStatusText = "Sync paused — offline mode active";
-          }
         });
       }
     });
@@ -638,6 +837,20 @@ class _DriverDashboardState extends State<DriverDashboard> {
       _appStatus = "Broken Down";
     });
 
+    final data = {
+      'busId': widget.driverBus,
+      'bus': widget.driverBus,
+      'replacement': 'Pending',
+      'lat': _latitude,
+      'lng': _longitude,
+      'time': DateTime.now().toIso8601String(),
+      'timestamp': DateTime.now().millisecondsSinceEpoch
+    };
+
+    if (Firebase.apps.isNotEmpty) {
+      FirebaseDatabase.instance.ref('breakdowns/${widget.driverBus}').set(data);
+    }
+
     if (_currentPosition != null) {
       _fbUpdateLocation(_currentPosition!);
     }
@@ -650,11 +863,18 @@ class _DriverDashboardState extends State<DriverDashboard> {
       return;
     }
 
+    if (repBus == widget.driverBus.trim().toUpperCase()) {
+      _showDialog("Error", "Replacement bus cannot be the same as the current bus.");
+      return;
+    }
+
     final data = {
       'busId': widget.driverBus,
+      'bus': widget.driverBus,
       'replacement': repBus,
       'lat': _latitude,
       'lng': _longitude,
+      'time': DateTime.now().toIso8601String(),
       'timestamp': DateTime.now().millisecondsSinceEpoch
     };
 
@@ -1019,11 +1239,23 @@ class _DriverDashboardState extends State<DriverDashboard> {
   }
 
   Widget _buildMapCard() {
+    final routeColor = _getRouteColor();
+    final routePoints = _routeStops
+        .map((s) => LatLng(s['lat'] as double, s['lng'] as double))
+        .toList();
+
     return Container(
-      height: 250,
+      height: 320,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(24),
         border: Border.all(color: const Color(0xFFDBE2F8), width: 1.2),
+        boxShadow: [
+          BoxShadow(
+            color: routeColor.withValues(alpha: 0.08),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(24),
@@ -1031,48 +1263,197 @@ class _DriverDashboardState extends State<DriverDashboard> {
           children: [
             FlutterMap(
               mapController: _mapController,
-              options: const MapOptions(
-                initialCenter: LatLng(13.047, 80.11),
-                initialZoom: 13.0,
+              options: MapOptions(
+                initialCenter: _routeStops.isNotEmpty
+                    ? LatLng(
+                        _routeStops.map((s) => s['lat'] as double).reduce((a, b) => a + b) / _routeStops.length,
+                        _routeStops.map((s) => s['lng'] as double).reduce((a, b) => a + b) / _routeStops.length,
+                      )
+                    : const LatLng(13.047, 80.11),
+                initialZoom: 11.5,
               ),
               children: [
                 TileLayer(
                   urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
                   subdomains: const ['a', 'b', 'c', 'd'],
                 ),
-                PolylineLayer(
-                  polylines: [
-                    Polyline(
-                      points: _routeStops.map((s) => LatLng(s['lat'] as double, s['lng'] as double)).toList(),
-                      color: const Color(0xFF2563EB),
-                      strokeWidth: 4.0,
-                    ),
-                  ],
-                ),
-                if (_isTracking && _currentPosition != null)
+                if (routePoints.length >= 2)
+                  PolylineLayer(
+                    polylines: [
+                      Polyline(
+                        points: routePoints,
+                        color: routeColor,
+                        strokeWidth: 4.5,
+                        borderColor: Colors.white,
+                        borderStrokeWidth: 1.5,
+                      ),
+                    ],
+                  ),
+                // Route stop markers
+                if (_routeStops.isNotEmpty)
                   MarkerLayer(
                     markers: [
+                      // First stop (start)
                       Marker(
-                        point: LatLng(_latitude, _longitude),
-                        width: 40,
-                        height: 40,
-                        child: const Text("🚌", style: TextStyle(fontSize: 24)),
+                        point: LatLng(
+                          _routeStops.first['lat'] as double,
+                          _routeStops.first['lng'] as double,
+                        ),
+                        width: 28,
+                        height: 28,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: routeColor,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2),
+                          ),
+                          child: const Center(
+                            child: Text("A", style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white)),
+                          ),
+                        ),
+                      ),
+                      // Last stop (college)
+                      Marker(
+                        point: LatLng(
+                          _routeStops.last['lat'] as double,
+                          _routeStops.last['lng'] as double,
+                        ),
+                        width: 28,
+                        height: 28,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF16A34A),
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2),
+                          ),
+                          child: const Center(
+                            child: Text("🏫", style: TextStyle(fontSize: 12)),
+                          ),
+                        ),
+                      ),
+                      // Intermediate stops
+                      ..._routeStops.skip(1).take(_routeStops.length - 2).map((stop) =>
+                        Marker(
+                          point: LatLng(stop['lat'] as double, stop['lng'] as double),
+                          width: 10,
+                          height: 10,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: routeColor.withValues(alpha: 0.7),
+                              shape: BoxShape.circle,
+                              border: Border.all(color: Colors.white, width: 1),
+                            ),
+                          ),
+                        ),
+                      ),
+                      // Live bus position
+                      if (_isTracking && _currentPosition != null)
+                        Marker(
+                          point: LatLng(_latitude, _longitude),
+                          width: 44,
+                          height: 44,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: routeColor, width: 2),
+                              boxShadow: [
+                                BoxShadow(color: routeColor.withValues(alpha: 0.3), blurRadius: 8)
+                              ],
+                            ),
+                            child: const Center(child: Text("🚌", style: TextStyle(fontSize: 22))),
+                          ),
+                        ),
+                      // Nearby buses on same route
+                      ..._sameRouteBuses.values.map((b) =>
+                        Marker(
+                          point: LatLng(b['lat'] as double, b['lng'] as double),
+                          width: 32,
+                          height: 32,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: b['status'] == 'broken' ? const Color(0xFFEF4444) : const Color(0xFFF59E0B),
+                              shape: BoxShape.circle,
+                              border: Border.all(color: Colors.white, width: 2),
+                              boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)],
+                            ),
+                            child: Center(
+                              child: Text(
+                                b['busId'].toString().replaceAll(RegExp(r'[^0-9]'), ''),
+                                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
+                              ),
+                            ),
+                          ),
+                        ),
                       ),
                     ],
                   ),
               ],
             ),
+            // Route info overlay (top left)
+            Positioned(
+              top: 10,
+              left: 10,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.92),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: routeColor.withValues(alpha: 0.4), width: 1),
+                  boxShadow: [
+                    BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 6, offset: const Offset(0, 2))
+                  ],
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: routeColor,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      _getRouteLabelForBus(widget.driverBus),
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                        color: routeColor,
+                      ),
+                    ),
+                    if (_routeStops.isNotEmpty) ...[
+                      const SizedBox(width: 4),
+                      Text(
+                        "• ${_routeStops.length} stops",
+                        style: const TextStyle(fontSize: 9, color: Color(0xFF64748B), fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            // GPS locate button
             Positioned(
               right: 12,
               bottom: 12,
               child: FloatingActionButton.small(
+                heroTag: 'mapLocate',
                 onPressed: () {
                   if (_currentPosition != null) {
                     _mapController.move(LatLng(_latitude, _longitude), 14.0);
+                  } else if (_routeStops.isNotEmpty) {
+                    // Center on route if no GPS
+                    final avgLat = _routeStops.map((s) => s['lat'] as double).reduce((a, b) => a + b) / _routeStops.length;
+                    final avgLng = _routeStops.map((s) => s['lng'] as double).reduce((a, b) => a + b) / _routeStops.length;
+                    _mapController.move(LatLng(avgLat, avgLng), 11.5);
                   }
                 },
                 backgroundColor: Colors.white,
-                child: const Icon(Icons.gps_fixed, color: Color(0xFF2563EB)),
+                elevation: 2,
+                child: Icon(Icons.gps_fixed, color: routeColor, size: 18),
               ),
             ),
           ],
@@ -1126,43 +1507,58 @@ class _DriverDashboardState extends State<DriverDashboard> {
                   style: const TextStyle(fontSize: 9, color: Color(0xFF64748B), fontWeight: FontWeight.bold),
                 ),
               ],
-            )
+            ),
+            const SizedBox(width: 10),
+            // SYNC ACTIVE — inline with title, left side of app bar
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: _firebaseConnected ? const Color(0xFFDCFCE7) : const Color(0xFFFEE2E2),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: _firebaseConnected ? const Color(0xFF86EFAC) : const Color(0xFFFCA5A5),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 6, height: 6,
+                    decoration: BoxDecoration(
+                      color: _firebaseConnected ? Colors.green : Colors.red,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 5),
+                  Text(
+                    _firebaseConnected ? "SYNC ACTIVE" : "OFFLINE",
+                    style: TextStyle(
+                      fontSize: 8,
+                      fontWeight: FontWeight.w900,
+                      color: _firebaseConnected ? const Color(0xFF166534) : const Color(0xFF991B1B),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
         actions: [
-          Container(
-            margin: const EdgeInsets.only(right: 16),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: _firebaseConnected ? const Color(0xFFDCFCE7) : const Color(0xFFFEE2E2),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                color: _firebaseConnected ? const Color(0xFF86EFAC) : const Color(0xFFFCA5A5),
-                width: 1,
+          // Logout button — top right
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: TextButton(
+              style: TextButton.styleFrom(
+                backgroundColor: const Color(0xFFF1F5F9),
+                foregroundColor: const Color(0xFF1E293B),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
               ),
+              onPressed: widget.onLogout,
+              child: Text(t('logout'),
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
             ),
-            child: Row(
-              children: [
-                Container(
-                  width: 6,
-                  height: 6,
-                  decoration: BoxDecoration(
-                    color: _firebaseConnected ? Colors.green : Colors.red,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  _firebaseConnected ? "SYNC ACTIVE" : "OFFLINE",
-                  style: TextStyle(
-                    fontSize: 8,
-                    fontWeight: FontWeight.w900,
-                    color: _firebaseConnected ? const Color(0xFF166534) : const Color(0xFF991B1B),
-                  ),
-                ),
-              ],
-            ),
-          )
+          ),
         ],
       ),
       body: SingleChildScrollView(
@@ -1614,40 +2010,6 @@ class _DriverDashboardState extends State<DriverDashboard> {
                         ),
                       ],
                     ),
-                    const SizedBox(height: 8),
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF8FBFF),
-                        borderRadius: BorderRadius.circular(18),
-                        border: Border.all(color: const Color(0xFFDBE2F8)),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(t('boardingTitle'), style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1E3A8A))),
-                              const SizedBox(height: 4),
-                              Text("$_attendanceCount / $_attendanceCapacity boarded", style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w900, color: Color(0xFF0F172A))),
-                            ],
-                          ),
-                          ElevatedButton(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.white,
-                              foregroundColor: const Color(0xFF1E293B),
-                              side: const BorderSide(color: Color(0xFFDBE2F8)),
-                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                              elevation: 0,
-                            ),
-                            onPressed: _logBoarding,
-                            child: Text(t('logBoarding'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
-                          )
-                        ],
-                      ),
-                    ),
                   ],
                 ),
               ),
@@ -1683,6 +2045,25 @@ class _DriverDashboardState extends State<DriverDashboard> {
                       ),
                       style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
                     ),
+                    if (_sameRouteBuses.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      const Text("Nearby buses on same route:", style: TextStyle(fontSize: 10, color: Color(0xFF64748B), fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 4),
+                      Wrap(
+                        spacing: 8,
+                        children: _sameRouteBuses.values.map((b) => 
+                          ActionChip(
+                            label: Text(b['busId'].toString(), style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                            backgroundColor: const Color(0xFFF1F5F9),
+                            onPressed: () {
+                              setState(() {
+                                _replacementController.text = b['busId'].toString();
+                              });
+                            },
+                          )
+                        ).toList(),
+                      ),
+                    ],
                     const SizedBox(height: 10),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1780,52 +2161,6 @@ class _DriverDashboardState extends State<DriverDashboard> {
               ),
               const SizedBox(height: 16),
 
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(24),
-                  border: Border.all(color: const Color(0xFFDBE2F8)),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(t('langLabelDash'), style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFF334155))),
-                        const SizedBox(height: 6),
-                        DropdownButton<String>(
-                          value: widget.currentLang,
-                          underline: const SizedBox(),
-                          style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF2563EB), fontSize: 13),
-                          items: const [
-                            DropdownMenuItem(value: 'en', child: Text('English')),
-                            DropdownMenuItem(value: 'ta', child: Text('தமிழ்')),
-                            DropdownMenuItem(value: 'te', child: Text('తెలుగు')),
-                          ],
-                          onChanged: (val) {
-                            if (val != null) {
-                              widget.onLanguageChanged(val);
-                            }
-                          },
-                        )
-                      ],
-                    ),
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFF1F5F9),
-                        foregroundColor: const Color(0xFF1E293B),
-                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                        elevation: 0,
-                      ),
-                      onPressed: widget.onLogout,
-                      child: Text(t('logout'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                    )
-                  ],
-                ),
-              ),
               const SizedBox(height: 16),
 
               // Intercom messaging

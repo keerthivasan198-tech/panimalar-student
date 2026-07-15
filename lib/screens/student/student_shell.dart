@@ -80,6 +80,7 @@ class _MainShellState extends State<MainShell> {
   Map<String, LatLng> _coords = {};
   Color _routeColor = const Color(0xFF2563EB);
   String _busFirebaseId = 'B101';
+  String _studentBusNo = "";
 
   // Campus points for navigation
   final List<CampusPoint> _campusPointsList = campusPoints;
@@ -99,6 +100,10 @@ class _MainShellState extends State<MainShell> {
   double _routeRemainingM = 0;       // remaining distance to destination (metres)
   String _routeError = '';           // last routing error message for UI display
   List<Map<String, dynamic>> _navSteps = []; // turn-by-turn steps (future use)
+
+  // Bus perfectly routed points
+  List<LatLng> _busRoutePoints = [];
+  bool _busRouteLoading = false;
 
   // Route cache — prevents unnecessary API calls
   String _cachedRouteDestName = '';  // name of destination when route was last fetched
@@ -551,8 +556,8 @@ class _MainShellState extends State<MainShell> {
               ),
               const Divider(height: 1),
               // Notifications list
-              Expanded(
-                child: _adminNotifications.isEmpty
+               Expanded(
+                child: (!_breakdownActive && _adminNotifications.isEmpty)
                     ? const Center(
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
@@ -575,20 +580,111 @@ class _MainShellState extends State<MainShell> {
                           ],
                         ),
                       )
-                    : ListView.separated(
+                    : ListView(
                         controller: scrollCtrl,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 8),
-                        itemCount: _adminNotifications.length,
-                        separatorBuilder: (_, __) =>
-                            const Divider(height: 1, indent: 56),
-                        itemBuilder: (_, i) =>
-                            _buildNotifTile(_adminNotifications[i]),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        children: [
+                          if (_breakdownActive) ...[
+                            _buildStudentBreakdownNotifTile(ctx),
+                            const SizedBox(height: 8),
+                          ],
+                          ..._adminNotifications.map((n) => Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              _buildNotifTile(n),
+                              const Divider(height: 1, indent: 56),
+                            ],
+                          )),
+                        ],
                       ),
               ),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildStudentBreakdownNotifTile(BuildContext sheetCtx) {
+    final breakdownBusId = _studentBusNo.isNotEmpty ? _studentBusNo : _busFirebaseId;
+    final msg = _replacementBus == "Pending"
+        ? "Bus $breakdownBusId breakdown reported. Replacement Bus dispatch is pending. Stay at your stop."
+        : "Bus $breakdownBusId breakdown. Replacement Bus $_replacementBus dispatched. Stay at your stop.";
+
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFEF2F2),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFFCA5A5)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: const BoxDecoration(
+              color: Color(0xFFFEE2E2),
+              shape: BoxShape.circle,
+            ),
+            alignment: Alignment.center,
+            child: const Text("🔧", style: TextStyle(fontSize: 20)),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        "Vehicle Breakdown Alert",
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w900,
+                          color: Color(0xFF991B1B),
+                        ),
+                      ),
+                    ),
+                    Text(
+                      "Live",
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.red.shade700,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  msg,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF7F1D1D),
+                    fontWeight: FontWeight.w600,
+                    height: 1.4,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            icon: const Icon(Icons.close, color: Color(0xFF991B1B), size: 18),
+            onPressed: () {
+              if (Firebase.apps.isNotEmpty) {
+                FirebaseDatabase.instance.ref('breakdowns/$breakdownBusId').remove();
+              }
+              Navigator.pop(sheetCtx);
+              _showSnackBar("Breakdown alert dismissed.");
+            },
+          ),
+        ],
       ),
     );
   }
@@ -763,6 +859,7 @@ class _MainShellState extends State<MainShell> {
       // Pre-fill bus number from saved route
       final savedBus = prefs.getString("studentBusNo") ?? "";
       _profileBusCtrl.text = savedBus;
+      _studentBusNo = savedBus;
     });
     _startPickupRequestListener();
     _startFirebaseListener();
@@ -795,6 +892,73 @@ class _MainShellState extends State<MainShell> {
 
     if (startListener) {
       _startFirebaseListener();
+    }
+    
+    _fetchBusOsrmRoute();
+  }
+
+  Future<void> _fetchBusOsrmRoute() async {
+    if (_routeStops.length < 2) {
+      setState(() => _busRoutePoints = []);
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _busRouteLoading = true);
+
+    try {
+      final coordsList = <String>[];
+      for (var stop in _routeStops) {
+        final coord = _coords[stop];
+        if (coord != null) {
+          coordsList.add('${coord.longitude.toStringAsFixed(6)},${coord.latitude.toStringAsFixed(6)}');
+        }
+      }
+
+      if (coordsList.length < 2) {
+        setState(() => _busRouteLoading = false);
+        return;
+      }
+
+      final coords = coordsList.join(';');
+      final url = Uri.parse(
+        'http://router.project-osrm.org/route/v1/driving/$coords'
+        '?overview=full&geometries=geojson',
+      );
+
+      final response = await http.get(url).timeout(const Duration(seconds: 15));
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body) as Map<String, dynamic>;
+        final routes = json['routes'] as List?;
+        if (routes != null && routes.isNotEmpty) {
+          final geometry = routes[0]['geometry'] as Map<String, dynamic>?;
+          final coordinates = geometry?['coordinates'] as List?;
+          if (coordinates != null) {
+            final points = coordinates.map((c) {
+              final lng = (c[0] as num).toDouble();
+              final lat = (c[1] as num).toDouble();
+              return LatLng(lat, lng);
+            }).toList();
+            if (mounted) {
+              setState(() {
+                _busRoutePoints = points;
+                _busRouteLoading = false;
+              });
+            }
+            return;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('OSRM bus route fetch error: $e');
+    }
+
+    if (mounted) {
+      setState(() {
+        _busRoutePoints = _routeStops.map((s) => _coords[s]).whereType<LatLng>().toList();
+        _busRouteLoading = false;
+      });
     }
   }
 
@@ -841,6 +1005,9 @@ class _MainShellState extends State<MainShell> {
       _studentName = name;
       _studentYear = year;
       _studentDept = dept;
+      if (busNo.isNotEmpty) {
+        _studentBusNo = busNo;
+      }
       if (boardingStop.isNotEmpty) {
         _savedStop = boardingStop;
         final routeKey = _busToRouteKey[busNo.toUpperCase()];
@@ -992,7 +1159,8 @@ class _MainShellState extends State<MainShell> {
         debugPrint("Database listen error: $e");
       });
 
-      _breakdownSub = FirebaseDatabase.instance.ref('breakdowns/$_busFirebaseId').onValue.listen((event) {
+      final breakdownBusId = _studentBusNo.isNotEmpty ? _studentBusNo : _busFirebaseId;
+      _breakdownSub = FirebaseDatabase.instance.ref('breakdowns/$breakdownBusId').onValue.listen((event) {
         final data = event.snapshot.value as Map?;
         if (data == null) {
           setState(() {
@@ -1401,7 +1569,6 @@ class _MainShellState extends State<MainShell> {
           ],
         ),
         actions: [
-          // ── Notification bell with red unread badge ──────────────────────
           SizedBox(
             width: 48,
             height: 48,
@@ -1418,7 +1585,7 @@ class _MainShellState extends State<MainShell> {
                   ),
                   onPressed: _showNotificationsPanel,
                 ),
-                if (_unreadNotifCount > 0)
+                if (_unreadNotifCount > 0 || _breakdownActive)
                   Positioned(
                     right: 4,
                     top: 4,
@@ -1431,7 +1598,9 @@ class _MainShellState extends State<MainShell> {
                       ),
                       child: Center(
                         child: Text(
-                          _unreadNotifCount > 9 ? '9+' : '$_unreadNotifCount',
+                          ((_unreadNotifCount + (_breakdownActive ? 1 : 0)) > 9)
+                              ? '9+'
+                              : '${_unreadNotifCount + (_breakdownActive ? 1 : 0)}',
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 8,
@@ -1504,34 +1673,6 @@ class _MainShellState extends State<MainShell> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (_breakdownActive)
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFEF2F2),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: const Color(0xFFFCA5A5)),
-              ),
-              child: Row(
-                children: [
-                  const Text("⚠️", style: TextStyle(fontSize: 18)),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      "Bus $_busFirebaseId breakdown. Replacement Bus $_replacementBus dispatched. Stay at your stop.",
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: Color(0xFF991B1B),
-                        height: 1.4,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
           _buildHeroBanner(),
 
           Padding(
@@ -2334,6 +2475,17 @@ class _MainShellState extends State<MainShell> {
               urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
               subdomains: const ['a', 'b', 'c', 'd'],
             ),
+            
+            if (_busRoutePoints.isNotEmpty)
+              PolylineLayer(
+                polylines: <Polyline<Object>>[
+                  Polyline<Object>(
+                    points: _busRoutePoints,
+                    strokeWidth: 4.0,
+                    color: _routeColor.withValues(alpha: 0.7),
+                  ),
+                ],
+              ),
 
             if (_busIsOnline && _renderLat != null && _renderLng != null && _busAccuracy != null)
               CircleLayer(

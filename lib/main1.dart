@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
+import 'package:http/http.dart' as http;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -179,6 +181,10 @@ class _MainShellState extends State<MainShell> {
 
   final String _busFirebaseId = 'BUS101';
 
+  // Bus perfectly routed points
+  List<LatLng> _busRoutePoints = [];
+  bool _busRouteLoading = false;
+
   final List<String> _routeStops = [
     "Porur Junction",
     "Iyyapanthagal",
@@ -213,6 +219,72 @@ class _MainShellState extends State<MainShell> {
     _loadPreferences();
     _startFirebaseListener();
     _startLerpLoop();
+    _fetchBusOsrmRoute();
+  }
+
+  Future<void> _fetchBusOsrmRoute() async {
+    if (_routeStops.length < 2) {
+      setState(() => _busRoutePoints = []);
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _busRouteLoading = true);
+
+    try {
+      final coordsList = <String>[];
+      for (var stop in _routeStops) {
+        final coord = _coords[stop];
+        if (coord != null) {
+          coordsList.add('${coord.longitude.toStringAsFixed(6)},${coord.latitude.toStringAsFixed(6)}');
+        }
+      }
+
+      if (coordsList.length < 2) {
+        setState(() => _busRouteLoading = false);
+        return;
+      }
+
+      final coords = coordsList.join(';');
+      final url = Uri.parse(
+        'http://router.project-osrm.org/route/v1/driving/$coords'
+        '?overview=full&geometries=geojson',
+      );
+
+      final response = await http.get(url).timeout(const Duration(seconds: 15));
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body) as Map<String, dynamic>;
+        final routes = json['routes'] as List?;
+        if (routes != null && routes.isNotEmpty) {
+          final geometry = routes[0]['geometry'] as Map<String, dynamic>?;
+          final coordinates = geometry?['coordinates'] as List?;
+          if (coordinates != null) {
+            final points = coordinates.map((c) {
+              final lng = (c[0] as num).toDouble();
+              final lat = (c[1] as num).toDouble();
+              return LatLng(lat, lng);
+            }).toList();
+            if (mounted) {
+              setState(() {
+                _busRoutePoints = points;
+                _busRouteLoading = false;
+              });
+            }
+            return;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('OSRM bus route fetch error: $e');
+    }
+
+    if (mounted) {
+      setState(() {
+        _busRoutePoints = _routeStops.map((s) => _coords[s]).whereType<LatLng>().toList();
+        _busRouteLoading = false;
+      });
+    }
   }
 
   @override
@@ -774,7 +846,18 @@ class _MainShellState extends State<MainShell> {
         ),
         actions: [
           IconButton(
-            onPressed: () {},
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => StudentBreakdownNotificationsPage(
+                    breakdownActive: _breakdownActive,
+                    busId: _busFirebaseId,
+                    replacement: _replacementBus,
+                  ),
+                ),
+              );
+            },
             icon: Stack(
               children: [
                 const Icon(
@@ -782,18 +865,19 @@ class _MainShellState extends State<MainShell> {
                   color: Color(0xFF475569),
                   size: 24,
                 ),
-                Positioned(
-                  right: 2,
-                  top: 2,
-                  child: Container(
-                    width: 7,
-                    height: 7,
-                    decoration: const BoxDecoration(
-                      color: Color(0xFF2563EB),
-                      shape: BoxShape.circle,
+                if (_breakdownActive)
+                  Positioned(
+                    right: 2,
+                    top: 2,
+                    child: Container(
+                      width: 7,
+                      height: 7,
+                      decoration: const BoxDecoration(
+                        color: Colors.red,
+                        shape: BoxShape.circle,
+                      ),
                     ),
                   ),
-                ),
               ],
             ),
           ),
@@ -892,34 +976,6 @@ class _MainShellState extends State<MainShell> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Breakdown alert (only when active) ───────────────────────
-          if (_breakdownActive)
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFEF2F2),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: const Color(0xFFFCA5A5)),
-              ),
-              child: Row(
-                children: [
-                  const Text("🚨", style: TextStyle(fontSize: 18)),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      "Bus $_busFirebaseId breakdown. Replacement Bus $_replacementBus dispatched. Stay at your stop.",
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: Color(0xFF991B1B),
-                        height: 1.4,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
 
           // ── HERO BANNER with real bus photo ─────────────────────────
           _buildHeroBanner(),
@@ -1827,17 +1883,18 @@ class _MainShellState extends State<MainShell> {
               urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
               subdomains: const ['a', 'b', 'c', 'd'],
             ),
-            PolylineLayer(
-              polylines: [
-                Polyline(
-                  points: _routeStops.map((name) => _coords[name]!).toList(),
-                  color: const Color(0xFF1B5E20),
-                  strokeWidth: 4.0,
-                  borderColor: Colors.white,
-                  borderStrokeWidth: 1.5,
-                ),
-              ],
-            ),
+            if (_busRoutePoints.isNotEmpty)
+              PolylineLayer(
+                polylines: <Polyline<Object>>[
+                  Polyline<Object>(
+                    points: _busRoutePoints,
+                    color: const Color(0xFF1B5E20),
+                    strokeWidth: 4.0,
+                    borderColor: Colors.white,
+                    borderStrokeWidth: 1.5,
+                  ),
+                ],
+              ),
             if (_busIsOnline && _renderLat != null && _renderLng != null && _busAccuracy != null)
               CircleLayer(
                 circles: [
@@ -3790,6 +3847,20 @@ class _DriverDashboardState extends State<DriverDashboard> {
       _appStatus = "Broken Down";
     });
 
+    final data = {
+      'busId': widget.driverBus,
+      'bus': widget.driverBus,
+      'replacement': 'Pending',
+      'lat': _currentPosition?.latitude ?? 13.0486,
+      'lng': _currentPosition?.longitude ?? 80.0753,
+      'time': DateTime.now().toIso8601String(),
+      'timestamp': DateTime.now().millisecondsSinceEpoch
+    };
+
+    if (Firebase.apps.isNotEmpty) {
+      FirebaseDatabase.instance.ref('breakdowns/${widget.driverBus}').set(data);
+    }
+
     if (_currentPosition != null) {
       _fbUpdateLocation(_currentPosition!);
     }
@@ -3802,12 +3873,19 @@ class _DriverDashboardState extends State<DriverDashboard> {
       return;
     }
 
+    if (repBus == widget.driverBus.trim().toUpperCase()) {
+      _showDialog("Error", "Replacement bus cannot be the same as the current bus.");
+      return;
+    }
+
     final data = {
+      'busId': widget.driverBus,
       'bus': widget.driverBus,
       'replacement': repBus,
       'lat': _currentPosition?.latitude ?? 13.0486,
       'lng': _currentPosition?.longitude ?? 80.0753,
-      'time': DateTime.now().toIso8601String()
+      'time': DateTime.now().toIso8601String(),
+      'timestamp': DateTime.now().millisecondsSinceEpoch
     };
 
     try {
@@ -5096,6 +5174,105 @@ class _DriverDashboardState extends State<DriverDashboard> {
           ],
         ),
       ),
+    );
+  }
+}
+
+class StudentBreakdownNotificationsPage extends StatelessWidget {
+  final bool breakdownActive;
+  final String busId;
+  final String replacement;
+
+  const StudentBreakdownNotificationsPage({
+    super.key,
+    required this.breakdownActive,
+    required this.busId,
+    required this.replacement,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFEEF2FF),
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        title: const Text(
+          "Notifications",
+          style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFF0F172A), fontSize: 16),
+        ),
+        iconTheme: const IconThemeData(color: Color(0xFF0F172A)),
+      ),
+      body: !breakdownActive
+          ? const Center(
+              child: Text(
+                "No notifications yet",
+                style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold),
+              ),
+            )
+          : ListView(
+              padding: const EdgeInsets.all(16.0),
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFEF2F2),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: const Color(0xFFFCA5A5)),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.03),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text("🚨", style: TextStyle(fontSize: 24)),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              "Bus $busId Breakdown Alert",
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w900,
+                                color: Color(0xFF991B1B),
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              replacement == "Pending"
+                                  ? "Bus $busId breakdown reported. Replacement Bus dispatch is pending. Stay at your stop."
+                                  : "Bus $busId breakdown. Replacement Bus $replacement dispatched. Stay at your stop.",
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFF7F1D1D),
+                                height: 1.4,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Color(0xFF991B1B), size: 20),
+                        onPressed: () {
+                          if (Firebase.apps.isNotEmpty) {
+                            FirebaseDatabase.instance.ref('breakdowns/$busId').remove();
+                          }
+                          Navigator.pop(context);
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
     );
   }
 }

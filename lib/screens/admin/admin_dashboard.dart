@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -14,9 +14,7 @@ import '../../models/route_entry.dart';
 import '../../models/log_entry.dart';
 import '../../models/alert_entry.dart';
 import '../../models/upload_entry.dart';
-import '../../models/bus_sim_state.dart';
 import '../../config/routes_config.dart';
-import '../../widgets/custom_charts.dart';
 
 class AdminDashboard extends StatefulWidget {
   final VoidCallback onSwitchRole;
@@ -45,8 +43,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
   // Admin STT Intercom State
   Map<String, List<Map<String, dynamic>>> _adminIntercomMessages = {};
   StreamSubscription? _adminIntercomSub;
-  bool _isAdminSttListening = false;
-  String _selectedAdminSttLang = 'en';
   final TextEditingController _adminChatInputCtrl = TextEditingController();
   
   // WhatsApp Style Intercom UI State
@@ -57,6 +53,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
   // Live Bus Locations
   Map<String, Map<String, dynamic>> _liveBuses = {};
   StreamSubscription? _liveLocationsSub;
+  Map<String, Map<String, dynamic>> _firebaseBreakdowns = {};
+  StreamSubscription? _breakdownListenerSub;
 
   // Map Controllers
   final MapController _mapController = MapController();
@@ -71,9 +69,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
   String _liveMapSearchQuery = "";
   RouteEntry? _selectedLiveRoute;
 
-  // Logs Filter
-  String _selectedLogDate = DateTime.now().toIso8601String().substring(0, 10);
-
   // Stop Capture State
   bool _allowDriversToAddStops = false;
   StreamSubscription? _adminSettingsSub;
@@ -82,13 +77,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
 
   // Constants & Static Caches
   final LatLng _campusCoord = const LatLng(13.0489049, 80.0754642);
-
-  final List<String> _routeColors = [
-    '#2563EB', '#22C55E', '#F97316', '#DB2777', '#8B5CF6', '#06B6D4', '#EF4444', '#84CC16', '#F59E0B', '#10B981'
-  ];
-
-  // Cached route geometries (interpolated paths)
-  final Map<String, List<LatLng>> _routeGeometries = {};
 
   @override
   void initState() {
@@ -99,6 +87,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     _listenForLiveLocations();
     _listenForAdminSettings();
     _listenForNewStops();
+    _listenForBreakdowns();
   }
 
   @override
@@ -108,6 +97,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     _adminIntercomSub?.cancel();
     _adminSettingsSub?.cancel();
     _newStopsSub?.cancel();
+    _breakdownListenerSub?.cancel();
     _adminChatInputCtrl.dispose();
     super.dispose();
   }
@@ -219,19 +209,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
     prefs.setString('ptAdmin_routes', json.encode(_routes.map((e) => e.toJson()).toList()));
   }
 
-  void _saveLogs() async {
-    final prefs = await SharedPreferences.getInstance();
-    prefs.setString('ptAdmin_logs', json.encode(_logs.map((e) => e.toJson()).toList()));
-  }
-
   void _saveAlerts() async {
     final prefs = await SharedPreferences.getInstance();
     prefs.setString('ptAdmin_alerts', json.encode(_alerts.map((e) => e.toJson()).toList()));
-  }
-
-  void _saveUploads() async {
-    final prefs = await SharedPreferences.getInstance();
-    prefs.setString('ptAdmin_uploads', json.encode(_uploads.map((e) => e.toJson()).toList()));
   }
 
   List<DriverEntry> _getDefaultDrivers() {
@@ -272,10 +252,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
   }
 
   List<AlertEntry> _getDefaultAlerts() {
-    return [
-      AlertEntry(id: 1, type: 'breakdown', bus: 'B303', msg: 'Bus B303 has broken down near Koyambedu. Alternate arrangements being made.', time: '08:15'),
-      AlertEntry(id: 2, type: 'delay', bus: 'B101', msg: 'Bus B101 is delayed by 20 minutes due to traffic near Porur.', time: '07:45'),
-    ];
+    return [];
   }
 
   // ─── FIREBASE LISTENER (STUDENT LETTERS) ─────────────────────────
@@ -453,6 +430,49 @@ class _AdminDashboardState extends State<AdminDashboard> {
       });
     } catch (e) {
       debugPrint("Error listening to new stops: $e");
+    }
+  }
+
+  void _listenForBreakdowns() {
+    _breakdownListenerSub?.cancel();
+    if (Firebase.apps.isEmpty) return;
+    try {
+      _breakdownListenerSub = FirebaseDatabase.instance.ref('breakdowns').onValue.listen((event) {
+        final dynamic data = event.snapshot.value;
+        final Map<String, Map<String, dynamic>> temp = {};
+        if (data is Map) {
+          data.forEach((key, val) {
+            if (val is Map) {
+              temp[key.toString()] = Map<String, dynamic>.from(val);
+            }
+          });
+        } else if (data is List) {
+          for (int i = 0; i < data.length; i++) {
+            final val = data[i];
+            if (val is Map) {
+              temp[i.toString()] = Map<String, dynamic>.from(val);
+            }
+          }
+        }
+        if (mounted) {
+          bool newAdded = false;
+          temp.forEach((key, val) {
+            if (!_firebaseBreakdowns.containsKey(key)) {
+              newAdded = true;
+            }
+          });
+          setState(() {
+            _firebaseBreakdowns = temp;
+          });
+          if (newAdded) {
+            _showAppSnackBar("🚨 New Vehicle Breakdown Alert Received!");
+          }
+        }
+      }, onError: (e) {
+        debugPrint("Admin breakdowns listen error: $e");
+      });
+    } catch (e) {
+      debugPrint("Error listening to breakdowns: $e");
     }
   }
 
@@ -815,23 +835,23 @@ class _AdminDashboardState extends State<AdminDashboard> {
     final msgCtrl = TextEditingController();
     final titleCtrl = TextEditingController();
 
-    // Notification type config
     final types = [
-      {'value': 'delay',        'label': '🚌  Delay Alert',       'hint': 'e.g. Bus B101 delayed 20 min due to traffic'},
-      {'value': 'route_change', 'label': '🔀  Route Change',      'hint': 'e.g. Route 15 diverted via Ambattur today'},
-      {'value': 'emergency',    'label': '🚨  Emergency Alert',   'hint': 'e.g. Bus breakdown, alternate arranged'},
-      {'value': 'arrival',      'label': '🛎️  Arrival Notice',    'hint': 'e.g. Bus B202 arriving in 5 minutes'},
-      {'value': 'breakdown',    'label': '🔧  Breakdown Notice',  'hint': 'e.g. Bus B303 broke down near Koyambedu'},
+      {'value': 'delay',        'label': '🚌  Delay Alert',      'hint': 'e.g. Bus B101 delayed 20 min due to traffic'},
+      {'value': 'route_change', 'label': '🔀  Route Change',     'hint': 'e.g. Route 15 diverted via Ambattur today'},
+      {'value': 'emergency',    'label': '🚨  Emergency Alert',  'hint': 'e.g. Bus breakdown, alternate arranged'},
+      {'value': 'arrival',      'label': '🛎️  Arrival Notice',   'hint': 'e.g. Bus B202 arriving in 5 minutes'},
+      {'value': 'breakdown',    'label': '🔧  Breakdown Notice', 'hint': 'e.g. Bus B303 broke down near Koyambedu'},
     ];
 
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Colors.transparent,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
       builder: (ctx) => StatefulBuilder(
-<<<<<<< HEAD
         builder: (c, setSheetState) {
-          final currentType = types.firstWhere((t) => t['value'] == selectedType);
+          final currentType =
+              types.firstWhere((t) => t['value'] == selectedType);
           return Padding(
             padding: EdgeInsets.only(
                 bottom: MediaQuery.of(ctx).viewInsets.bottom,
@@ -841,7 +861,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // Drag handle
                   Center(
                     child: Container(
                       width: 40, height: 4,
@@ -852,82 +871,20 @@ class _AdminDashboardState extends State<AdminDashboard> {
                   ),
                   const SizedBox(height: 16),
                   const Text("Send Notification to Students",
-                      style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A))),
-                  const Text("Broadcast instant alerts to all student portals via Firebase",
+                      style: TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16,
+                          color: Color(0xFF1E3A8A))),
+                  const Text(
+                      "Broadcast instant alerts to all student portals via Firebase",
                       style: TextStyle(fontSize: 11, color: Color(0xFF64748B))),
                   const SizedBox(height: 20),
-=======
-        builder: (c, setSheetState) => DraggableScrollableSheet(
-          initialChildSize: 0.75,
-          maxChildSize: 0.95,
-          minChildSize: 0.5,
-          builder: (_, scrollController) => Container(
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-            ),
-            padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, top: 20, left: 20, right: 20),
-            child: SingleChildScrollView(
-              controller: scrollController,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text("Broadcast Alert Notice", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A))),
-                    IconButton(
-                      icon: const Icon(Icons.close, color: Color(0xFF64748B)),
-                      onPressed: () => Navigator.pop(context),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                DropdownButtonFormField<String>(
-                  value: typeCtrl.text,
-                  decoration: const InputDecoration(labelText: "Alert Category"),
-                  items: const [
-                    DropdownMenuItem(value: "delay", child: Text("Traffic Delay")),
-                    DropdownMenuItem(value: "breakdown", child: Text("Mechanical Breakdown")),
-                    DropdownMenuItem(value: "route", child: Text("Route Change")),
-                  ],
-                  onChanged: (val) => setSheetState(() => typeCtrl.text = val!),
-                ),
-                const SizedBox(height: 8),
-                TextField(controller: busCtrl, decoration: const InputDecoration(labelText: "Affected Bus (or 'all')")),
-                const SizedBox(height: 8),
-                TextField(controller: msgCtrl, decoration: const InputDecoration(labelText: "Notice Message description")),
-                const SizedBox(height: 20),
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2563EB), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30))),
-                  onPressed: () {
-                    final t = typeCtrl.text;
-                    final b = busCtrl.text.trim().toUpperCase();
-                    final m = msgCtrl.text.trim();
-                    if (m.isEmpty) {
-                      _showAppSnackBar("Please enter alert message.");
-                      return;
-                    }
-                    setState(() {
-                      final timeNow = "${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}";
-                      final newAlert = AlertEntry(
-                        id: DateTime.now().millisecondsSinceEpoch.toDouble(),
-                        type: t,
-                        bus: b.isNotEmpty ? b : "all",
-                        msg: m,
-                        time: timeNow,
-                      );
-                      _alerts.add(newAlert);
-                      _saveAlerts();
->>>>>>> origin/feature/manoj-ui
-
-                  // Type selector grid
                   const Text("NOTIFICATION TYPE",
-                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800,
-                          color: Color(0xFF64748B), letterSpacing: 0.5)),
+                      style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          color: Color(0xFF64748B),
+                          letterSpacing: 0.5)),
                   const SizedBox(height: 8),
                   Wrap(
                     spacing: 8,
@@ -940,12 +897,17 @@ class _AdminDashboardState extends State<AdminDashboard> {
                           titleCtrl.text = _defaultNotifTitle(t['value']!);
                         }),
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
                           decoration: BoxDecoration(
-                            color: isSelected ? const Color(0xFF2563EB) : const Color(0xFFF8FAFC),
+                            color: isSelected
+                                ? const Color(0xFF2563EB)
+                                : const Color(0xFFF8FAFC),
                             borderRadius: BorderRadius.circular(20),
                             border: Border.all(
-                              color: isSelected ? const Color(0xFF2563EB) : const Color(0xFFE2E8F0),
+                              color: isSelected
+                                  ? const Color(0xFF2563EB)
+                                  : const Color(0xFFE2E8F0),
                             ),
                           ),
                           child: Text(
@@ -953,7 +915,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.w700,
-                              color: isSelected ? Colors.white : const Color(0xFF0F172A),
+                              color: isSelected
+                                  ? Colors.white
+                                  : const Color(0xFF0F172A),
                             ),
                           ),
                         ),
@@ -961,52 +925,57 @@ class _AdminDashboardState extends State<AdminDashboard> {
                     }).toList(),
                   ),
                   const SizedBox(height: 16),
-
-                  // Title field
                   const Text("TITLE",
-                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800,
-                          color: Color(0xFF64748B), letterSpacing: 0.5)),
+                      style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          color: Color(0xFF64748B),
+                          letterSpacing: 0.5)),
                   const SizedBox(height: 6),
                   TextField(
                     controller: titleCtrl,
                     decoration: InputDecoration(
                       hintText: _defaultNotifTitle(selectedType),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 12),
                     ),
                     style: const TextStyle(fontSize: 13),
                   ),
                   const SizedBox(height: 12),
-
-                  // Message field
                   const Text("MESSAGE",
-                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800,
-                          color: Color(0xFF64748B), letterSpacing: 0.5)),
+                      style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          color: Color(0xFF64748B),
+                          letterSpacing: 0.5)),
                   const SizedBox(height: 6),
                   TextField(
                     controller: msgCtrl,
                     maxLines: 3,
                     decoration: InputDecoration(
                       hintText: currentType['hint'],
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 12),
                     ),
                     style: const TextStyle(fontSize: 13),
                   ),
                   const SizedBox(height: 12),
-
-                  // Bus field
                   TextField(
                     controller: busCtrl,
                     decoration: InputDecoration(
                       labelText: "Affected Bus (or 'all')",
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 12),
                     ),
                     style: const TextStyle(fontSize: 13),
                   ),
                   const SizedBox(height: 20),
-
                   ElevatedButton.icon(
                     icon: const Icon(Icons.send_rounded, size: 16),
                     label: const Text("Send to All Students",
@@ -1014,7 +983,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF2563EB),
                       foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(30)),
                       padding: const EdgeInsets.symmetric(vertical: 14),
                     ),
                     onPressed: () {
@@ -1028,11 +998,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
                         _showAppSnackBar("Please enter notification message.");
                         return;
                       }
-
                       final timeNow =
                           "${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}";
                       final id = DateTime.now().millisecondsSinceEpoch;
-
                       setState(() {
                         final newAlert = AlertEntry(
                           id: id.toDouble(),
@@ -1044,8 +1012,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
                         _alerts.add(newAlert);
                         _saveAlerts();
                       });
-
-                      // Push to Firebase — student portals listen to student_notifications
                       if (Firebase.apps.isNotEmpty) {
                         FirebaseDatabase.instance
                             .ref('student_notifications/$id')
@@ -1058,12 +1024,15 @@ class _AdminDashboardState extends State<AdminDashboard> {
                           'read': false,
                           'sentAt': DateTime.now().toIso8601String(),
                         });
-                        // Also write to legacy routeAlerts path
                         FirebaseDatabase.instance
                             .ref('routeAlerts/$id')
-                            .set({'type': t, 'bus': b, 'msg': m, 'time': timeNow});
+                            .set({
+                          'type': t,
+                          'bus': b,
+                          'msg': m,
+                          'time': timeNow
+                        });
                       }
-
                       Navigator.pop(context);
                       _showAppSnackBar("✅ Notification sent to all students!");
                     },
@@ -1074,7 +1043,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
             ),
           );
         },
-      ),
       ),
     );
   }
@@ -1265,6 +1233,49 @@ class _AdminDashboardState extends State<AdminDashboard> {
           ],
         ),
         actions: [
+          Stack(
+            alignment: Alignment.center,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.notifications, color: Color(0xFF64748B)),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => BreakdownNotificationsPage(
+                        breakdowns: _firebaseBreakdowns,
+                      ),
+                    ),
+                  );
+                },
+              ),
+              if (_firebaseBreakdowns.isNotEmpty)
+                Positioned(
+                  right: 8,
+                  top: 8,
+                  child: Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: BoxDecoration(
+                      color: Colors.red,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    constraints: const BoxConstraints(
+                      minWidth: 12,
+                      minHeight: 12,
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      '${_firebaseBreakdowns.length}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 8,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
           IconButton(
             icon: const Icon(Icons.logout, color: Color(0xFF64748B)),
             onPressed: widget.onSwitchRole,
@@ -1295,6 +1306,73 @@ class _AdminDashboardState extends State<AdminDashboard> {
     );
   }
 
+  Widget _buildBreakdownNotificationBanner() {
+    if (_firebaseBreakdowns.isEmpty) return const SizedBox.shrink();
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFEF2F2),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFFCA5A5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: const [
+              Text("🚨", style: TextStyle(fontSize: 18)),
+              SizedBox(width: 8),
+              Text(
+                "ACTIVE VEHICLE BREAKDOWNS",
+                style: TextStyle(
+                  fontWeight: FontWeight.w900,
+                  fontSize: 11,
+                  color: Color(0xFF991B1B),
+                  letterSpacing: 1.0,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ..._firebaseBreakdowns.entries.map((entry) {
+            final busId = entry.key;
+            final replacement = entry.value['replacement'] ?? 'None';
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 4.0),
+                    child: Text(
+                      "• Bus $busId breakdown alert sent! Replacement bus: $replacement.",
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF7F1D1D),
+                      ),
+                    ),
+                  ),
+                ),
+                IconButton(
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  icon: const Icon(Icons.close, color: Color(0xFF991B1B), size: 18),
+                  onPressed: () {
+                    if (Firebase.apps.isNotEmpty) {
+                      FirebaseDatabase.instance.ref('breakdowns/$busId').remove();
+                    }
+                  },
+                ),
+              ],
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
   // ─── TABS IMPLEMENTATION ──────────────────────────────────────────
   Widget _buildOverviewTab() {
     int activeBuses = _liveBuses.values.where((v) => v['status'] != 'offline').length;
@@ -1305,6 +1383,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          _buildBreakdownNotificationBanner(),
           Row(
             children: [
               Expanded(child: _buildStatCard("🚌", "$activeBuses online", "Live Active Fleet", const Color(0xFF2563EB))),
@@ -2350,6 +2429,100 @@ class _AdminDashboardState extends State<AdminDashboard> {
         onPressed: _openRouteAddBottomSheet,
         child: const Icon(Icons.add),
       ),
+    );
+  }
+}
+
+class BreakdownNotificationsPage extends StatelessWidget {
+  final Map<String, Map<String, dynamic>> breakdowns;
+
+  const BreakdownNotificationsPage({super.key, required this.breakdowns});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFEEF2FF),
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        title: const Text(
+          "Vehicle Breakdowns",
+          style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFF0F172A), fontSize: 16),
+        ),
+        iconTheme: const IconThemeData(color: Color(0xFF0F172A)),
+      ),
+      body: breakdowns.isEmpty
+          ? const Center(
+              child: Text(
+                "No active vehicle breakdowns.",
+                style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold),
+              ),
+            )
+          : ListView(
+              padding: const EdgeInsets.all(16.0),
+              children: breakdowns.entries.map((entry) {
+                final busId = entry.key;
+                final replacement = entry.value['replacement'] ?? 'None';
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFEF2F2),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: const Color(0xFFFCA5A5)),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.03),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text("🚨", style: TextStyle(fontSize: 24)),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              "Bus $busId Breakdown",
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w900,
+                                color: Color(0xFF991B1B),
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              replacement == "Pending"
+                                  ? "Bus $busId breakdown reported. Replacement Bus dispatch is pending."
+                                  : "Bus $busId breakdown alert sent! Replacement bus: $replacement.",
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFF7F1D1D),
+                                height: 1.4,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Color(0xFF991B1B), size: 20),
+                        onPressed: () {
+                          if (Firebase.apps.isNotEmpty) {
+                            FirebaseDatabase.instance.ref('breakdowns/$busId').remove();
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                );
+              }).toList(),
+            ),
     );
   }
 }
