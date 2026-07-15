@@ -267,9 +267,11 @@ class _DriverDashboardState extends State<DriverDashboard> {
             if (val is Map && val['status'] == 'confirmed') {
               temp.add({
                 'studentName': val['studentName'] ?? "Unknown Student",
+                'studentYear': val['studentYear'] ?? "",
+                'studentDept': val['studentDept'] ?? "",
+                'studentBus': val['studentBus'] ?? "",
                 'savedStop': val['savedStop'] ?? "Not Selected",
                 'documentName': val['documentName'] ?? "No Document",
-                'studentDept': val['studentDept'] ?? "N/A",
               });
             }
           });
@@ -1031,8 +1033,11 @@ class _DriverDashboardState extends State<DriverDashboard> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(pickup['studentName'], style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
-                            Text("${pickup['studentDept']} • Stop: ${pickup['savedStop']}", style: const TextStyle(fontSize: 9.5, color: Colors.grey, fontWeight: FontWeight.bold)),
+                            Text(pickup['studentName'], style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 2),
+                            Text("${pickup['studentYear']} Year • ${pickup['studentDept']} • Bus: ${pickup['studentBus']}", style: const TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 2),
+                            Text("Stop: ${pickup['savedStop']}", style: const TextStyle(fontSize: 10, color: Color(0xFF1E3A8A), fontWeight: FontWeight.w600)),
                           ],
                         ),
                       ),

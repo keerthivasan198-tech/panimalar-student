@@ -3731,6 +3731,7 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
         type: FileType.custom,
         allowedExtensions: ['pdf', 'png', 'jpg', 'jpeg'],
         allowMultiple: false,
+        withData: true,
       );
 
       if (result != null && result.files.isNotEmpty) {
@@ -3781,6 +3782,10 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
         downloadUrl = await snapshot.ref.getDownloadURL();
       }
 
+      if (downloadUrl.isEmpty) {
+        throw Exception("Failed to get document URL. Are you running on web without a hard restart?");
+      }
+
       if (mounted) {
         Navigator.pop(context); // Close dialog
         _sendRequestToAdmin(file.name, downloadUrl);
@@ -3805,6 +3810,7 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
         'studentName': _studentName,
         'studentYear': _studentYear,
         'studentDept': _studentDept,
+        'studentBus': _profileBusCtrl.text.trim().toUpperCase(),
         'documentName': fileName,
         'documentUrl': downloadUrl,
         'status': 'pending',
