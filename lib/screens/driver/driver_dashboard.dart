@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -11,6 +12,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 
 import '../../config/routes_config.dart';
+import '../../config/lang_config.dart';
 
 class DriverDashboard extends StatefulWidget {
   final String driverBus;
@@ -118,6 +120,16 @@ class _DriverDashboardState extends State<DriverDashboard> {
     _listenForIntercomMessages();
     _listenForAdminSettings();
     _listenForSameRouteBuses();
+    _restoreTrackingState();
+  }
+
+
+  void _restoreTrackingState() async {
+    final prefs = await SharedPreferences.getInstance();
+    final wasTracking = prefs.getBool('driver_is_tracking_${widget.driverBus}') ?? false;
+    if (wasTracking) {
+      _startTracking();
+    }
   }
 
   void _loadRouteDetails() async {
@@ -387,7 +399,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
   }
 
   String t(String key) {
-    return driverLang[widget.currentLang]?[key] ?? key;
+    return appLang[widget.currentLang]?[key] ?? appLang['en']?[key] ?? key;
   }
 
   void _listenForAdminSettings() {
@@ -459,9 +471,11 @@ class _DriverDashboardState extends State<DriverDashboard> {
             if (val is Map && val['status'] == 'confirmed') {
               temp.add({
                 'studentName': val['studentName'] ?? "Unknown Student",
+                'studentYear': val['studentYear'] ?? "",
+                'studentDept': val['studentDept'] ?? "",
+                'studentBus': val['studentBus'] ?? "",
                 'savedStop': val['savedStop'] ?? "Not Selected",
                 'documentName': val['documentName'] ?? "No Document",
-                'studentDept': val['studentDept'] ?? "N/A",
               });
             }
           });
@@ -726,11 +740,28 @@ class _DriverDashboardState extends State<DriverDashboard> {
     });
     await _fbUpdateLocation(initialPos);
 
-    _positionSubscription = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
+    LocationSettings locationSettings;
+    if (Platform.isAndroid) {
+      locationSettings = AndroidSettings(
         accuracy: LocationAccuracy.high,
         distanceFilter: 5,
-      ),
+        forceLocationManager: true,
+        intervalDuration: const Duration(seconds: 10),
+        foregroundNotificationConfig: const ForegroundNotificationConfig(
+          notificationText: "Tracking bus location in background",
+          notificationTitle: "Panimalar Transit Driver",
+          enableWakeLock: true,
+        ),
+      );
+    } else {
+      locationSettings = const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 5,
+      );
+    }
+
+    _positionSubscription = Geolocator.getPositionStream(
+      locationSettings: locationSettings,
     ).listen((Position position) {
       setState(() {
         _currentPosition = position;
@@ -746,6 +777,8 @@ class _DriverDashboardState extends State<DriverDashboard> {
     });
 
     _startSpeechMonitor();
+    final prefs = await SharedPreferences.getInstance();
+    prefs.setBool('driver_is_tracking_${widget.driverBus}', true);
   }
 
   void _stopTracking() async {
@@ -760,6 +793,8 @@ class _DriverDashboardState extends State<DriverDashboard> {
 
     await _fbSetOffline();
     _stopSpeechMonitor();
+    final prefs = await SharedPreferences.getInstance();
+    prefs.setBool('driver_is_tracking_${widget.driverBus}', false);
   }
 
   void _checkGeofences(Position pos) {
@@ -1218,8 +1253,11 @@ class _DriverDashboardState extends State<DriverDashboard> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(pickup['studentName'], style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
-                            Text("${pickup['studentDept']} • Stop: ${pickup['savedStop']}", style: const TextStyle(fontSize: 9.5, color: Colors.grey, fontWeight: FontWeight.bold)),
+                            Text(pickup['studentName'], style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 2),
+                            Text("${pickup['studentYear']} Year • ${pickup['studentDept']} • Bus: ${pickup['studentBus']}", style: const TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 2),
+                            Text("Stop: ${pickup['savedStop']}", style: const TextStyle(fontSize: 10, color: Color(0xFF1E3A8A), fontWeight: FontWeight.w600)),
                           ],
                         ),
                       ),
@@ -2161,6 +2199,58 @@ class _DriverDashboardState extends State<DriverDashboard> {
               ),
               const SizedBox(height: 16),
 
+
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: const Color(0xFFDBE2F8)),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(t('langLabelDash'), style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFF334155))),
+                        const SizedBox(height: 6),
+                        DropdownButton<String>(
+                          value: widget.currentLang,
+                          underline: const SizedBox(),
+                          style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF2563EB), fontSize: 13),
+                          items: const [
+                            DropdownMenuItem(value: 'en', child: Text('English')),
+                            DropdownMenuItem(value: 'ta', child: Text('தமிழ்')),
+                            DropdownMenuItem(value: 'te', child: Text('తెలుగు')),
+                          ],
+                          onChanged: (val) {
+                            if (val != null) {
+                              widget.onLanguageChanged(val);
+                            }
+                          },
+                        )
+                      ],
+                    ),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFF1F5F9),
+                        foregroundColor: const Color(0xFF1E293B),
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                        elevation: 0,
+                      ),
+                      onPressed: () {
+                        if (_isTracking) {
+                          _stopTracking();
+                        }
+                        widget.onLogout();
+                      },
+                      child: Text(t('logout'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                    )
+                  ],
+                ),
+              ),
               const SizedBox(height: 16),
 
               // Intercom messaging

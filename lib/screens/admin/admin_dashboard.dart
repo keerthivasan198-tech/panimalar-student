@@ -15,16 +15,23 @@ import '../../models/log_entry.dart';
 import '../../models/alert_entry.dart';
 import '../../models/upload_entry.dart';
 import '../../config/routes_config.dart';
+import '../../config/lang_config.dart';
+import '../../widgets/custom_charts.dart';
 
 class AdminDashboard extends StatefulWidget {
   final VoidCallback onSwitchRole;
-  const AdminDashboard({super.key, required this.onSwitchRole});
+  final String currentLang;
+  const AdminDashboard({super.key, required this.onSwitchRole, required this.currentLang});
 
   @override
   State<AdminDashboard> createState() => _AdminDashboardState();
 }
 
 class _AdminDashboardState extends State<AdminDashboard> {
+  String t(String key) {
+    return appLang[widget.currentLang]?[key] ?? appLang['en']?[key] ?? key;
+  }
+
   // Navigation & tabs
   int _currentTab = 0;
 
@@ -879,6 +886,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
                       "Broadcast instant alerts to all student portals via Firebase",
                       style: TextStyle(fontSize: 11, color: Color(0xFF64748B))),
                   const SizedBox(height: 20),
+
+                  // Type selector grid
                   const Text("NOTIFICATION TYPE",
                       style: TextStyle(
                           fontSize: 10,
@@ -1222,12 +1231,12 @@ class _AdminDashboardState extends State<AdminDashboard> {
               child: const Icon(Icons.admin_panel_settings, color: Color(0xFF2563EB), size: 22),
             ),
             const SizedBox(width: 10),
-            const Column(
+            Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text("Smart Transit Console", style: TextStyle(fontSize: 15, fontWeight: FontWeight.w900, color: Color(0xFF0F172A))),
-                Text("College Administration System", style: TextStyle(fontSize: 9, color: Color(0xFF64748B), fontWeight: FontWeight.bold)),
+                Text(t('appTitle'), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w900, color: Color(0xFF0F172A))),
+                Text(t('admin_subtitle'), style: TextStyle(fontSize: 9, color: Color(0xFF64748B), fontWeight: FontWeight.bold)),
               ],
             )
           ],
@@ -1294,12 +1303,12 @@ class _AdminDashboardState extends State<AdminDashboard> {
               _currentTab = idx;
             });
           },
-          destinations: const [
-            NavigationDestination(icon: Icon(Icons.analytics_outlined, color: Color(0xFF64748B)), selectedIcon: Icon(Icons.analytics, color: Color(0xFF2563EB)), label: "Overview"),
-            NavigationDestination(icon: Icon(Icons.map_outlined, color: Color(0xFF64748B)), selectedIcon: Icon(Icons.map, color: Color(0xFF2563EB)), label: "Live Tracker"),
-            NavigationDestination(icon: Icon(Icons.chat_bubble_outline, color: Color(0xFF64748B)), selectedIcon: Icon(Icons.chat_bubble, color: Color(0xFF2563EB)), label: "Intercom"),
-            NavigationDestination(icon: Icon(Icons.checklist_rtl_outlined, color: Color(0xFF64748B)), selectedIcon: Icon(Icons.checklist_rtl, color: Color(0xFF2563EB)), label: "Approvals"),
-            NavigationDestination(icon: Icon(Icons.app_registration_outlined, color: Color(0xFF64748B)), selectedIcon: Icon(Icons.app_registration, color: Color(0xFF2563EB)), label: "Registry"),
+          destinations: [
+            NavigationDestination(icon: const Icon(Icons.analytics_outlined, color: Color(0xFF64748B)), selectedIcon: const Icon(Icons.analytics, color: Color(0xFF2563EB)), label: t('admin_overview')),
+            NavigationDestination(icon: const Icon(Icons.map_outlined, color: Color(0xFF64748B)), selectedIcon: const Icon(Icons.map, color: Color(0xFF2563EB)), label: t('admin_live_tracker')),
+            NavigationDestination(icon: const Icon(Icons.chat_bubble_outline, color: Color(0xFF64748B)), selectedIcon: const Icon(Icons.chat_bubble, color: Color(0xFF2563EB)), label: t('admin_intercom')),
+            NavigationDestination(icon: const Icon(Icons.checklist_rtl_outlined, color: Color(0xFF64748B)), selectedIcon: const Icon(Icons.checklist_rtl, color: Color(0xFF2563EB)), label: t('admin_approvals')),
+            NavigationDestination(icon: const Icon(Icons.app_registration_outlined, color: Color(0xFF64748B)), selectedIcon: const Icon(Icons.app_registration, color: Color(0xFF2563EB)), label: t('admin_registry')),
           ],
         ),
       ),
@@ -1408,8 +1417,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
                     style: TextStyle(fontWeight: FontWeight.w900, fontSize: 11, color: Color(0xFF2563EB), letterSpacing: 1),
                   ),
                   SwitchListTile(
-                    title: const Text("Allow Drivers to Add Stops", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A))),
-                    subtitle: const Text("Enable to let drivers submit their current location as a new bus stop.", style: TextStyle(fontSize: 10, color: Color(0xFF64748B))),
+                    title: Text(t('admin_allow_stops'), style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A))),
+                    subtitle: Text(t('admin_enable_stops_desc'), style: TextStyle(fontSize: 10, color: Color(0xFF64748B))),
                     value: _allowDriversToAddStops,
                     activeColor: const Color(0xFF2563EB),
                     onChanged: (val) {
@@ -1421,7 +1430,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                   if (_newStops.isNotEmpty) ...[
                     const Divider(),
                     const SizedBox(height: 8),
-                    const Text("Suggested stops by Drivers (Grouped by Bus Card):", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF334155))),
+                    Text(t('admin_suggested_stops'), style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF334155))),
                     const SizedBox(height: 8),
                     _buildGroupedStopsWidget(),
                   ] else
@@ -1455,7 +1464,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                       ),
                       TextButton.icon(
                         icon: const Icon(Icons.add, size: 14),
-                        label: const Text("Broadcast Notice", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                        label: Text(t('admin_broadcast_notice'), style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
                         onPressed: _openAlertAddBottomSheet,
                       ),
                     ],
@@ -1941,7 +1950,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text("Route $_selectedIntercomBus", style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                                const Text("online", style: TextStyle(fontSize: 12, color: Colors.grey)),
+                                Text(t('admin_online'), style: TextStyle(fontSize: 12, color: Colors.grey)),
                               ],
                             ),
                           ],

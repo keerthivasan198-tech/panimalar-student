@@ -1,0 +1,137 @@
+[1mdiff --git a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml[m
+[1mindex c7f4076..451844b 100644[m
+[1m--- a/android/app/src/main/AndroidManifest.xml[m
+[1m+++ b/android/app/src/main/AndroidManifest.xml[m
+[36m@@ -2,6 +2,8 @@[m
+     <uses-permission android:name="android.permission.INTERNET" />[m
+     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />[m
+     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />[m
+[32m+[m[32m    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />[m
+[32m+[m[32m    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />[m
+     <application[m
+         android:label="panimalar"[m
+         android:name="${applicationName}"[m
+[1mdiff --git a/android/gradle.properties b/android/gradle.properties[m
+[1mindex 0b70877..e96108c 100644[m
+[1m--- a/android/gradle.properties[m
+[1m+++ b/android/gradle.properties[m
+[36m@@ -1,5 +1,4 @@[m
+[31m-org.gradle.jvmargs=-Xmx1536M -XX:MaxMetaspaceSize=384M -XX:ReservedCodeCacheSize=128M -XX:+HeapDumpOnOutOfMemoryError[m
+[31m-org.gradle.workers.max=2[m
+[32m+[m[32morg.gradle.jvmargs=-Xmx8G -XX:MaxMetaspaceSize=4G -XX:ReservedCodeCacheSize=512m -XX:+HeapDumpOnOutOfMemoryError[m
+ android.useAndroidX=true[m
+ # This newDsl flag was added by the Flutter template[m
+ android.newDsl=false[m
+[1mdiff --git a/lib/config/lang_config.dart b/lib/config/lang_config.dart[m
+[1mnew file mode 100644[m
+[1mindex 0000000..7f9dd6e[m
+[1m--- /dev/null[m
+[1m+++ b/lib/config/lang_config.dart[m
+[36m@@ -0,0 +1,263 @@[m
+[32m+[m[32mfinal Map<String, Map<String, String>> appLang = {[m
+[32m+[m[32m  'en': {[m
+[32m+[m[32m    // Shared[m
+[32m+[m[32m    'appTitle': "Panimalar Smart Transit",[m
+[32m+[m[32m    'appSubtitle': "Panimalar Engineering College",[m
+[32m+[m[32m    'langLabel': "Choose Language",[m
+[32m+[m[32m    'logout': "Logout",[m
+[32m+[m[41m    [m
+[32m+[m[32m    // Admin Shell[m
+[32m+[m[32m    'admin_overview': "Overview",[m
+[32m+[m[32m    'admin_live_tracker': "Live Tracker",[m
+[32m+[m[32m    'admin_intercom': "Intercom",[m
+[32m+[m[32m    'admin_approvals': "Approvals",[m
+[32m+[m[32m    'admin_registry': "Registry",[m
+[32m+[m[32m    'admin_subtitle': "College Administration System",[m
+[32m+[m[32m    'admin_online': "online",[m
+[32m+[m[32m    'admin_live_fleet': "Live Active Fleet",[m
+[32m+[m[32m    'admin_pending': "pending",[m
+[32m+[m[32m    'admin_pickup_queue': "Pickup Letters Queue",[m
+[32m+[m[32m    'admin_stop_capture': "DRIVER LOCATION STOP CAPTURE CONSOLE",[m
+[32m+[m[32m    'admin_allow_stops': "Allow Drivers to Add Stops",[m
+[32m+[m[32m    'admin_enable_stops_desc': "Enable to let drivers submit their current location as a new bus stop.",[m
+[32m+[m[32m    'admin_suggested_stops': "Suggested stops by Drivers (Grouped by Bus Card):",[m
+[32m+[m[32m    'admin_stops_checkins': "stops check-ins",[m
+[32m+[m[32m    'admin_active_alerts': "ACTIVE ALERTS PREVIEW",[m
+[32m+[m[32m    'admin_broadcast_notice': "Broadcast Notice",[m
+[32m+[m
+[32m+[m[32m    // Student Shell[m
+[32m+[m[32m    'student_home': "Home",[m
+[32m+[m[32m    'student_live_track': "Live Track",[m
+[32m+[m[32m    'student_campus_map': "Campus Map",[m
+[32m+[m[32m    'student_profile': "Profile",[m
+[32m+[m
+[32m+[m[32m    // Driver[m
+[32m+[m[32m    'sectionLogin': "Driver Login",[m
+[32m+[m[32m    'busNumber': "Bus Number",[m
+[32m+[m[32m    'busPassword': "Password",[m
+[32m+[m[32m    'signIn': "Sign In",[m
+[32m+[m[32m    'errorEnter': "Please enter bus number and password.",[m
+[32m+[m[32m    'errorInvalid': "Invalid bus number or password.",[m
+[32m+[m[32m    'dashboardLabel': "Driver Dashboard",[m
+[32m+[m[32m    'busLabel': "Bus Number",[m
+[32m+[m[32m    'statusLabel': "Status",[m
+[32m+[m[32m    'routeLabel': "Poonamallee Campus",[m
+[32m+[m[32m    'gpsLabel': "Live GPS Status",[m
+[32m+[m[32m    'latLabel': "Latitude",[m
+[32m+[m[32m    'lngLabel': "Longitude",[m
+[32m+[m[32m    'accLabel': "Accuracy",[m
+[32m+[m[32m    'updatedLabel': "Updated",[m
+[32m+[m[32m    'highlightTitle': "Your bus is connected to campus fleet platform.",[m
+[32m+[m[32m    'highlightText': "Start tracking to broadcast location.",[m
+[32m+[m[32m    'startTracking': "Start Tracking",[m
+[32m+[m[32m    'stopTracking': "Stop Tracking",[m
+[32m+[m[32m    'reportBreakdown': "Report Breakdown",[m
+[32m+[m[32m    'fleetLabel': "Live fleet dashboard",[m
+[32m+[m[32m    'etaTitle': "Route ETA",[m
+[32m+[m[32m    'nextStopLabel': "Next stop:",[m
+[32m+[m[32m    'healthTitle': "Vehicle health",[m
+[32m+[m[32m    'boardingTitle': "Student boarding",[m
+[32m+[m[32m    'logBoarding': "Log boarding",[m
+[32m+[m[32m    'breakdownSection': "⚠️ Breakdown Alert (Student Notification)",[m
+[32m+[m[32m    'replacementBus': "Replacement Bus Number",[m
+[32m+[m[32m    'detectedLocation': "Detected Location",[m
+[32m+[m[32m    'sendAlert': "Send Alert to Students",[m
+[32m+[m[32m    'langLabelDash': "Language",[m
+[32m+[m[32m    'trackingStopped': "Tracking stopped.",[m
+[32m+[m[32m    'trackingStarted': "Live GPS tracking started.",[m
+[32m+[m[32m    'boardingLogged': "Student boarding logged.",[m
+[32m+[m[32m    'allBoarded': "All students already boarded.",[m
+[32m+[m[32m    'replacementErrorEmpty': "Enter replacement bus number",[m
+[32m+[m[32m    'locationUnavailable': "Location not available yet",[m
+[32m+[m[32m    'alertSaved': "✅ Alert saved to Firebase",[m
+[32m+[m[32m    'bottomInfo': "Panimalar Engineering College campus transport",[m
+[32m+[m[32m    'notifyRoute': "Notify Buses on Same Route",[m
+[32m+[m[32m    'autoAlertNearby': "Auto-alert nearby buses to collect stranded students",[m
+[32m+[m[32m    'notifyExpl': "When your bus breaks down, other buses on the same route are automatically notified via Firebase to pick up your students.",[m
+[32m+[m[32m    'sendBreakdownBuses': "Send Breakdown to Route Buses",[m
+[32m+[m[32m    'speechTitle': "Speech Monitor",[m
+[32m+[m[32m    'speechWaiting': "Waiting for tracking…",[m
+[32m+[m[32m    'speechActive': "Speech monitoring active.",[m
+[32m+[m[32m    'speakingTime': "Speaking time",[m
+[32m+[m[32m    'sessions': "Sessions",[m
+[32m+[m[32m    'longest': "Longest",[m
+[32m+[m[32m    'pctDrive': "% drive time",[m
+[32m+[m[32m    'speechUsage': "Speech usage",[m
+[32m+[m[32m    'sessionLog': "Session log",[m
+[32m+[m[32m    'speechTooMuch': "⚠️ Speaking too much while driving — admin notified."[m
+[32m+[m[32m  },[m
+[32m+[m[32m  'ta': {[m
+[32m+[m[32m    // Shared[m
+[32m+[m[32m    'appTitle': "பனிமலர் ஸ்மார்ட் ட்ரான்சிட்",[m
+[32m+[m[32m    'appSubtitle': "பனிமலர் பொறியியல் கல்லூரி",[m
+[32m+[m[32m    'langLabel': "மொழியைத் தேர்வு செய்யவும்",[m
+[32m+[m[32m    'logout': "வெளியேறு",[m
+[32m+[m
+[32m+[m[32m    // Admin Shell[m
+[32m+[m[32m    'admin_overview': "கண்ணோட்டம்",[m
+[32m+[m[32m    'admin_live_tracker': "லைவ் டிராக்கர்",[m
+[32m+[m[32m    'admin_intercom': "இன்டர்காம்",[m
+[32m+[m[32m    'admin_approvals': "அனுமதிகள்",[m
+[32m+[m[32m    'admin_registry': "பதிவேடு",[m
+[32m+[m[32m    'admin_subtitle': "கல்லூரி நிர்வாக அமைப்பு",[m
+[32m+[m[32m    'admin_online': "ஆன்லைனில்",[m
+[32m+[m[32m    'admin_live_fleet': "நேரலை பஸ் நெட்வொர்க்",[m
+[32m+[m[32m    'admin_pending': "நிலுவையில்",[m
+[32m+[m[32m    'admin_pickup_queue': "அனுமதி கடிதங்கள்",[m
+[32m+[m[32m    'admin_stop_capture': "பஸ்

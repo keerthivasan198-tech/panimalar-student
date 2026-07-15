@@ -19,6 +19,7 @@ import '../../models/campus_point.dart';
 import '../../models/log_entry.dart';
 import '../../models/alert_entry.dart';
 import '../../config/routes_config.dart';
+import '../../config/lang_config.dart';
 import '../../widgets/marquee_notice_bar.dart';
 import '../../widgets/legend_item.dart';
 import '../../services/campus_path_graph.dart';
@@ -33,7 +34,11 @@ class MainShell extends StatefulWidget {
   State<MainShell> createState() => _MainShellState();
 }
 
-class _MainShellState extends State<MainShell> {
+class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
+  String t(String key) {
+    return appLang[widget.currentLang]?[key] ?? appLang['en']?[key] ?? key;
+  }
+
   int _currentIndex = 0;
 
   bool _busIsOnline = false;
@@ -1653,11 +1658,11 @@ class _MainShellState extends State<MainShell> {
               _currentIndex = idx;
             });
           },
-          destinations: const [
-            NavigationDestination(icon: Icon(Icons.home_outlined, color: Color(0xFF64748B)), selectedIcon: Icon(Icons.home, color: Color(0xFF2563EB)), label: "Home"),
-            NavigationDestination(icon: Icon(Icons.map_outlined, color: Color(0xFF64748B)), selectedIcon: Icon(Icons.map, color: Color(0xFF2563EB)), label: "Live Track"),
-            NavigationDestination(icon: Icon(Icons.domain_outlined, color: Color(0xFF64748B)), selectedIcon: Icon(Icons.domain, color: Color(0xFF2563EB)), label: "Campus Map"),
-            NavigationDestination(icon: Icon(Icons.person_outline, color: Color(0xFF64748B)), selectedIcon: Icon(Icons.person, color: Color(0xFF2563EB)), label: "Profile"),
+          destinations: [
+            NavigationDestination(icon: const Icon(Icons.home_outlined, color: Color(0xFF64748B)), selectedIcon: const Icon(Icons.home, color: Color(0xFF2563EB)), label: t('student_home')),
+            NavigationDestination(icon: const Icon(Icons.map_outlined, color: Color(0xFF64748B)), selectedIcon: const Icon(Icons.map, color: Color(0xFF2563EB)), label: t('student_live_track')),
+            NavigationDestination(icon: const Icon(Icons.domain_outlined, color: Color(0xFF64748B)), selectedIcon: const Icon(Icons.domain, color: Color(0xFF2563EB)), label: t('student_campus_map')),
+            NavigationDestination(icon: const Icon(Icons.person_outline, color: Color(0xFF64748B)), selectedIcon: const Icon(Icons.person, color: Color(0xFF2563EB)), label: t('student_profile')),
           ],
         ),
       ),
@@ -2344,8 +2349,8 @@ class _MainShellState extends State<MainShell> {
                     ),
                   ),
                   const Spacer(),
-                  const Text(
-                    "Panimalar Smart Transit",
+                  Text(
+                    t('appTitle'),
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w900,
@@ -3878,6 +3883,7 @@ class _MainShellState extends State<MainShell> {
         type: FileType.custom,
         allowedExtensions: ['pdf', 'png', 'jpg', 'jpeg'],
         allowMultiple: false,
+        withData: true,
       );
 
       if (result != null && result.files.isNotEmpty) {
@@ -3928,6 +3934,10 @@ class _MainShellState extends State<MainShell> {
         downloadUrl = await snapshot.ref.getDownloadURL();
       }
 
+      if (downloadUrl.isEmpty) {
+        throw Exception("Failed to get document URL. Are you running on web without a hard restart?");
+      }
+
       if (mounted) {
         Navigator.pop(context); // Close dialog
         _sendRequestToAdmin(file.name, downloadUrl);
@@ -3952,6 +3962,7 @@ class _MainShellState extends State<MainShell> {
         'studentName': _studentName,
         'studentYear': _studentYear,
         'studentDept': _studentDept,
+        'studentBus': _profileBusCtrl.text.trim().toUpperCase(),
         'documentName': fileName,
         'documentUrl': downloadUrl,
         'status': 'pending',
