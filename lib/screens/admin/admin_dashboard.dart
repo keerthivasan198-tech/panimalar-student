@@ -1659,22 +1659,25 @@ class _AdminDashboardState extends State<AdminDashboard> {
                           separatorBuilder: (_, __) => const Divider(height: 1),
                           itemBuilder: (ctx, idx) {
                             final r = matches[idx];
-                            return ListTile(
-                              leading: const Icon(Icons.directions_bus, color: Color(0xFF2563EB)),
-                              title: Text(r.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                              subtitle: Text(r.stops.take(3).join(', ') + '...', style: const TextStyle(fontSize: 11)),
-                              onTap: () {
-                                setState(() {
-                                  _selectedLiveRoute = r;
-                                  _liveMapSearchQuery = "";
-                                  _liveMapSearchCtrl.text = r.name;
-                                  
-                                  // Optional: Center map on first stop of the route
-                                  if (r.stops.isNotEmpty && coordsConfig[r.stops[0]] != null) {
-                                    _mapController.move(coordsConfig[r.stops[0]]!, 12.0);
-                                  }
-                                });
-                              },
+                            return Material(
+                              color: Colors.transparent,
+                              child: ListTile(
+                                leading: const Icon(Icons.directions_bus, color: Color(0xFF2563EB)),
+                                title: Text(r.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                subtitle: Text(r.stops.take(3).join(', ') + '...', style: const TextStyle(fontSize: 11)),
+                                onTap: () {
+                                  setState(() {
+                                    _selectedLiveRoute = r;
+                                    _liveMapSearchQuery = "";
+                                    _liveMapSearchCtrl.text = r.name;
+                                    
+                                    // Optional: Center map on first stop of the route
+                                    if (r.stops.isNotEmpty && coordsConfig[r.stops[0]] != null) {
+                                      _mapController.move(coordsConfig[r.stops[0]]!, 12.0);
+                                    }
+                                  });
+                                },
+                              ),
                             );
                           },
                         ),

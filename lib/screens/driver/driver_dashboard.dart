@@ -758,13 +758,16 @@ class _DriverDashboardState extends State<DriverDashboard> {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       elevation: 0,
                       borderOnForeground: true,
-                      child: ListTile(
-                        title: Text(msg, style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Color(0xFF334155))),
-                        trailing: const Icon(Icons.send_rounded, color: Color(0xFF2563EB), size: 18),
-                        onTap: () {
-                          _sendTextMessage(msg);
-                          Navigator.pop(ctx);
-                        },
+                      child: Material(
+                        color: Colors.transparent,
+                        child: ListTile(
+                          title: Text(msg, style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Color(0xFF334155))),
+                          trailing: const Icon(Icons.send_rounded, color: Color(0xFF2563EB), size: 18),
+                          onTap: () {
+                            _sendTextMessage(msg);
+                            Navigator.pop(ctx);
+                          },
+                        ),
                       ),
                     );
                   },
