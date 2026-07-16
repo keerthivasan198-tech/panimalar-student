@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 class StudentLoginScreen extends StatefulWidget {
   final Function(String) onLogin;
@@ -23,7 +24,7 @@ class StudentLoginScreen extends StatefulWidget {
 class _StudentLoginScreenState extends State<StudentLoginScreen> {
   final _rollNoController = TextEditingController();
 
-  void _handleLogin() {
+  void _handleLogin() async {
     final rollNo = _rollNoController.text.trim();
     if (rollNo.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -31,7 +32,21 @@ class _StudentLoginScreenState extends State<StudentLoginScreen> {
       );
       return;
     }
-    widget.onLogin(rollNo);
+    
+    try {
+      final response = await http.get(Uri.parse('http://localhost:5000/api/students/$rollNo'));
+      if (response.statusCode == 200) {
+        widget.onLogin(rollNo);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Profile not found. Please create a new profile.')),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Network error. Please try again.')),
+      );
+    }
   }
 
   @override
