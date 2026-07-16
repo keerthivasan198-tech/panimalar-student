@@ -1202,6 +1202,10 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
          _selectedRoute = _busToRouteKey[busNo]!;
          _updateRouteDetails(_selectedRoute, startListener: true);
       }
+      
+      if (widget.isFirstTimeSignup) {
+         _currentIndex = 0;
+      }
       _isEditingProfile = false;
     });
     
