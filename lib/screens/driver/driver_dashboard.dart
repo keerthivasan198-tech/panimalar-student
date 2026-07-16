@@ -12,6 +12,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'dart:io';
 import '../../config/routes_config.dart';
@@ -791,7 +792,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
     return "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
   }
 
-  Future<void> _fbUpdateLocation(Position pos) async {
+  Future<void> _fbUpdateLocationRaw(double lat, double lng, double acc) async {
     if (Firebase.apps.isEmpty) return;
     setState(() {
       _isSyncing = true;
@@ -823,10 +824,6 @@ class _DriverDashboardState extends State<DriverDashboard> {
         });
       }
     }
-  }
-
-  Future<void> _fbUpdateLocation(Position pos) async {
-    await _fbUpdateLocationRaw(pos.latitude, pos.longitude, pos.accuracy);
   }
 
   void _startSafetyTimer() {
@@ -1153,7 +1150,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
     }
 
     if (_currentPosition != null) {
-      _fbUpdateLocation(_currentPosition!);
+      _fbUpdateLocationRaw(_currentPosition!.latitude, _currentPosition!.longitude, _currentPosition!.accuracy);
     }
   }
 
