@@ -156,13 +156,15 @@ class _AdminDashboardState extends State<AdminDashboard> {
         _routes = decoded.map((e) => RouteEntry.fromJson(e)).toList();
         if (_routes.length < 50) { // Since we have 77 routes, if it's less than 50, it's stale data.
           _routes = _getDefaultRoutes();
-          _saveRoutes();
         }
+        _saveRoutes(); // Sync loaded routes to Firebase
       } catch (e) {
         _routes = _getDefaultRoutes();
+        _saveRoutes();
       }
     } else {
       _routes = _getDefaultRoutes();
+      _saveRoutes();
     }
 
     // Logs
@@ -204,7 +206,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     if (mounted) setState(() {});
   }
 
-  void _saveDrivers() async {
+  Future<void> _saveDrivers() async {
     final prefs = await SharedPreferences.getInstance();
     prefs.setString('ptAdmin_drivers', json.encode(_drivers.map((e) => e.toJson()).toList()));
     
@@ -223,6 +225,17 @@ class _AdminDashboardState extends State<AdminDashboard> {
   void _saveRoutes() async {
     final prefs = await SharedPreferences.getInstance();
     prefs.setString('ptAdmin_routes', json.encode(_routes.map((e) => e.toJson()).toList()));
+    
+    // Also sync to Firebase Realtime Database
+    if (Firebase.apps.isNotEmpty) {
+      try {
+        await FirebaseDatabase.instance.ref('routes').set(
+          _routes.map((e) => e.toJson()).toList()
+        );
+      } catch (e) {
+        debugPrint("Error syncing routes to Firebase: $e");
+      }
+    }
   }
 
   void _saveLogs() async {

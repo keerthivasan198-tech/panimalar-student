@@ -64,7 +64,10 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
 
   bool _hasAlertedApproaching = false;
   bool _hasAlertedArrived = false;
+  bool _hasAlertedApproachingRadius = false;
   bool _wasBusOnline = false;
+  String _busDirection = 'To College';
+  double _alertRadiusMeters = 1000.0;
 
   bool _showNotification = false;
   String _notifTitle = "";
@@ -925,6 +928,7 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
             _wasBusOnline = false;
             _busIsOnline = false;
             _busStatus = "offline";
+            _hasAlertedApproachingRadius = false;
           });
           return;
         }
@@ -938,6 +942,7 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
           _busLng = (data['lng'] as num).toDouble();
           _busAccuracy = (data['acc'] as num?)?.toDouble() ?? (data['accuracy'] as num?)?.toDouble() ?? 10.0;
           _busStatus = data['status'] as String? ?? "tracking";
+          _busDirection = data['direction'] as String? ?? "To College";
 
           final rawUpdatedAt = data['updatedAt'] as String?;
           if (rawUpdatedAt != null) {
@@ -967,29 +972,47 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
         }
 
         if (_savedStop.isNotEmpty && _busLat != null && _busLng != null) {
-          final myStopIdx = _routeStops.indexOf(_savedStop);
           final nearestIdx = _getNearestStopIndex(_busLat!, _busLng!);
+          final displayStops = _busDirection == 'To Home' ? _routeStops.reversed.toList() : _routeStops;
+          final myStopIdx = displayStops.indexOf(_savedStop);
+          final logicalNearestIdx = displayStops.indexOf(_routeStops[nearestIdx]);
 
-          if (nearestIdx == 0) {
+          if (logicalNearestIdx == 0) {
             _hasAlertedApproaching = false;
             _hasAlertedArrived = false;
           }
 
           if (myStopIdx != -1) {
-            if (nearestIdx == myStopIdx - 1 && !_hasAlertedApproaching) {
+            if (logicalNearestIdx == myStopIdx - 1 && !_hasAlertedApproaching) {
               _hasAlertedApproaching = true;
               _showInAppNotification(
                 "Bus $_busFirebaseId is approaching!",
-                "Bus $_busFirebaseId is at ${_routeStops[nearestIdx]}, which is 1 stop away from $_savedStop.",
+                "Bus $_busFirebaseId is at ${displayStops[logicalNearestIdx]}, which is 1 stop away from $_savedStop.",
                 "🔔",
               );
-            } else if (nearestIdx == myStopIdx && !_hasAlertedArrived) {
+            } else if (logicalNearestIdx == myStopIdx && !_hasAlertedArrived) {
               _hasAlertedArrived = true;
               _showInAppNotification(
                 "Bus $_busFirebaseId has arrived!",
                 "Bus $_busFirebaseId is now at your boarding stop: $_savedStop. Get ready to board!",
                 "🚏",
               );
+            }
+          }
+
+          // Proximity Radius Alert
+          final stopCoords = _coords[_savedStop];
+          if (stopCoords != null) {
+            double distanceMeters = _haversineM(_busLat!, _busLng!, stopCoords.latitude, stopCoords.longitude);
+            if (distanceMeters <= _alertRadiusMeters && !_hasAlertedApproachingRadius) {
+              _hasAlertedApproachingRadius = true;
+              _showInAppNotification(
+                "Bus is approaching!",
+                "The bus is within ${(_alertRadiusMeters/1000).toStringAsFixed(1)}km of your stop. Be ready!",
+                "🔔",
+              );
+            } else if (distanceMeters > _alertRadiusMeters) {
+              _hasAlertedApproachingRadius = false;
             }
           }
         }
@@ -1095,15 +1118,19 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
 
   int? _calculateEtaMinutes(int nearestIdx) {
     if (!_busIsOnline || _busLat == null || _busLng == null || _savedStop.isEmpty) return null;
-    final myStopIdx = _routeStops.indexOf(_savedStop);
-    if (myStopIdx == -1 || nearestIdx > myStopIdx) return null;
+    
+    final displayStops = _busDirection == 'To Home' ? _routeStops.reversed.toList() : _routeStops;
+    final myStopIdx = displayStops.indexOf(_savedStop);
+    final logicalNearestIdx = displayStops.indexOf(_routeStops[nearestIdx]);
+
+    if (myStopIdx == -1 || logicalNearestIdx > myStopIdx) return null;
 
     double totalDist = 0.0;
     double currentLat = _busLat!;
     double currentLng = _busLng!;
 
-    for (int i = nearestIdx; i <= myStopIdx; i++) {
-      final stopName = _routeStops[i];
+    for (int i = logicalNearestIdx; i <= myStopIdx; i++) {
+      final stopName = displayStops[i];
       final stopCoord = _coords[stopName];
       if (stopCoord != null) {
         totalDist += _haversineKm(currentLat, currentLng, stopCoord.latitude, stopCoord.longitude);
@@ -1112,7 +1139,7 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
       }
     }
 
-    final intermediateStops = myStopIdx - nearestIdx;
+    final intermediateStops = myStopIdx - logicalNearestIdx;
     int eta = (totalDist * 2.5 + intermediateStops).round();
     return eta < 1 ? 1 : eta;
   }
@@ -1503,6 +1530,7 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
   Widget _buildHomeTab() {
     final int nearestIdx = (_busLat != null && _busLng != null) ? _getNearestStopIndex(_busLat!, _busLng!) : 0;
     final int? eta = _calculateEtaMinutes(nearestIdx);
+    final displayStops = _busDirection == 'To Home' ? _routeStops.reversed.toList() : _routeStops;
 
     return SingleChildScrollView(
       padding: EdgeInsets.zero,
@@ -1917,14 +1945,14 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
                   ),
                   child: Column(
                     children: [
-                      for (int i = 0; i < _routeStops.length; i++) ...[
+                      for (int i = 0; i < displayStops.length; i++) ...[
                         _buildStopRow(
-                          _routeStops[i],
+                          displayStops[i],
                           isFirst: i == 0,
-                          isLast: i == _routeStops.length - 1,
-                          isMyStop: _savedStop == _routeStops[i],
+                          isLast: i == displayStops.length - 1,
+                          isMyStop: _savedStop == displayStops[i],
                         ),
-                        if (i < _routeStops.length - 1) _buildStopConnector(),
+                        if (i < displayStops.length - 1) _buildStopConnector(),
                       ]
                     ],
                   ),
@@ -1932,7 +1960,7 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
                 const SizedBox(height: 6),
                 Center(
                   child: Text(
-                    "Showing ${_routeStops.length} of ${_routeStops.length} stops",
+                    "Showing ${displayStops.length} of ${displayStops.length} stops",
                     style: const TextStyle(
                       fontSize: 10,
                       color: Color(0xFFCBD5E1),

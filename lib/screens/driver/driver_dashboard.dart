@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -55,6 +56,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
 
   String _nextStop = "COLLEGE";
   String _eta = "--";
+  String _tripDirection = 'To College';
 
   int _attendanceCount = 0;
   final int _attendanceCapacity = 14;
@@ -463,7 +465,8 @@ class _DriverDashboardState extends State<DriverDashboard> {
       'lng': pos.longitude,
       'acc': pos.accuracy,
       'status': _isTracking ? (_breakdownActive ? 'broken' : 'tracking') : 'offline',
-      'updatedAt': DateTime.now().toIso8601String()
+      'updatedAt': DateTime.now().toIso8601String(),
+      'direction': _tripDirection
     };
 
     try {
@@ -542,10 +545,10 @@ class _DriverDashboardState extends State<DriverDashboard> {
     await _fbUpdateLocation(initialPos);
 
     LocationSettings locationSettings;
-    if (Platform.isAndroid) {
+    if (!kIsWeb && Platform.isAndroid) {
       locationSettings = AndroidSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 5,
+        distanceFilter: 0,
         forceLocationManager: true,
         intervalDuration: const Duration(seconds: 10),
         foregroundNotificationConfig: const ForegroundNotificationConfig(
@@ -557,7 +560,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
     } else {
       locationSettings = const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 5,
+        distanceFilter: 0,
       );
     }
 
@@ -1296,6 +1299,38 @@ class _DriverDashboardState extends State<DriverDashboard> {
                             style: const TextStyle(fontSize: 11, color: Color(0xFF64748B), height: 1.4, fontWeight: FontWeight.w500),
                           ),
                         ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    // Trip Direction Toggle
+                    SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(value: 'To College', label: Text('To College', style: TextStyle(fontSize: 12))),
+                        ButtonSegment(value: 'To Home', label: Text('To Home', style: TextStyle(fontSize: 12))),
+                      ],
+                      selected: {_tripDirection},
+                      onSelectionChanged: _isTracking ? null : (newSelection) {
+                        setState(() {
+                          _tripDirection = newSelection.first;
+                        });
+                      },
+                      style: ButtonStyle(
+                        backgroundColor: WidgetStateProperty.resolveWith<Color>(
+                          (Set<WidgetState> states) {
+                            if (states.contains(WidgetState.selected)) {
+                              return const Color(0xFF2563EB);
+                            }
+                            return Colors.white;
+                          },
+                        ),
+                        foregroundColor: WidgetStateProperty.resolveWith<Color>(
+                          (Set<WidgetState> states) {
+                            if (states.contains(WidgetState.selected)) {
+                              return Colors.white;
+                            }
+                            return const Color(0xFF64748B);
+                          },
+                        ),
                       ),
                     ),
                     const SizedBox(height: 16),
