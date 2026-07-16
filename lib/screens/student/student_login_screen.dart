@@ -5,6 +5,7 @@ class StudentLoginScreen extends StatefulWidget {
   final String currentLang;
   final Function(String) onLanguageChanged;
   final VoidCallback onSwitchRole;
+  final VoidCallback onCreateProfile;
 
   const StudentLoginScreen({
     super.key,
@@ -12,6 +13,7 @@ class StudentLoginScreen extends StatefulWidget {
     required this.currentLang,
     required this.onLanguageChanged,
     required this.onSwitchRole,
+    required this.onCreateProfile,
   });
 
   @override
@@ -90,6 +92,18 @@ class _StudentLoginScreenState extends State<StudentLoginScreen> {
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
                   child: const Text('Login', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextButton(
+                onPressed: widget.onCreateProfile,
+                child: const Text(
+                  'Create new profile',
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: Color(0xFF2563EB),
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
             ],

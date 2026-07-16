@@ -44,6 +44,7 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   bool _isLoggedIn = false;
+  bool _showCreateProfile = false;
   String _studentRollNo = "";
 
   @override
@@ -84,6 +85,7 @@ class _MainShellState extends State<MainShell> {
     setState(() {
       _studentRollNo = "";
       _isLoggedIn = false;
+      _showCreateProfile = false;
     });
     
     widget.onSwitchRole();
@@ -92,15 +94,29 @@ class _MainShellState extends State<MainShell> {
   @override
   Widget build(BuildContext context) {
     if (!_isLoggedIn) {
-      return StudentDashboard(
-        studentRollNo: "",
-        isFirstTimeSignup: true,
-        onFirstTimeSave: _login,
-        onLogout: _logout,
-        currentLang: widget.currentLang,
-        onLanguageChanged: widget.onLanguageChanged,
-        onSwitchRole: widget.onSwitchRole,
-      );
+      if (_showCreateProfile) {
+        return StudentDashboard(
+          studentRollNo: "",
+          isFirstTimeSignup: true,
+          onFirstTimeSave: _login,
+          onLogout: _logout,
+          currentLang: widget.currentLang,
+          onLanguageChanged: widget.onLanguageChanged,
+          onSwitchRole: widget.onSwitchRole,
+        );
+      } else {
+        return StudentLoginScreen(
+          currentLang: widget.currentLang,
+          onLogin: _login,
+          onLanguageChanged: widget.onLanguageChanged,
+          onSwitchRole: widget.onSwitchRole,
+          onCreateProfile: () {
+            setState(() {
+              _showCreateProfile = true;
+            });
+          },
+        );
+      }
     } else {
       return StudentDashboard(
         studentRollNo: _studentRollNo,
