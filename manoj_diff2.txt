@@ -1,0 +1,2664 @@
+commit b3ec90a86db732ca7e20c11463f010d0aa846f35
+Author: Manikandan <manikandang6002@gmail.com>
+Date:   Wed Jul 15 00:23:50 2026 +0530
+
+    changes 14-07-2026
+
+diff --git a/fix_coords.py b/fix_coords.py
+new file mode 100644
+index 0000000..08af669
+--- /dev/null
++++ b/fix_coords.py
+@@ -0,0 +1,96 @@
++import re
++import requests
++import time
++import sys
++import threading
++from concurrent.futures import ThreadPoolExecutor
++
++def geocode_arcgis(stop_name):
++    # Try with Chennai first, then just Tamil Nadu
++    queries = [
++        f"{stop_name}, Chennai, Tamil Nadu, India",
++        f"{stop_name}, Tamil Nadu, India"
++    ]
++    
++    for q in queries:
++        url = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
++        params = {
++            "f": "json",
++            "singleLine": q,
++            "maxLocations": 1
++        }
++        try:
++            res = requests.get(url, params=params, timeout=10)
++            if res.status_code == 200:
++                data = res.json()
++                if data.get('candidates') and len(data['candidates']) > 0:
++                    loc = data['candidates'][0]['location']
++                    return (loc['y'], loc['x'])
++        except Exception as e:
++            pass
++        time.sleep(0.1) # small delay
++    return None
++
++def process_stop(stop, college_lat, college_lng):
++    loc = geocode_arcgis(stop)
++    if loc:
++        return stop, loc
++    else:
++        return stop, (college_lat, college_lng)
++
++def main():
++    with open('lib/config/routes_config.dart', 'r', encoding='utf-8') as f:
++        content = f.read()
++
++    # Find the coordsConfig map
++    match = re.search(r'final Map<String, LatLng> coordsConfig = \{(.*?)\};', content, re.DOTALL)
++    if not match:
++        print("Could not find coordsConfig")
++        return
++    
++    coords_content = match.group(1)
++    
++    # Extract all stops
++    stops = re.findall(r"'([^']+)':\s*const LatLng", coords_content)
++    # Removing duplicates
++    stops = list(dict.fromkeys(stops))
++    
++    print(f"Found {len(stops)} unique stops to geocode.")
++    
++    new_coords = {}
++    college_lat, college_lng = 13.0489049, 80.0754642
++    
++    new_coords['COLLEGE'] = (college_lat, college_lng)
++    new_coords['Panimalar Engineering College'] = (college_lat, college_lng)
++    
++    stops_to_process = [s for s in stops if s not in new_coords]
++    
++    # Parallel processing with ThreadPoolExecutor to speed it up (ArcGIS can handle a few concurrent requests)
++    completed = 0
++    with ThreadPoolExecutor(max_workers=5) as executor:
++        futures = {executor.submit(process_stop, stop, college_lat, college_lng): stop for stop in stops_to_process}
++        for future in futures:
++            stop, loc = future.result()
++            new_coords[stop] = loc
++            completed += 1
++            if completed % 50 == 0:
++                print(f"Geocoded {completed}/{len(stops_to_process)} stops...")
++
++    # Build new coordsConfig string
++    new_str = ""
++    # We want to maintain original order if possible, but dict order is fine in Dart.
++    for stop, (lat, lng) in new_coords.items():
++        # Escape single quotes in stop names if any exist
++        safe_stop = stop.replace("'", "\\'")
++        new_str += f"  '{safe_stop}': const LatLng({lat:.5f}, {lng:.5f}),\n"
++        
++    # Replace in file
++    new_content = content[:match.start(1)] + "\n" + new_str + content[match.end(1):]
++    
++    with open('lib/config/routes_config.dart', 'w', encoding='utf-8') as f:
++        f.write(new_content)
++        
++    print("Successfully updated routes_config.dart with real coordinates!")
++
++if __name__ == '__main__':
++    main()
+diff --git a/lib/config/routes_config.dart b/lib/config/routes_config.dart
+index 90efbcd..29fee50 100644
+--- a/lib/config/routes_config.dart
++++ b/lib/config/routes_config.dart
+@@ -1,75 +1,886 @@
+ import 'package:latlong2/latlong.dart';
+ 
+ final Map<String, List<String>> routeStopsConfig = {
+-  'route_15': [
+-    "MANALI", "M.G.R NAGAR", "IIND MAIN ROAD", "MATHUR GATE",
+-    "MADHAVARAM MILK COLONY", "ARUL NAGAR", "THAPAL PETTI",
+-    "MADHAVARAM PUTHU KOVIL", "MADHAVARAM BUS STAND",
+-    "MADHAVARAM SMALL ROUNDNA", "RETTRI R T O OFFICE", "COLLEGE"
+-  ],
+-  'route_52': [
+-    "PADAPPAI", "MANNIVAKKAM", "MUDICHUR", "PERUGALATHUR (OLD)",
+-    "SUNNAMBU KALVAI", "KRISHNA NAGAR", "TAMBARAM DEPOT",
+-    "SARAVANA STORE", "PALLAVARAM", "PAMMAL", "ANAGAPUTHUR",
+-    "AANDAN KUPPAM", "COLLEGE"
+-  ],
+-  'route_137': [
+-    "PORUR", "RETEERI", "IYYAPANTHANGAL", "KATTUPAKKAM",
+-    "KUMANANCHAVADI", "ARAVIND EYE HOSPITAL", "COLLEGE"
+-  ]
++  'route_1': ["ARCOT", "TOLL GATE", "SUMAITHANGI", "KAVERIPAKKAM", "OCHERI", "PERUPULIPAKKAM", "PAUL CHETTY", "COLLEGE"],
++  'route_2': ["VANDAVASI", "VEERAMBAKKAM", "MELMA KOOT ROAD", "MANAMADHI KOOT ROAD", "KOODIMANTHAL", "MANGAL KOOT ROAD", "MAMANDUR", "METTU THERU KPM", "KACHALEESWARAR TEMPLE", "EKAMBARESWARAR TEMPLE", "COLLEGE"],
++  'route_3': ["R C M SCHOOL", "STATE BANK", "SOUNTHRI", "PULIREIPAKKAM", "BARALI", "PANDIYAPAKKAM", "CHOLAVARAM", "MANGAL KOOT ROAD", "THOOSI", "IYYENGAR KOOT ROAD", "HOUSING BOARD", "COLLECTOR OFFICE", "MUNGIL MANDAPAM", "KANCHEEPURAM BUS STAND", "COLLEGE"],
++  'route_4': ["VALPATTARAI", "RENGASAMY KULAM", "VISHNU KOVIL", "PEIYAR NAGAR", "YAGANAPETTAI", "ORAGADAM", "VALLAKOTTAI", "SRIPERUMPUDUR BUS STAND", "THERADI", "COLLEGE"],
++  'route_5': ["MILITARY ROAD", "KEEL GATE", "KEERAI MANDAPAM", "PAVAPETTAI STREET", "RENGASAMY KULAM", "LADIES COLLEGE", "POLICE STATION", "CHETTY STREET", "TOLL GATE", "GENTS COLLEGE", "IYYAMPETTAI", "WALAJABAD", "SOKUKADU", "VARNAVASI", "ORAGADAM", "VALLAKOTTAI", "PONTHUR", "COLLEGE"],
++  'route_6': ["HOUSING BOARD", "COLLECTOR OFFICE", "MOOGIL MANDAPAM", "BUS STAND", "KACHALEESWARAR TEMPLE", "EKAMBARESWARAR TEMPLE", "GUJARTHI CHITRAM", "KOHRI", "COLLEGE"],
++  'route_7': ["PONNERI KARAI", "SUGAVACHITTRAM", "SRIPERUMBUDUR", "THANDALAM", "COLLEGE"],
++  'route_8': ["YAMAHA SHOWROOM", "SR MANDAPAM", "PULIYA MARAM BUS STOP[", "VEPPAMPATTU", "KANDAN KOLLAI", "SEVVAPETTAI", "KAKALOOR", "OLD COLLECTOR OFFICE", "AVADI ROAD SIGNAL", "MUNICIPALITY", "L.I.C", "OIL MILL", "COLLEGE"],
++  'route_9': ["CHEKKADU", "HINDU COLLEGE", "PATTABIRAM BRIDGE", "JAIKRISHNA MARRIAGE HALL", "AMUDHUR MEDU", "NEMILICHERI ROUNDTANA", "JAYA COLLEGE", "PANDIAN RICE MILL", "INDIAN OIL PETROL BUNK", "COLLEGE"],
++  'route_10': ["PANAPAKKAM", "NEMLI", "PETROL BUNK", "SENTHAMANGALAM", "PINNAVARAM", "PARAMESWARAMANGALAM", "THAKKOLAM KOOT ROAD", "THAKKOLAM POLICE STATION", "THAKKOLAM", "CHECK POST", "MARIMANAGALAM", "NARSINGAPURAM", "PERAMBAKKAM", "COLLEGE"],
++  'route_11': ["ARAKONAM BUS STAND", "S R GATE", "PERUMOOCHU", "COLLEGE"],
++  'route_12': ["PERAMBAKKAM", "KOOVAM", "KONDACHERRY", "MAPPEDU", "VELLAI KALVAI", "SAMATHUVAPURAM", "ULUNDAI", "VALARPURAM", "CINNA VALARPURAM", "MEVALUR KUPPAM", "VIJAYA SHANTHI APARTMENT", "PAPPANCHATHIRAM", "CHEMBARAMBAKKAM", "COLLEGE"],
++  'route_13': ["TIRUTTANI DEPOT", "TIRUTTANI PARK", "KANAGAMMA CHATHIRAM", "THIRUVALANGADU", "COLLEGE"],
++  'route_14': ["KG KANDIGAI", "VIRAGA NALOOR", "VETRIVEL NAGAR", "PWD OFFICE", "TVS", "BYE-PASS", "THAIYAMARAM BRIDGE", "ARUNKULAM KOOTROAD", "LAKSHMIPURAM", "ARCOT KUPPAM", "RAMACHERRY", "KANAGAVALLIPURAM", "COLLEGE"],
++  'route_15': ["KADAMBATHUR", "SSS MANDAPAM", "PRIYANKUPPAM", "PUDHIYA THIRUPACHUR", "PAZHAYA THIRUPACHUR", "MEERA THEATRE", "TIRUVALLUR PETROL BUNK", "OIL MILL", "MANAVALAN NAGAR", "NDB MANDAPAM", "COLLEGE"],
++  'route_16': ["UTHUKOTTAI CIRCLE OFFICE", "UTHUKOTTAI BUS STAND", "UTHUKOTTAI JUNCTION", "PSV PETROL BUNK", "EB OFFICE", "PONDAVAKKAM", "KATCHUR", "SEETHANJERI", "ODAPPAI", "POONDI", "PULLARAM BAKKAM", "SAI BABA", "PUDUCHATHIRAM", "NEMAM", "VELLEVEDU", "THIRUMIZHASI", "COLLEGE"],
++  'route_17': ["DHAMBARA MEDU", "PERANDUR", "PALAVAKKAM", "SOOLAIMANI", "THANDALAM", "PERIYAPALAYAM", "VADAMADURAI", "VENGAL", "PAGALMEDU", "THAMARAIPAKKAM", "PAKKAM", "SRIPATHI NAGAR", "LAKSHMI THEATRE", "GOMATHIPURAM", "KOSAVANPALAYAM", "KOTTAMEDU", "COLLEGE"],
++  'route_18': ["CHEKKADU", "HINDU COLLEGE", "PATTABIRAM", "THANDARAI", "AMUDHUR MEDU", "COLLEGE"],
++  'route_19': ["THIRUNINDRAVUR (LAKSHMI THEATRE)", "EB OFFICE", "RAJANKUPPAM", "KOTTAMEDU", "NEMAM", "VELLAVEDU", "THIRUMAZHISAI BUS STANAD", "SIVAN KOVIL", "COLLEGE"],
++  'route_20': ["THIRUNINDRAVUR", "KARUPATTI COFFEE", "PANDIAN RICE MILL", "JAYA COLLEGE", "NEMILLICHERRY", "COLLEGE"],
++  'route_21': ["AMIR MAHAL", "ZAM BAZZAR (POLICE STATION)", "RATHNA CAFE", "BELLS ROAD", "GOSHA HOSPITAL", "D1 POLICE STATION", "CHINTADRIPET", "P T SCHOOL", "COLLEGE"],
++  'route_22': ["MUSIC ACADEMY , ARYA GOWDA ROAD", "ROYAPETTAI BRIDGE", "ICE HOUSE", "RATHNA CAFE", "D1 POLICE STATION", "ASHOKA HOTEL", "CHILDREN HOSPITAL", "CHETPET POLICE STATION", "STERLING ROAD SIGNAL", "CHOOLAIMEDU", "SKY WALK BRIDGE", "COLLEGE"],
++  'route_23': ["MMDA", "POPULAR STUDIO", "WATER TANK", "RAZARK GARDEN", "NERKUNDRAM", "VENKAYA MANDI", "COLLEGE"],
++  'route_24': ["ATHIPATU", "THAZHANKUPPAM", "ANNAI SIVAKAMI NAGAR", "BHARATHIYAR NAGAR", "MRF BEACH ROAD", "N 4", "KASIMEDU", "KALMANDAPAM", "ROYAPURAM", "BEACH STATION", "HIGH COURT", "CENTRAL", "TAYLOR’S ROAD", "COLLEGE"],
++  'route_25': ["ERNAVUR LIFT GATE", "WIMCO NAGAR", "AJAX", "THERADI", "RAJAKADAI", "TOLL GATE", "BEACH STATION", "CENTRAL", "COLLEGE"],
++  'route_26': ["TOLL GATE", "MANI CYCLE STORE", "MAHARANI", "MINT", "CHOOLAI", "PURASAIVAKKAM", "KELLIS", "NEW AVADI ROAD", "COLLEGE"],
++  'route_27': ["MANI CYCLE SHOP", "TONDIARPET MANIKOONDU", "MAHARANI POST OFFICE", "THEAGARAYA COLLEGE", "PANDIAN THEATRE", "CEMENT ROAD", "PENCIL FACTORY", "MINT BUS STAND", "COLLEGE"],
++  'route_28': ["STANLEY", "MOOLAGOTHALAM", "CHOOLAI", "DOVETON", "PURASAIWAKKAM", "MOTCHAM", "KELLEYS", "MUMMY DADDY", "NEW AVADI ROAD", "AMINJIKARAI", "COLLEGE"],
++  'route_29': ["SHENOY NAGAR PARK", "KALLARI – CSI CHRUCH", "KILPAUK SIGNAL", "NEW AVADI ROAD BUS STOP", "GANGAI AMMAN KOVIL", "BOHAN VILLA PARK", "K4 POLICE STATION", "JERSY MOHAN SCHOOL", "SHANTHI COLONY NUTS & SPECIES", "V R MAL", "COLLEGE"],
++  'route_30': ["GEMINI", "VALLUVAR KOTTAM", "KODAMBAKKAM", "PUTHUR KATU", "KOYAMBEDU", "RAIL NAGAR", "COLLEGE"],
++  'route_31': ["PALLAVAKKAM", "KOTTIVAKKAM", "R T O OFFICE", "TIRUVANMIYUYR COLONY", "TIRUVANMIYUYR BUS STAND", "ADYAR DEPOT", "I I T", "COLLEGE"],
++  'route_32': ["MANDHAVELI", "MYLAPOORE", "LUZZ", "CATHEDRAL ROAD", "THENAMPETTAI", "COLLEGE"],
++  'route_33': ["SRINIVASA THEATRE", "T NAGAR BUS STAND", "SAIDAPET METRO STATION", "GUINDY", "BUTT ROAD", "RAMAPURAM", "MUGALIVAKKAM", "SAKTHI NAGAR", "PORUR OLD POLICE STATION", "COLLEGE"],
++  'route_34': ["M R NAGAR COLLEGE", "EB BUS STOP", "MKB NAGAR BUS STOP", "AMBEDKAR COLLEGE", "SHARMA NAGAR BUS STOP", "MOOLAKADI", "COLLEGE"],
++  'route_35': ["T V K NAGAR", "DON BOSCO SCHOOL", "KUMARAN NAGAR", "WELDING SHOP", "MOOGAMBIKA TEMPLE", "APOLLO MEDICAL", "COLLEGE"],
++  'route_36': ["PERAMBUR DON BOSCO SCHOOL", "LAKSHMI KOVIL", "ESWARI KALYANA MANDAPAM", "BB ROAD", "PERMABUR BUS STAND", "GANDHI SILAI", "MURUGAN KOVIL", "THIRUVALLUR KALYANA MANDAPAM", "COLLEGE"],
++  'route_37': ["JAMALIA", "BODI KADAI", "AYNAVARAM SIGNAL", "SAIYANI", "P C O AXIS BANK", "NOOR HOTEL", "JOINT OFFICE", "VENKATESWARA SWEETS", "I C F BUS STAND", "KALLUKADAI", "VILLIVAKKAM", "NATHAMUNI THEATRE", "COLLEGE"],
++  'route_38': ["CPCL", "MEENAKSHI THEATRE", "MANALI MARKET", "MMDA IIIRD MAIN ROAD", "MMDA IST MAIN ROAD", "PALPANNAI GATE", "ARUL NAGAR", "THAPAL PETTI", "MADHAVARAM BUS STAND", "MADHAVARAM BYE PASS", "RETTRI R T O OFFICE", "TEMPLE SCHOOL", "COLLEGE"],
++  'route_39': ["MANALI", "M.G.R NAGAR", "IIND MAIN ROAD", "MATHUR GATE", "MADHAVARAM MILK COLONY", "ARUL NAGAR", "THAPAL PETTI", "MADHAVARAM PUTHU KOVIL", "MADHAVARAM BUS STAND", "MADHAVARAM SMALL ROUNDNA", "RETTRI R T O OFFICE", "COLLEGE"],
++  'route_40': ["RETTERI", "SENTHIL NAGAR", "THADA KUPPAM", "14th MAIN ROAD", "WEST DEPOT", "KALYANA MANDAPAM", "LAKSHMI NAGAR", "COLLEGE"],
++  'route_41': ["SIRUVAPURI", "THACHUR X ROAD", "KRISHNAPURAM", "PONNERI BUS STAND", "AMBEDKAR SILAI", "VEMBAKKAM", "THADA PERUMBAKKAM", "KOKKU MEDU", "ELVAMPEDU", "METTUPALAYAM", "KESAVAPURAM", "MEENJUR", "BDO OFFICE", "PATTAMANDHIRI", "NAAPALAYAM", "COLLEGE"],
++  'route_42': ["GUMMIDIPOONDI", "KAVARAPETTAI", "CHALACHITRAM (AVANCHAVAKKAM)", "KARANODAI", "CHOLAVARAM", "TEMPLE SCHOOL", "COLLEGE"],
++  'route_43': ["VINAYAGAPURAM", "BUS STAND", "R.C.FLAT", "S.S. MAHAL", "PADAVETTU AMMAN KOIL", "PADI BRITANNIA", "MANNURPET", "COLLEGE"],
++  'route_44': ["GOLDEN FLATS", "PANDIYAN HOTEL", "SRINIVASA EYE HOSPITAL", "7 H BUS STAND", "MASOODHI", "MMM FIRE SERVICE", "MMM SIGNAL", "COLLEGE"],
++  'route_45': ["VELLAMMAL HALL", "DOSAI KADAI", "DR.SUPER MARKET", "7 M BUS STAND", "PAZHAMUDHIR CHOLAI", "AXIS BANK", "NOLAMBUR (POLICE)", "SBOA SCHOOL", "7 H BUS STAND", "GOLDEN FLATS", "COLLEGE"],
++  'route_46': ["THIRUMANGALAM", "KALYAN JEWELLERS", "COLLECTOR NAGAR", "VINAYAGAR KOVIL", "VELLAMMAL MAIN", "GOLDEN FLATS", "COLLEGE"],
++  'route_47': ["GANDHI NAGAR POLICE BOOTH", "G R T RED HILLS", "REDHILLS BUS STAND", "KAVANGARAI BUS STOP", "PUZHAL JAIL", "PUZHAL CAMP", "SURAPET VELAMMAL", "SURAPET BUS STOP", "SHANMUGAPURAM", "KALLIKUPPAM", "PUDUR BUS STOP", "ORAGADAM", "RAKKI THEATRE", "STEDEFORD HOSPITAL", "THIRUMULLAIVOYAL", "VAISHNAVI NAGAR", "MURUGAPPA POLYTECHNIC", "COLLEGE"],
++  'route_48': ["GANDHI NAGAR POLICE BOOTH", "ST JOSEPH SCHOOL", "G R T RED HILLS", "REDHILLS BUS STAND", "REDHILLS MARKET", "KAVANGARAI", "PUZHAL JAIL", "PUZHAL CAMP", "SURAPET VELAMMAL", "SURAPET BUS STOP", "KALLIKUPPAM", "KALLIKUPPAM ARCH", "WIRELESS TATA COMMUNICATIONS", "PUDUR", "VIJAYALAKSHMIPURAM", "COLLEGE"],
++  'route_49': ["ORAGADAM BUS STOP", "RAKKI THEATRE", "STEDEFORD HOSPITAL", "SARASWATHI NAGAR", "THIRUMULLAIVOYAL", "COLLEGE"],
++  'route_50': ["MUTHA PUDUPETTAI", "KV SCHOOL", "CRPF (RG NAGAR)", "BRINDAVANA NAGAR", "AVADI RAMARATHNA", "COLLEGE"],
++  'route_51': ["VEERAPURAM CAMP", "VEERAPURAM BUS STAND", "MORAI BUS STAND", "NEW COLONY", "ANNA NAGAR BUS STAND", "VELTECH JUNCTION", "KOIL PATHAGAI", "AJAY STADIUM", "COLLEGE"],
++  'route_52': ["AVADI CHECK POST", "AVADI RAMARATHNA", "KANNIGAPURAM", "MARKET", "OM SAKTHI KOIL", "VASANTHAM NAGAR", "MOORTHY NAGAR", "KOVARTHANAGIRI", "IYYANKULAM", "PARIVAKKAM", "KADUVETTY PETROL BUNK", "VETHILAI THOTTAM", "COLLEGE"],
++  'route_53': ["AMBATTUR O.T", "CANARA BANK", "DUNLOP , POLICE STATION", "TI COMPANY", "TELEPHONE EXCHANGE", "AYYANAMPAAKAM", "MEL AYYANAMPAKKAM", "SREE VAARI", "MEEN MARKET", "VELAPPAN SAVADI", "COLLEGE"],
++  'route_54': ["CHINMAYA NAGAR", "SAI NAGAR", "NATESAN NAGAR", "ELANGO NAGAR", "AVM COLLEGE", "AVICHI SCHOOL", "COLLEGE"],
++  'route_55': ["AVICHI SCHOOL", "VIRUGAMBAKKAM", "ALWAR THIRU NAGAR", "APPU HOTEL", "KESAVARTHINI", "VALASARAVAKKAM", "JAI GARDEN", "LAKSHMI NAGAR", "COLLEGE"],
++  'route_56': ["WEST SAIDAPET", "JAYARAJ THEATRE", "MATHOPU SCHOOL", "MARKET", "PILLAIYAR KOVIL", "ESI", "VELAKANNI SCHOOL", "SIVA PARK", "CANARA BANK", "TANK", "IYYAPPAN KOVIL", "PONDYCHERRY GUEST HOUSE", "COLLEGE"],
++  'route_57': ["AMBAL NAGAR", "JAYA T V", "KASI THEATRE", "ESI", "M G R NAGAR", "NESAPAKKAM", "K K NAGAR R T O OFFICE", "COLLEGE"],
++  'route_58': ["SRM", "AYODHYA MANDAPAM", "GRT SCHOOL", "ASHOK NAGAR P S", "LAKSHMAN SRUTHI", "KAMALA THEATRE", "VADAPALANI BUS STAND", "AVACHI SCHOOL", "COLLEGE"],
++  'route_59': ["RAJAKILPAKKAM", "RAJAKILPAKKAM SIGNAL", "KAMARAJAPURAM", "SEMBABAKKAM", "SANTHOSHAPURAM", "SANTHOSHAPURAM KOOT ROAD", "VELLAKALU", "KOVILAMBAKKAM", "ECHANKADU", "KEELKATTALAI", "U T I", "MADIPAKKAM KOOT ROAD", "KUMARAN THEATRE", "OIL MILL", "VANUVAMPET CHURCH", "NANGANALLUR", "PAZHAVANTHANGAL SUBWAY", "COLLEGE"],
++  'route_60': ["BHARATH COLLEGE", "CAMP ROAD", "SELAIYUR", "POONDI BAZAAR", "SANTORIUM", "CHITLAPAKKAM", "M I T BRIDGE", "CHROMPET", "PALLAVARAM", "MEENABAKKAM", "CEMENT ROAD", "GUINDY &ALANDUR", "COLLEGE"],
++  'route_61': ["MEDAVAKKAM", "JAYACHANDRAN", "OIL MILL", "PALLIKARANAI", "GANGAI AMMAN KOVIL", "DENTAL COLLEGE", "NARAYANAPURAM", "KAMATCHI HOSPITAL", "BALAJI NAGAR", "COLLEGE"],
++  'route_62': ["PERUMBAKKAM", "KAALAPAKKAM HOSPITAL", "SHOLINGANALLUR", "KARAPAKKAM", "OKIYAPETTAI", "JAIN COLLEGE", "DUARIPAKKAM", "KANDANCHAVADI", "TARAMANI", "BOPI NAGAR", "PUZHUTHIVAKKAM", "BRINDAVANAM NAGAR", "ADAMBAKKAM", "N G O COLONY", "THILLAI GANGA NAGAR SUB WAY", "COLLEGE"],
++  'route_63': ["CHEGAN MAL", "THALAMBUR", "ONDIYAMPAKKAM", "SITHALAPAKKAM", "OIL MILL", "SAIBABA KOVIL", "PONIYAMMAN KOVIL", "RAM NAGAR", "KAIVELAI", "VIJAYA NAGAR", "MURUGAN KALYANA MANDAPAM", "GURUNANAK COLLEGE", "PHOENIX MALL", "CHECK POST", "MADUVAKARAI BRIDGE", "COLLEGE"],
++  'route_64': ["POZHICHALUR", "MADHA KOVIL", "RETTA PILLAYAR KOVIL", "THEATRE", "AMBETHKAR SILAI", "ANAKAPUTHUR BUS STAND", "METHA NAGAR", "KUNDRATHUR", "COLLEGE"],
++  'route_65': ["PADAPPAI", "MANNIVAKKAM", "MUDICHUR", "PERUGALATHUR (OLD)", "SUNNAMBU KALVAI", "KRISHNA NAGAR", "TAMBARAM DEPOT", "SARAVANA STORE", "PALLAVARAM", "PAMMAL", "ANAGAPUTHUR", "AANDAN KUPPAM", "COLLEGE"],
++  'route_66': ["MADURANTHAKAM", "KARUNGUZHI", "KAKILAPETTAI", "PADALAM", "PUKKATHDURAI", "CHENGALPET", "VANDALUR", "COLLEGE"],
++  'route_67': ["POZHICHALUR", "PAMMAL", "AMMAN KOVIL", "ANAKAPUTHUR", "COLLEGE"],
++  'route_68': ["GOVERMENT HOSPITAL", "RATTINA KINARU", "BUS STAND", "IYYAPPAN KOVIL", "MAHENDRA CITY", "SINGAPERUMAL KOIL", "MARAIMALAI NAGAR", "KATTANKULATHUR", "SRM", "GUDUVANCHERY", "URAPAKKAM", "VANDALUR", "MANNIVAKKAM", "COLLEGE"],
++  'route_69': ["URAPAKKAM TEA SHOP", "VANDALUR GATE", "PERUNGALATHUR", "ARIE KARAI", "COCO COLA", "IRUMBULIYUR", "HINDHU MISSION HOSPITAL", "KADAPERI R T O", "BYE PASS", "COLLEGE", "AMARAMBEDU", "SAKTHI NAGAR CROSS ROAD", "PERIYAR NAGAR", "NANDAMBAKKAM", "SIRUKALTHUR", "MADHA COLLEGE", "KUNDRATHUR BUS STOP", "KUNDRATHUR THERADI", "NALROAD", "SIVANTHANGAL", "SIKRAYAPURAM", "SRI MUTHURKUMARAN COLLEGE", "PATHUR KOAT ROAD", "MANGADU PERUMAL KOVIL", "GANGAI AMMAN KOIL", "M G R SILAI", "COLLEGE"],
++  'route_70': [],
++  'route_71': ["MOONDRAM KATTALAI", "MADHA COLLEGE", "KOVUR", "KOVUR SCHOOL", "PERIYAPANICHERI", "KIRUGABAKKAM", "BAI KADAI", "MADHANANDAPURAM", "VIGNESHWARA", "PORUR", "COLLEGE"],
++  'route_72': ["PORUR", "RETEERI", "IYYAPANTHANGAL", "KATTUPAKKAM", "KUMANANCHAVADI", "ARAVIND EYE HOSPITAL", "COLLEGE"],
++  'route_73': ["NOOMBAL X ROAD", "PETROL BUNK", "KARAYANCHAVADI", "EB", "SENNER KUPPAM MURUGAN TEMPLE", "GOLDEN APARTMENT", "COLLEGE"],
++  'route_74': ["SUN PLUS COLLEGE", "DAM", "AYYAPAKKAM", "GANESH BHAVAN", "AARIKARAI", "WATER TANK", "V G N", "THIRUVERKADU RATION SHOP", "COLLEGE"],
++  'route_75': ["SUNDARAM SUYAPURAM R M K", "AYAPPAN MAADAM", "THIRUVERKADU BUS STOP", "THIRUVERKADU PETROL 2", "V G N FLAT", "PERUMAL AGARAM", "A C S", "COLLEGE"],
++  'route_76': ["KAVALCHERY", "SITHUKADU", "VOYALANALLUR", "PARIVAKKAM", "PARIVAKKAM SIGNAL", "POONAMALEE G R T", "COLLEGE", "MEPPUR BUS STAND", "AGARAM MEL ROUNDANA", "RATION KADAI", "KIRUBA STORE SCHOOL STREET", "RAMYA MEDICAL", "SEKAR TEA KADAI", "R R THIRUMANA MANDABAM", "COLLEGE"],
+ };
+ 
+ final Map<String, String> routeLabelsConfig = {
+-  'route_15': "Route 15 - Manali 2",
+-  'route_52': "Route 52 - Padappai",
+-  'route_137': "Route 137 - Porur",
++  'route_1': 'Route 1 - Arcot',
++  'route_2': 'Route 2 - Vandavasi',
++  'route_3': 'Route 3 - Cheyyar',
++  'route_4': 'Route 4 - Kancheepuram',
++  'route_5': 'Route 5 - Kancheepuram',
++  'route_6': 'Route 6 - Kancheepuram',
++  'route_7': 'Route 7 - Kancheepuram',
++  'route_8': 'Route 8 - Tiruvallur',
++  'route_9': 'Route 9 - Chekkadu',
++  'route_10': 'Route 10 - Panapakkam',
++  'route_11': 'Route 11 - Arakonam',
++  'route_12': 'Route 12 - Perambakkam',
++  'route_13': 'Route 13 - Tiruttani',
++  'route_14': 'Route 14 - Thiruttani',
++  'route_15': 'Route 15 - Kadambathur',
++  'route_16': 'Route 16 - Uthukottai (via thiruvallur)',
++  'route_17': 'Route 17 - Uthukottai (via periyapalayam)',
++  'route_18': 'Route 18 - Chekkadu',
++  'route_19': 'Route 19 - Thirunindravur',
++  'route_20': 'Route 20 - Thirunindravur',
++  'route_21': 'Route 21 - Triplicane 1',
++  'route_22': 'Route 22 - Triplicane 2',
++  'route_23': 'Route 23 - Mmda',
++  'route_24': 'Route 24 - Athipatu',
++  'route_25': 'Route 25 - Ernavur lift gate',
++  'route_26': 'Route 26 - Thiruvottiyur tollgate',
++  'route_27': 'Route 27 - Maharani',
++  'route_28': 'Route 28 - Stanley',
++  'route_29': 'Route 29 - Anna nagar',
++  'route_30': 'Route 30 - Stella maris',
++  'route_31': 'Route 31 - Vgp',
++  'route_32': 'Route 32 - Mylapoore',
++  'route_33': 'Route 33 - T nagar',
++  'route_34': 'Route 34 - Mkb nagar',
++  'route_35': 'Route 35 - Tvk nagar',
++  'route_36': 'Route 36 - Perambur',
++  'route_37': 'Route 37 - Aynavaram',
++  'route_38': 'Route 38 - Manali 1',
++  'route_39': 'Route 39 - Manali 2',
++  'route_40': 'Route 40 - Senthil nagar',
++  'route_41': 'Route 41 - Ponneri',
++  'route_42': 'Route 42 - Gummidipoondi',
++  'route_43': 'Route 43 - Vinayagapuram',
++  'route_44': 'Route 44 - Wavin',
++  'route_45': 'Route 45 - Wavin 2',
++  'route_46': 'Route 46 - Wavin 3',
++  'route_47': 'Route 47 - Redhills',
++  'route_48': 'Route 48 - Redhills 2',
++  'route_49': 'Route 49 - Redhills 3',
++  'route_50': 'Route 50 - Mutha pudupettai',
++  'route_51': 'Route 51 - Veerapuram',
++  'route_52': 'Route 52 - Avadi',
++  'route_53': 'Route 53 - Ambattur',
++  'route_54': 'Route 54 - Chinmayanagar',
++  'route_55': 'Route 55 - Avichi',
++  'route_56': 'Route 56 - West saidapet',
++  'route_57': 'Route 57 - Ambal nagar',
++  'route_58': 'Route 58 - West mambalam',
++  'route_59': 'Route 59 - Rajakilpakkam',
++  'route_60': 'Route 60 - Camp road',
++  'route_61': 'Route 61 - Medavakkam',
++  'route_62': 'Route 62 - Perumbakkam',
++  'route_63': 'Route 63 - Thiruporur',
++  'route_64': 'Route 64 - Padappai',
++  'route_65': 'Route 65 - Padappai',
++  'route_66': 'Route 66 - Maduranthakam',
++  'route_67': 'Route 67 - Pozhichalur',
++  'route_68': 'Route 68 - Chengalpet',
++  'route_69': 'Route 69 - Guduvancheri',
++  'route_70': 'Route 70 - Amarambedu',
++  'route_71': 'Route 71 - Baikadai',
++  'route_72': 'Route 72 - Porur',
++  'route_73': 'Route 73 - Karayanchavadi',
++  'route_74': 'Route 74 - Ayyapakkam 1',
++  'route_75': 'Route 75 - Ayapakkam 2',
++  'route_76': 'Route 76 - Kavalchery',
+ };
+ 
+ final Map<String, String> routeColorsConfig = {
+-  'route_15': '#2563EB', // Blue
+-  'route_52': '#22C55E', // Green
+-  'route_137': '#F97316', // Orange
++  'route_1': '#2563EB',
++  'route_2': '#22C55E',
++  'route_3': '#F97316',
++  'route_4': '#EAB308',
++  'route_5': '#EF4444',
++  'route_6': '#8B5CF6',
++  'route_7': '#D946EF',
++  'route_8': '#F43F5E',
++  'route_9': '#14B8A6',
++  'route_10': '#2563EB',
++  'route_11': '#22C55E',
++  'route_12': '#F97316',
++  'route_13': '#EAB308',
++  'route_14': '#EF4444',
++  'route_15': '#8B5CF6',
++  'route_16': '#D946EF',
++  'route_17': '#F43F5E',
++  'route_18': '#14B8A6',
++  'route_19': '#2563EB',
++  'route_20': '#22C55E',
++  'route_21': '#F97316',
++  'route_22': '#EAB308',
++  'route_23': '#EF4444',
++  'route_24': '#8B5CF6',
++  'route_25': '#D946EF',
++  'route_26': '#F43F5E',
++  'route_27': '#14B8A6',
++  'route_28': '#2563EB',
++  'route_29': '#22C55E',
++  'route_30': '#F97316',
++  'route_31': '#EAB308',
++  'route_32': '#EF4444',
++  'route_33': '#8B5CF6',
++  'route_34': '#D946EF',
++  'route_35': '#F43F5E',
++  'route_36': '#14B8A6',
++  'route_37': '#2563EB',
++  'route_38': '#22C55E',
++  'route_39': '#F97316',
++  'route_40': '#EAB308',
++  'route_41': '#EF4444',
++  'route_42': '#8B5CF6',
++  'route_43': '#D946EF',
++  'route_44': '#F43F5E',
++  'route_45': '#14B8A6',
++  'route_46': '#2563EB',
++  'route_47': '#22C55E',
++  'route_48': '#F97316',
++  'route_49': '#EAB308',
++  'route_50': '#EF4444',
++  'route_51': '#8B5CF6',
++  'route_52': '#D946EF',
++  'route_53': '#F43F5E',
++  'route_54': '#14B8A6',
++  'route_55': '#2563EB',
++  'route_56': '#22C55E',
++  'route_57': '#F97316',
++  'route_58': '#EAB308',
++  'route_59': '#EF4444',
++  'route_60': '#8B5CF6',
++  'route_61': '#D946EF',
++  'route_62': '#F43F5E',
++  'route_63': '#14B8A6',
++  'route_64': '#2563EB',
++  'route_65': '#22C55E',
++  'route_66': '#F97316',
++  'route_67': '#EAB308',
++  'route_68': '#EF4444',
++  'route_69': '#8B5CF6',
++  'route_70': '#D946EF',
++  'route_71': '#F43F5E',
++  'route_72': '#14B8A6',
++  'route_73': '#2563EB',
++  'route_74': '#22C55E',
++  'route_75': '#F97316',
++  'route_76': '#EAB308',
+ };
+ 
+ final Map<String, LatLng> coordsConfig = {
+-  // Shared
+-  "COLLEGE": const LatLng(13.0489049, 80.0754642),
+-  "Panimalar Engineering College": const LatLng(13.0489049, 80.0754642),
+-  
+-  // Route 15 stops
+-  "MANALI": const LatLng(13.1648, 80.2558),
+-  "M.G.R NAGAR": const LatLng(13.1590, 80.2460),
+-  "IIND MAIN ROAD": const LatLng(13.1530, 80.2410),
+-  "MATHUR GATE": const LatLng(13.1495, 80.2375),
+-  "MADHAVARAM MILK COLONY": const LatLng(13.1460, 80.2300),
+-  "ARUL NAGAR": const LatLng(13.1380, 80.2220),
+-  "THAPAL PETTI": const LatLng(13.1320, 80.2180),
+-  "MADHAVARAM PUTHU KOVIL": const LatLng(13.1275, 80.2120),
+-  "MADHAVARAM BUS STAND": const LatLng(13.1250, 80.2100),
+-  "MADHAVARAM SMALL ROUNDNA": const LatLng(13.1180, 80.2050),
+-  "RETTRI R T O OFFICE": const LatLng(13.1090, 80.2010),
+-
+-  // Route 52 stops
+-  "PADAPPAI": const LatLng(12.8914, 80.0178),
+-  "MANNIVAKKAM": const LatLng(12.9050, 80.0380),
+-  "MUDICHUR": const LatLng(12.9180, 80.0550),
+-  "PERUGALATHUR (OLD)": const LatLng(12.9280, 80.0820),
+-  "SUNNAMBU KALVAI": const LatLng(12.9350, 80.0950),
+-  "KRISHNA NAGAR": const LatLng(12.9420, 80.1150),
+-  "TAMBARAM DEPOT": const LatLng(12.9230, 80.1200),
+-  "SARAVANA STORE": const LatLng(12.9550, 80.1410),
+-  "PALLAVARAM": const LatLng(12.9675, 80.1496),
+-  "PAMMAL": const LatLng(12.9807, 80.0935),
+-  "ANAGAPUTHUR": const LatLng(12.9900, 80.1000),
+-  "AANDAN KUPPAM": const LatLng(13.0100, 80.0850),
+-
+-  // Route 137 stops
+-  "PORUR": const LatLng(13.0381, 80.1576),
+-  "RETEERI": const LatLng(13.0360, 80.1480),
+-  "IYYAPANTHANGAL": const LatLng(13.0370, 80.1385),
+-  "KATTUPAKKAM": const LatLng(13.0453, 80.1215),
+-  "KUMANANCHAVADI": const LatLng(13.0460, 80.1100),
+-  "ARAVIND EYE HOSPITAL": const LatLng(13.0510, 80.1010),
++  'COLLEGE': const LatLng(13.04890, 80.07546),
++  'Panimalar Engineering College': const LatLng(13.04890, 80.07546),
++  'ARCOT': const LatLng(13.01528, 80.18152),
++  'TOLL GATE': const LatLng(12.92540, 80.11538),
++  'SUMAITHANGI': const LatLng(12.90113, 79.43964),
++  'KAVERIPAKKAM': const LatLng(13.17394, 80.09070),
++  'OCHERI': const LatLng(13.07209, 80.20186),
++  'PERUPULIPAKKAM': const LatLng(12.89416, 79.55661),
++  'PAUL CHETTY': const LatLng(12.98859, 80.25725),
++  'VANDAVASI': const LatLng(12.50677, 79.60362),
++  'VEERAMBAKKAM': const LatLng(12.86650, 80.13249),
++  'MELMA KOOT ROAD': const LatLng(13.02551, 80.10633),
++  'MANAMADHI KOOT ROAD': const LatLng(13.08945, 80.14583),
++  'KOODIMANTHAL': const LatLng(13.07209, 80.20186),
++  'MANGAL KOOT ROAD': const LatLng(13.13458, 80.15705),
++  'MAMANDUR': const LatLng(12.64677, 79.93586),
++  'METTU THERU KPM': const LatLng(13.00148, 80.20848),
++  'KACHALEESWARAR TEMPLE': const LatLng(13.09330, 80.28805),
++  'EKAMBARESWARAR TEMPLE': const LatLng(13.06703, 80.15073),
++  'R C M SCHOOL': const LatLng(13.04542, 80.11236),
++  'STATE BANK': const LatLng(13.14059, 80.24857),
++  'SOUNTHRI': const LatLng(13.07209, 80.20186),
++  'PULIREIPAKKAM': const LatLng(13.17394, 80.09070),
++  'BARALI': const LatLng(12.97956, 80.20980),
++  'PANDIYAPAKKAM': const LatLng(12.71264, 79.61528),
++  'CHOLAVARAM': const LatLng(13.11971, 80.14340),
++  'THOOSI': const LatLng(13.07209, 80.20186),
++  'IYYENGAR KOOT ROAD': const LatLng(13.07209, 80.20186),
++  'HOUSING BOARD': const LatLng(13.08049, 80.22183),
++  'COLLECTOR OFFICE': const LatLng(13.11379, 80.14731),
++  'MUNGIL MANDAPAM': const LatLng(13.08614, 80.23418),
++  'KANCHEEPURAM BUS STAND': const LatLng(12.83568, 79.70515),
++  'VALPATTARAI': const LatLng(12.98280, 80.20025),
++  'RENGASAMY KULAM': const LatLng(13.07562, 80.18522),
++  'VISHNU KOVIL': const LatLng(12.99372, 80.19187),
++  'PEIYAR NAGAR': const LatLng(12.98955, 80.25238),
++  'YAGANAPETTAI': const LatLng(13.03881, 80.09792),
++  'ORAGADAM': const LatLng(13.12054, 80.15131),
++  'VALLAKOTTAI': const LatLng(12.88402, 79.93691),
++  'SRIPERUMPUDUR BUS STAND': const LatLng(12.97306, 80.15321),
++  'THERADI': const LatLng(13.16100, 80.30454),
++  'MILITARY ROAD': const LatLng(13.11893, 80.09499),
++  'KEEL GATE': const LatLng(13.01153, 80.21821),
++  'KEERAI MANDAPAM': const LatLng(13.08614, 80.23418),
++  'PAVAPETTAI STREET': const LatLng(13.02507, 80.23133),
++  'LADIES COLLEGE': const LatLng(13.07356, 80.21066),
++  'POLICE STATION': const LatLng(13.06857, 80.20457),
++  'CHETTY STREET': const LatLng(13.09485, 80.22645),
++  'GENTS COLLEGE': const LatLng(13.06055, 80.25389),
++  'IYYAMPETTAI': const LatLng(13.07209, 80.20186),
++  'WALAJABAD': const LatLng(12.91213, 80.14284),
++  'SOKUKADU': const LatLng(13.18003, 80.23592),
++  'VARNAVASI': const LatLng(13.07209, 80.20186),
++  'PONTHUR': const LatLng(13.15351, 80.14118),
++  'MOOGIL MANDAPAM': const LatLng(13.08614, 80.23418),
++  'BUS STAND': const LatLng(13.05143, 80.09418),
++  'GUJARTHI CHITRAM': const LatLng(13.07209, 80.20186),
++  'KOHRI': const LatLng(13.07209, 80.20186),
++  'PONNERI KARAI': const LatLng(12.87042, 79.69714),
++  'SUGAVACHITTRAM': const LatLng(12.95982, 80.20401),
++  'SRIPERUMBUDUR': const LatLng(13.00701, 80.08796),
++  'THANDALAM': const LatLng(12.99783, 80.12256),
++  'YAMAHA SHOWROOM': const LatLng(13.00817, 80.26397),
++  'SR MANDAPAM': const LatLng(13.08614, 80.23418),
++  'PULIYA MARAM BUS STOP[': const LatLng(13.07209, 80.20186),
++  'VEPPAMPATTU': const LatLng(13.09829, 80.02221),
++  'KANDAN KOLLAI': const LatLng(13.12895, 79.97956),
++  'SEVVAPETTAI': const LatLng(13.12752, 79.96893),
++  'KAKALOOR': const LatLng(13.26703, 79.48566),
++  'OLD COLLECTOR OFFICE': const LatLng(13.11379, 80.14731),
++  'AVADI ROAD SIGNAL': const LatLng(13.10673, 80.12811),
++  'MUNICIPALITY': const LatLng(13.02501, 80.21998),
++  'L.I.C': const LatLng(12.95353, 80.20123),
++  'OIL MILL': const LatLng(13.09416, 80.26722),
++  'CHEKKADU': const LatLng(13.01137, 80.12336),
++  'HINDU COLLEGE': const LatLng(13.02024, 80.20253),
++  'PATTABIRAM BRIDGE': const LatLng(12.97511, 80.25672),
++  'JAIKRISHNA MARRIAGE HALL': const LatLng(13.04237, 80.22012),
++  'AMUDHUR MEDU': const LatLng(13.09357, 80.05788),
++  'NEMILICHERI ROUNDTANA': const LatLng(12.94349, 80.16110),
++  'JAYA COLLEGE': const LatLng(13.12204, 80.04354),
++  'PANDIAN RICE MILL': const LatLng(13.12521, 80.03923),
++  'INDIAN OIL PETROL BUNK': const LatLng(12.99460, 80.20666),
++  'PANAPAKKAM': const LatLng(13.01969, 80.17810),
++  'NEMLI': const LatLng(13.07209, 80.20186),
++  'PETROL BUNK': const LatLng(13.12833, 80.25911),
++  'SENTHAMANGALAM': const LatLng(10.13634, 78.15245),
++  'PINNAVARAM': const LatLng(12.99156, 79.68197),
++  'PARAMESWARAMANGALAM': const LatLng(12.46789, 80.07149),
++  'THAKKOLAM KOOT ROAD': const LatLng(13.01596, 79.73231),
++  'THAKKOLAM POLICE STATION': const LatLng(13.01944, 79.71415),
++  'THAKKOLAM': const LatLng(13.01596, 79.73231),
++  'CHECK POST': const LatLng(13.12657, 80.24118),
++  'MARIMANAGALAM': const LatLng(12.98018, 80.06708),
++  'NARSINGAPURAM': const LatLng(13.04826, 80.04840),
++  'PERAMBAKKAM': const LatLng(12.89882, 80.19484),
++  'ARAKONAM BUS STAND': const LatLng(13.05143, 80.09418),
++  'S R GATE': const LatLng(13.21860, 80.32088),
++  'PERUMOOCHU': const LatLng(13.07209, 80.20186),
++  'KOOVAM': const LatLng(13.07209, 80.20186),
++  'KONDACHERRY': const LatLng(13.01542, 80.24632),
++  'MAPPEDU': const LatLng(12.88623, 80.15265),
++  'VELLAI KALVAI': const LatLng(13.02515, 79.87704),
++  'SAMATHUVAPURAM': const LatLng(12.91645, 80.08582),
++  'ULUNDAI': const LatLng(13.07209, 80.20186),
++  'VALARPURAM': const LatLng(13.02199, 79.97413),
++  'CINNA VALARPURAM': const LatLng(13.02199, 79.97413),
++  'MEVALUR KUPPAM': const LatLng(13.09708, 80.15522),
++  'VIJAYA SHANTHI APARTMENT': const LatLng(13.11792, 80.15664),
++  'PAPPANCHATHIRAM': const LatLng(13.07209, 80.20186),
++  'CHEMBARAMBAKKAM': const LatLng(13.03572, 80.04986),
++  'TIRUTTANI DEPOT': const LatLng(13.04253, 80.18420),
++  'TIRUTTANI PARK': const LatLng(13.04253, 80.18420),
++  'KANAGAMMA CHATHIRAM': const LatLng(13.20654, 79.75045),
++  'THIRUVALANGADU': const LatLng(12.99026, 80.20610),
++  'KG KANDIGAI': const LatLng(13.12458, 80.19414),
++  'VIRAGA NALOOR': const LatLng(13.07263, 80.20738),
++  'VETRIVEL NAGAR': const LatLng(13.12392, 80.21848),
++  'PWD OFFICE': const LatLng(13.10270, 80.28710),
++  'TVS': const LatLng(13.08840, 80.16071),
++  'BYE-PASS': const LatLng(12.98308, 80.12094),
++  'THAIYAMARAM BRIDGE': const LatLng(13.08964, 80.15669),
++  'ARUNKULAM KOOTROAD': const LatLng(13.07209, 80.20186),
++  'LAKSHMIPURAM': const LatLng(13.10048, 80.20914),
++  'ARCOT KUPPAM': const LatLng(13.09708, 80.15522),
++  'RAMACHERRY': const LatLng(12.98418, 80.19230),
++  'KANAGAVALLIPURAM': const LatLng(13.35723, 80.18145),
++  'KADAMBATHUR': const LatLng(13.09891, 79.86141),
++  'SSS MANDAPAM': const LatLng(13.08614, 80.23418),
++  'PRIYANKUPPAM': const LatLng(13.09708, 80.15522),
++  'PUDHIYA THIRUPACHUR': const LatLng(13.13387, 79.87369),
++  'PAZHAYA THIRUPACHUR': const LatLng(13.13387, 79.87369),
++  'MEERA THEATRE': const LatLng(13.12064, 80.22146),
++  'TIRUVALLUR PETROL BUNK': const LatLng(13.12833, 80.25911),
++  'MANAVALAN NAGAR': const LatLng(12.91998, 80.08401),
++  'NDB MANDAPAM': const LatLng(13.08614, 80.23418),
++  'UTHUKOTTAI CIRCLE OFFICE': const LatLng(13.07839, 80.22888),
++  'UTHUKOTTAI BUS STAND': const LatLng(13.33326, 79.90331),
++  'UTHUKOTTAI JUNCTION': const LatLng(13.33326, 79.90331),
++  'PSV PETROL BUNK': const LatLng(13.12833, 80.25911),
++  'EB OFFICE': const LatLng(13.10485, 80.16786),
++  'PONDAVAKKAM': const LatLng(12.95787, 79.71860),
++  'KATCHUR': const LatLng(13.07209, 80.20186),
++  'SEETHANJERI': const LatLng(13.27798, 79.88889),
++  'ODAPPAI': const LatLng(13.07209, 80.20186),
++  'POONDI': const LatLng(13.09652, 80.22385),
++  'PULLARAM BAKKAM': const LatLng(13.18933, 79.89165),
++  'SAI BABA': const LatLng(12.91734, 80.20622),
++  'PUDUCHATHIRAM': const LatLng(13.08881, 80.00666),
++  'NEMAM': const LatLng(13.07856, 80.03289),
++  'VELLEVEDU': const LatLng(13.06295, 80.03693),
++  'THIRUMIZHASI': const LatLng(13.04088, 80.18554),
++  'DHAMBARA MEDU': const LatLng(13.07209, 80.20186),
++  'PERANDUR': const LatLng(13.31819, 79.94404),
++  'PALAVAKKAM': const LatLng(12.95818, 80.25814),
++  'SOOLAIMANI': const LatLng(12.94328, 80.14889),
++  'PERIYAPALAYAM': const LatLng(13.26226, 80.12603),
++  'VADAMADURAI': const LatLng(10.44136, 78.09462),
++  'VENGAL': const LatLng(13.07209, 80.20186),
++  'PAGALMEDU': const LatLng(13.23740, 80.02220),
++  'THAMARAIPAKKAM': const LatLng(13.18817, 80.04674),
++  'PAKKAM': const LatLng(13.17394, 80.09070),
++  'SRIPATHI NAGAR': const LatLng(13.08521, 80.22757),
++  'LAKSHMI THEATRE': const LatLng(13.09740, 80.25690),
++  'GOMATHIPURAM': const LatLng(12.97428, 80.25801),
++  'KOSAVANPALAYAM': const LatLng(13.10723, 79.98493),
++  'KOTTAMEDU': const LatLng(13.09395, 80.00377),
++  'PATTABIRAM': const LatLng(13.12649, 80.05913),
++  'THANDARAI': const LatLng(13.13716, 80.06809),
++  'THIRUNINDRAVUR (LAKSHMI THEATRE)': const LatLng(13.12365, 80.02818),
++  'RAJANKUPPAM': const LatLng(13.06498, 80.15213),
++  'VELLAVEDU': const LatLng(13.06295, 80.03693),
++  'THIRUMAZHISAI BUS STANAD': const LatLng(13.05494, 80.06403),
++  'SIVAN KOVIL': const LatLng(13.16480, 80.20837),
++  'THIRUNINDRAVUR': const LatLng(13.12365, 80.02818),
++  'KARUPATTI COFFEE': const LatLng(12.86122, 80.22553),
++  'NEMILLICHERRY': const LatLng(12.94349, 80.16110),
++  'AMIR MAHAL': const LatLng(13.05838, 80.27368),
++  'ZAM BAZZAR (POLICE STATION)': const LatLng(13.05926, 80.27081),
++  'RATHNA CAFE': const LatLng(12.93795, 80.20516),
++  'BELLS ROAD': const LatLng(13.06283, 80.27808),
++  'GOSHA HOSPITAL': const LatLng(13.07150, 80.24177),
++  'D1 POLICE STATION': const LatLng(13.06720, 80.27360),
++  'CHINTADRIPET': const LatLng(13.07506, 80.27159),
++  'P T SCHOOL': const LatLng(13.07198, 80.20029),
++  'MUSIC ACADEMY , ARYA GOWDA ROAD': const LatLng(13.04027, 80.22145),
++  'ROYAPETTAI BRIDGE': const LatLng(13.04672, 80.26897),
++  'ICE HOUSE': const LatLng(13.05099, 80.27437),
++  'ASHOKA HOTEL': const LatLng(13.04890, 80.22348),
++  'CHILDREN HOSPITAL': const LatLng(13.09460, 80.21653),
++  'CHETPET POLICE STATION': const LatLng(13.07249, 80.25209),
++  'STERLING ROAD SIGNAL': const LatLng(13.06536, 80.24065),
++  'CHOOLAIMEDU': const LatLng(13.05323, 80.21801),
++  'SKY WALK BRIDGE': const LatLng(12.96884, 80.18994),
++  'MMDA': const LatLng(13.16843, 80.24484),
++  'POPULAR STUDIO': const LatLng(13.04039, 80.17775),
++  'WATER TANK': const LatLng(13.06882, 80.21719),
++  'RAZARK GARDEN': const LatLng(13.07377, 80.21665),
++  'NERKUNDRAM': const LatLng(13.06782, 80.18653),
++  'VENKAYA MANDI': const LatLng(13.03885, 80.17962),
++  'ATHIPATU': const LatLng(13.07022, 80.27228),
++  'THAZHANKUPPAM': const LatLng(13.22508, 80.32886),
++  'ANNAI SIVAKAMI NAGAR': const LatLng(13.19108, 80.31692),
++  'BHARATHIYAR NAGAR': const LatLng(13.18546, 80.31634),
++  'MRF BEACH ROAD': const LatLng(12.99322, 80.26687),
++  'N 4': const LatLng(13.08034, 80.24350),
++  'KASIMEDU': const LatLng(13.12533, 80.29648),
++  'KALMANDAPAM': const LatLng(13.11645, 80.29485),
++  'ROYAPURAM': const LatLng(13.10728, 80.29295),
++  'BEACH STATION': const LatLng(13.09407, 80.29249),
++  'HIGH COURT': const LatLng(13.10713, 80.20558),
++  'CENTRAL': const LatLng(13.08429, 80.27631),
++  'TAYLOR’S ROAD': const LatLng(13.07669, 80.23806),
++  'ERNAVUR LIFT GATE': const LatLng(13.18923, 80.30450),
++  'WIMCO NAGAR': const LatLng(13.17910, 80.30630),
++  'AJAX': const LatLng(13.07209, 80.20186),
++  'RAJAKADAI': const LatLng(13.15826, 80.30353),
++  'MANI CYCLE STORE': const LatLng(11.73614, 78.96361),
++  'MAHARANI': const LatLng(12.98046, 80.23330),
++  'MINT': const LatLng(13.10564, 80.27995),
++  'CHOOLAI': const LatLng(13.08968, 80.26434),
++  'PURASAIVAKKAM': const LatLng(13.08014, 80.24960),
++  'KELLIS': const LatLng(13.08187, 80.24636),
++  'NEW AVADI ROAD': const LatLng(13.07584, 80.23391),
++  'MANI CYCLE SHOP': const LatLng(13.22287, 80.31997),
++  'TONDIARPET MANIKOONDU': const LatLng(13.13229, 80.28668),
++  'MAHARANI POST OFFICE': const LatLng(13.09847, 80.13429),
++  'THEAGARAYA COLLEGE': const LatLng(13.11658, 80.28399),
++  'PANDIAN THEATRE': const LatLng(13.08952, 80.19447),
++  'CEMENT ROAD': const LatLng(12.99412, 80.18840),
++  'PENCIL FACTORY': const LatLng(13.07209, 80.20186),
++  'MINT BUS STAND': const LatLng(13.05143, 80.09418),
++  'STANLEY': const LatLng(13.01649, 80.22915),
++  'MOOLAGOTHALAM': const LatLng(13.10571, 80.27364),
++  'DOVETON': const LatLng(13.08500, 80.26139),
++  'PURASAIWAKKAM': const LatLng(13.08014, 80.24960),
++  'MOTCHAM': const LatLng(13.07209, 80.20186),
++  'KELLEYS': const LatLng(13.08187, 80.24636),
++  'MUMMY DADDY': const LatLng(13.09827, 80.26048),
++  'AMINJIKARAI': const LatLng(13.07389, 80.22444),
++  'SHENOY NAGAR PARK': const LatLng(13.07979, 80.22609),
++  'KALLARI – CSI CHRUCH': const LatLng(12.95038, 80.18353),
++  'KILPAUK SIGNAL': const LatLng(13.08506, 80.23509),
++  'NEW AVADI ROAD BUS STOP': const LatLng(13.07584, 80.23391),
++  'GANGAI AMMAN KOVIL': const LatLng(13.00598, 80.25263),
++  'BOHAN VILLA PARK': const LatLng(13.09205, 80.22143),
++  'K4 POLICE STATION': const LatLng(12.96963, 80.14749),
++  'JERSY MOHAN SCHOOL': const LatLng(13.07209, 80.20186),
++  'SHANTHI COLONY NUTS & SPECIES': const LatLng(13.12756, 80.23261),
++  'V R MAL': const LatLng(13.10818, 80.19945),
++  'GEMINI': const LatLng(13.05086, 80.24911),
++  'VALLUVAR KOTTAM': const LatLng(13.05490, 80.24182),
++  'KODAMBAKKAM': const LatLng(13.04740, 80.22461),
++  'PUTHUR KATU': const LatLng(12.89352, 80.13929),
++  'KOYAMBEDU': const LatLng(13.07544, 80.19875),
++  'RAIL NAGAR': const LatLng(13.07607, 80.18991),
++  'PALLAVAKKAM': const LatLng(12.95818, 80.25814),
++  'KOTTIVAKKAM': const LatLng(12.96881, 80.25889),
++  'R T O OFFICE': const LatLng(13.02953, 80.26429),
++  'TIRUVANMIYUYR COLONY': const LatLng(12.98480, 80.25817),
++  'TIRUVANMIYUYR BUS STAND': const LatLng(12.98596, 80.25897),
++  'ADYAR DEPOT': const LatLng(12.99530, 80.25384),
++  'I I T': const LatLng(12.99229, 80.23539),
++  'MANDHAVELI': const LatLng(13.02785, 80.26244),
++  'MYLAPOORE': const LatLng(13.04247, 80.27430),
++  'LUZZ': const LatLng(13.07209, 80.20186),
++  'CATHEDRAL ROAD': const LatLng(13.04551, 80.25952),
++  'THENAMPETTAI': const LatLng(13.03460, 80.24651),
++  'SRINIVASA THEATRE': const LatLng(13.03105, 80.22497),
++  'T NAGAR BUS STAND': const LatLng(12.93209, 80.12252),
++  'SAIDAPET METRO STATION': const LatLng(13.02381, 80.22835),
++  'GUINDY': const LatLng(13.01104, 80.22097),
++  'BUTT ROAD': const LatLng(13.00928, 80.19606),
++  'RAMAPURAM': const LatLng(13.03718, 80.17980),
++  'MUGALIVAKKAM': const LatLng(13.02242, 80.16812),
++  'SAKTHI NAGAR': const LatLng(13.06372, 80.22723),
++  'PORUR OLD POLICE STATION': const LatLng(13.04548, 80.11002),
++  'M R NAGAR COLLEGE': const LatLng(13.12995, 80.25025),
++  'EB BUS STOP': const LatLng(13.10840, 80.26923),
++  'MKB NAGAR BUS STOP': const LatLng(13.10688, 80.14878),
++  'AMBEDKAR COLLEGE': const LatLng(13.10895, 80.25985),
++  'SHARMA NAGAR BUS STOP': const LatLng(13.12075, 80.25454),
++  'MOOLAKADI': const LatLng(13.12884, 80.23907),
++  'T V K NAGAR': const LatLng(13.04811, 80.14273),
++  'DON BOSCO SCHOOL': const LatLng(13.12095, 80.20731),
++  'KUMARAN NAGAR': const LatLng(13.06337, 80.19202),
++  'WELDING SHOP': const LatLng(13.09779, 80.28553),
++  'MOOGAMBIKA TEMPLE': const LatLng(12.96527, 80.18898),
++  'APOLLO MEDICAL': const LatLng(12.96509, 80.20700),
++  'PERAMBUR DON BOSCO SCHOOL': const LatLng(13.12095, 80.20731),
++  'LAKSHMI KOVIL': const LatLng(13.14154, 80.25060),
++  'ESWARI KALYANA MANDAPAM': const LatLng(13.04623, 80.07794),
++  'BB ROAD': const LatLng(13.11183, 80.25262),
++  'PERMABUR BUS STAND': const LatLng(13.12206, 80.24039),
++  'GANDHI SILAI': const LatLng(12.98638, 80.18300),
++  'MURUGAN KOVIL': const LatLng(13.05291, 80.21669),
++  'THIRUVALLUR KALYANA MANDAPAM': const LatLng(13.04623, 80.07794),
++  'JAMALIA': const LatLng(13.10307, 80.25966),
++  'BODI KADAI': const LatLng(13.07377, 80.23161),
++  'AYNAVARAM SIGNAL': const LatLng(13.09887, 80.23105),
++  'SAIYANI': const LatLng(13.07146, 80.26258),
++  'P C O AXIS BANK': const LatLng(13.07245, 80.20123),
++  'NOOR HOTEL': const LatLng(13.09868, 80.23438),
++  'JOINT OFFICE': const LatLng(13.06505, 80.17480),
++  'VENKATESWARA SWEETS': const LatLng(13.03137, 80.19133),
++  'I C F BUS STAND': const LatLng(13.05143, 80.09418),
++  'KALLUKADAI': const LatLng(13.11745, 80.10567),
++  'VILLIVAKKAM': const LatLng(13.12400, 80.21264),
++  'NATHAMUNI THEATRE': const LatLng(13.10339, 80.20225),
++  'CPCL': const LatLng(13.07209, 80.20186),
++  'MEENAKSHI THEATRE': const LatLng(13.16204, 80.26244),
++  'MANALI MARKET': const LatLng(13.14235, 80.24914),
++  'MMDA IIIRD MAIN ROAD': const LatLng(13.16843, 80.24484),
++  'MMDA IST MAIN ROAD': const LatLng(13.06273, 80.17608),
++  'PALPANNAI GATE': const LatLng(11.06037, 76.93662),
++  'ARUL NAGAR': const LatLng(13.16573, 80.11069),
++  'THAPAL PETTI': const LatLng(13.14168, 80.23632),
++  'MADHAVARAM BUS STAND': const LatLng(13.16313, 80.22840),
++  'MADHAVARAM BYE PASS': const LatLng(13.16313, 80.22840),
++  'RETTRI R T O OFFICE': const LatLng(13.02953, 80.26429),
++  'TEMPLE SCHOOL': const LatLng(13.12531, 80.20571),
++  'MANALI': const LatLng(13.16374, 80.26365),
++  'M.G.R NAGAR': const LatLng(13.00561, 80.17287),
++  'IIND MAIN ROAD': const LatLng(13.07209, 80.20186),
++  'MATHUR GATE': const LatLng(13.12198, 80.05940),
++  'MADHAVARAM MILK COLONY': const LatLng(13.14790, 80.24218),
++  'MADHAVARAM PUTHU KOVIL': const LatLng(13.16313, 80.22840),
++  'MADHAVARAM SMALL ROUNDNA': const LatLng(13.16313, 80.22840),
++  'RETTERI': const LatLng(13.07209, 80.20186),
++  'SENTHIL NAGAR': const LatLng(13.14201, 80.24752),
++  'THADA KUPPAM': const LatLng(13.09708, 80.15522),
++  '14th MAIN ROAD': const LatLng(12.95787, 80.21021),
++  'WEST DEPOT': const LatLng(13.08950, 80.26984),
++  'KALYANA MANDAPAM': const LatLng(13.04623, 80.07794),
++  'LAKSHMI NAGAR': const LatLng(12.98349, 80.20446),
++  'SIRUVAPURI': const LatLng(13.12980, 80.17459),
++  'THACHUR X ROAD': const LatLng(13.11556, 80.14573),
++  'KRISHNAPURAM': const LatLng(13.05964, 80.23007),
++  'PONNERI BUS STAND': const LatLng(13.05143, 80.09418),
++  'AMBEDKAR SILAI': const LatLng(13.04386, 80.21764),
++  'VEMBAKKAM': const LatLng(12.90741, 80.18966),
++  'THADA PERUMBAKKAM': const LatLng(12.89882, 80.19484),
++  'KOKKU MEDU': const LatLng(13.37755, 80.19585),
++  'ELVAMPEDU': const LatLng(13.07209, 80.20186),
++  'METTUPALAYAM': const LatLng(13.15694, 80.20661),
++  'KESAVAPURAM': const LatLng(13.00136, 80.26264),
++  'MEENJUR': const LatLng(13.07209, 80.20186),
++  'BDO OFFICE': const LatLng(13.05010, 80.09000),
++  'PATTAMANDHIRI': const LatLng(13.25802, 80.27800),
++  'NAAPALAYAM': const LatLng(13.10332, 80.09163),
++  'GUMMIDIPOONDI': const LatLng(13.40934, 80.13141),
++  'KAVARAPETTAI': const LatLng(13.36361, 80.14049),
++  'CHALACHITRAM (AVANCHAVAKKAM)': const LatLng(12.98418, 80.19230),
++  'KARANODAI': const LatLng(12.92273, 80.14131),
++  'VINAYAGAPURAM': const LatLng(12.94767, 80.19647),
++  'R.C.FLAT': const LatLng(13.08378, 80.19371),
++  'S.S. MAHAL': const LatLng(13.07384, 80.19893),
++  'PADAVETTU AMMAN KOIL': const LatLng(12.98162, 80.12188),
++  'PADI BRITANNIA': const LatLng(13.07209, 80.20186),
++  'MANNURPET': const LatLng(13.09992, 80.17047),
++  'GOLDEN FLATS': const LatLng(13.09369, 80.22873),
++  'PANDIYAN HOTEL': const LatLng(13.04461, 80.19333),
++  'SRINIVASA EYE HOSPITAL': const LatLng(13.08316, 80.17976),
++  '7 H BUS STAND': const LatLng(13.10950, 80.26655),
++  'MASOODHI': const LatLng(13.03456, 80.15503),
++  'MMM FIRE SERVICE': const LatLng(13.08734, 80.21789),
++  'MMM SIGNAL': const LatLng(13.07209, 80.20186),
++  'VELLAMMAL HALL': const LatLng(13.04647, 80.21807),
++  'DOSAI KADAI': const LatLng(12.95124, 80.14613),
++  'DR.SUPER MARKET': const LatLng(13.11511, 80.15432),
++  '7 M BUS STAND': const LatLng(13.05143, 80.09418),
++  'PAZHAMUDHIR CHOLAI': const LatLng(13.03126, 80.21677),
++  'AXIS BANK': const LatLng(13.07245, 80.20123),
++  'NOLAMBUR (POLICE)': const LatLng(13.07652, 80.16309),
++  'SBOA SCHOOL': const LatLng(13.07198, 80.20029),
++  'THIRUMANGALAM': const LatLng(13.08085, 80.19817),
++  'KALYAN JEWELLERS': const LatLng(13.00643, 80.25416),
++  'COLLECTOR NAGAR': const LatLng(13.13703, 80.18469),
++  'VINAYAGAR KOVIL': const LatLng(13.03922, 80.26874),
++  'VELLAMMAL MAIN': const LatLng(13.02477, 80.18580),
++  'GANDHI NAGAR POLICE BOOTH': const LatLng(12.98011, 80.20078),
++  'G R T RED HILLS': const LatLng(13.18706, 80.20161),
++  'REDHILLS BUS STAND': const LatLng(13.18706, 80.20161),
++  'KAVANGARAI BUS STOP': const LatLng(13.17209, 80.20639),
++  'PUZHAL JAIL': const LatLng(13.16781, 80.21889),
++  'PUZHAL CAMP': const LatLng(13.16781, 80.21889),
++  'SURAPET VELAMMAL': const LatLng(13.14686, 80.19469),
++  'SURAPET BUS STOP': const LatLng(13.14546, 80.18396),
++  'SHANMUGAPURAM': const LatLng(13.13983, 80.18054),
++  'KALLIKUPPAM': const LatLng(13.13526, 80.17259),
++  'PUDUR BUS STOP': const LatLng(13.04335, 80.21434),
++  'RAKKI THEATRE': const LatLng(12.97537, 80.22525),
++  'STEDEFORD HOSPITAL': const LatLng(13.12440, 80.14375),
++  'THIRUMULLAIVOYAL': const LatLng(13.04851, 80.16189),
++  'VAISHNAVI NAGAR': const LatLng(13.12547, 80.12654),
++  'MURUGAPPA POLYTECHNIC': const LatLng(13.12583, 80.11861),
++  'ST JOSEPH SCHOOL': const LatLng(12.97244, 80.14467),
++  'REDHILLS MARKET': const LatLng(13.18882, 80.18827),
++  'KAVANGARAI': const LatLng(13.17209, 80.20639),
++  'KALLIKUPPAM ARCH': const LatLng(13.13526, 80.17259),
++  'WIRELESS TATA COMMUNICATIONS': const LatLng(13.13196, 80.16559),
++  'PUDUR': const LatLng(13.04335, 80.21434),
++  'VIJAYALAKSHMIPURAM': const LatLng(13.12179, 80.15552),
++  'ORAGADAM BUS STOP': const LatLng(13.12054, 80.15131),
++  'SARASWATHI NAGAR': const LatLng(13.13613, 80.20386),
++  'MUTHA PUDUPETTAI': const LatLng(13.14619, 80.06179),
++  'KV SCHOOL': const LatLng(13.07198, 80.20029),
++  'CRPF (RG NAGAR)': const LatLng(13.14770, 80.09418),
++  'BRINDAVANA NAGAR': const LatLng(13.06489, 80.19418),
++  'AVADI RAMARATHNA': const LatLng(12.97709, 80.18280),
++  'VEERAPURAM CAMP': const LatLng(13.18318, 80.09008),
++  'VEERAPURAM BUS STAND': const LatLng(13.18318, 80.09008),
++  'MORAI BUS STAND': const LatLng(13.17478, 80.08451),
++  'NEW COLONY': const LatLng(12.98768, 80.20221),
++  'ANNA NAGAR BUS STAND': const LatLng(13.09544, 80.21614),
++  'VELTECH JUNCTION': const LatLng(13.16818, 80.11026),
++  'KOIL PATHAGAI': const LatLng(13.15483, 80.09927),
++  'AJAY STADIUM': const LatLng(13.07540, 80.25917),
++  'AVADI CHECK POST': const LatLng(13.12657, 80.24118),
++  'KANNIGAPURAM': const LatLng(13.11674, 80.09760),
++  'MARKET': const LatLng(13.06292, 80.20800),
++  'OM SAKTHI KOIL': const LatLng(12.97087, 80.19591),
++  'VASANTHAM NAGAR': const LatLng(13.11801, 80.21638),
++  'MOORTHY NAGAR': const LatLng(13.14442, 80.20517),
++  'KOVARTHANAGIRI': const LatLng(13.01084, 80.15093),
++  'IYYANKULAM': const LatLng(13.09368, 80.10843),
++  'PARIVAKKAM': const LatLng(13.06511, 80.09560),
++  'KADUVETTY PETROL BUNK': const LatLng(13.12833, 80.25911),
++  'VETHILAI THOTTAM': const LatLng(12.89500, 80.22313),
++  'AMBATTUR O.T': const LatLng(13.10176, 80.16116),
++  'CANARA BANK': const LatLng(13.07149, 80.20195),
++  'DUNLOP , POLICE STATION': const LatLng(13.06857, 80.20457),
++  'TI COMPANY': const LatLng(13.11851, 80.04493),
++  'TELEPHONE EXCHANGE': const LatLng(13.08547, 80.14534),
++  'AYYANAMPAAKAM': const LatLng(13.07209, 80.20186),
++  'MEL AYYANAMPAKKAM': const LatLng(13.08233, 80.15865),
++  'SREE VAARI': const LatLng(12.98649, 80.21235),
++  'MEEN MARKET': const LatLng(13.00139, 80.25816),
++  'VELAPPAN SAVADI': const LatLng(12.94178, 80.13369),
++  'CHINMAYA NAGAR': const LatLng(13.06229, 80.20268),
++  'SAI NAGAR': const LatLng(13.05756, 80.19454),
++  'NATESAN NAGAR': const LatLng(13.06082, 80.19380),
++  'ELANGO NAGAR': const LatLng(13.05350, 80.19074),
++  'AVM COLLEGE': const LatLng(13.06055, 80.25389),
++  'AVICHI SCHOOL': const LatLng(13.07198, 80.20029),
++  'VIRUGAMBAKKAM': const LatLng(13.05764, 80.19560),
++  'ALWAR THIRU NAGAR': const LatLng(13.04308, 80.18541),
++  'APPU HOTEL': const LatLng(13.09520, 80.14694),
++  'KESAVARTHINI': const LatLng(13.02412, 80.26242),
++  'VALASARAVAKKAM': const LatLng(13.04235, 80.17420),
++  'JAI GARDEN': const LatLng(13.03815, 80.17181),
++  'WEST SAIDAPET': const LatLng(13.02706, 80.22760),
++  'JAYARAJ THEATRE': const LatLng(12.99177, 80.20507),
++  'MATHOPU SCHOOL': const LatLng(13.07198, 80.20029),
++  'PILLAIYAR KOVIL': const LatLng(13.04083, 80.25865),
++  'ESI': const LatLng(13.09514, 80.23973),
++  'VELAKANNI SCHOOL': const LatLng(12.99601, 80.26565),
++  'SIVA PARK': const LatLng(13.04180, 80.20490),
++  'TANK': const LatLng(13.00681, 80.21158),
++  'IYYAPPAN KOVIL': const LatLng(13.10704, 80.08147),
++  'PONDYCHERRY GUEST HOUSE': const LatLng(13.08823, 80.20347),
++  'AMBAL NAGAR': const LatLng(13.06246, 80.24420),
++  'JAYA T V': const LatLng(12.88575, 80.23119),
++  'KASI THEATRE': const LatLng(13.01952, 80.20581),
++  'M G R NAGAR': const LatLng(13.00561, 80.17287),
++  'NESAPAKKAM': const LatLng(13.03742, 80.19007),
++  'K K NAGAR R T O OFFICE': const LatLng(12.93040, 80.20006),
++  'SRM': const LatLng(13.07209, 80.20186),
++  'AYODHYA MANDAPAM': const LatLng(13.05313, 80.28103),
++  'GRT SCHOOL': const LatLng(13.07198, 80.20029),
++  'ASHOK NAGAR P S': const LatLng(13.04014, 80.21320),
++  'LAKSHMAN SRUTHI': const LatLng(12.94766, 80.13587),
++  'KAMALA THEATRE': const LatLng(13.04913, 80.21015),
++  'VADAPALANI BUS STAND': const LatLng(13.04923, 80.20738),
++  'AVACHI SCHOOL': const LatLng(13.12355, 80.10085),
++  'RAJAKILPAKKAM': const LatLng(12.92389, 80.15064),
++  'RAJAKILPAKKAM SIGNAL': const LatLng(12.92389, 80.15064),
++  'KAMARAJAPURAM': const LatLng(13.10626, 80.15288),
++  'SEMBABAKKAM': const LatLng(12.92377, 80.15510),
++  'SANTHOSHAPURAM': const LatLng(13.07209, 80.20186),
++  'SANTHOSHAPURAM KOOT ROAD': const LatLng(13.07209, 80.20186),
++  'VELLAKALU': const LatLng(13.07209, 80.20186),
++  'KOVILAMBAKKAM': const LatLng(12.94760, 80.19260),
++  'ECHANKADU': const LatLng(12.67928, 78.58404),
++  'KEELKATTALAI': const LatLng(12.95603, 80.18521),
++  'U T I': const LatLng(13.11851, 80.04493),
++  'MADIPAKKAM KOOT ROAD': const LatLng(12.95516, 80.19687),
++  'KUMARAN THEATRE': const LatLng(12.91984, 80.19583),
++  'VANUVAMPET CHURCH': const LatLng(12.97454, 80.20140),
++  'NANGANALLUR': const LatLng(12.97722, 80.17997),
++  'PAZHAVANTHANGAL SUBWAY': const LatLng(12.99053, 80.18502),
++  'BHARATH COLLEGE': const LatLng(12.89632, 80.14242),
++  'CAMP ROAD': const LatLng(13.09962, 80.13271),
++  'SELAIYUR': const LatLng(12.91249, 80.15114),
++  'POONDI BAZAAR': const LatLng(13.03963, 80.23501),
++  'SANTORIUM': const LatLng(12.94097, 80.12831),
++  'CHITLAPAKKAM': const LatLng(12.93091, 80.14530),
++  'M I T BRIDGE': const LatLng(12.94908, 80.14058),
++  'CHROMPET': const LatLng(13.06292, 80.20800),
++  'PALLAVARAM': const LatLng(12.97254, 80.15307),
++  'MEENABAKKAM': const LatLng(12.97876, 80.15840),
++  'GUINDY &ALANDUR': const LatLng(12.99983, 80.19483),
++  'MEDAVAKKAM': const LatLng(12.92135, 80.18604),
++  'JAYACHANDRAN': const LatLng(12.98133, 80.19007),
++  'PALLIKARANAI': const LatLng(12.93104, 80.20377),
++  'DENTAL COLLEGE': const LatLng(12.98633, 80.18494),
++  'NARAYANAPURAM': const LatLng(12.94093, 80.20548),
++  'KAMATCHI HOSPITAL': const LatLng(13.05912, 80.17816),
++  'BALAJI NAGAR': const LatLng(12.98023, 80.20323),
++  'PERUMBAKKAM': const LatLng(12.89882, 80.19484),
++  'KAALAPAKKAM HOSPITAL': const LatLng(12.94070, 80.13804),
++  'SHOLINGANALLUR': const LatLng(12.90012, 80.22397),
++  'KARAPAKKAM': const LatLng(12.91332, 80.23172),
++  'OKIYAPETTAI': const LatLng(12.87463, 80.22811),
++  'JAIN COLLEGE': const LatLng(12.96077, 80.23619),
++  'DUARIPAKKAM': const LatLng(13.07209, 80.20186),
++  'KANDANCHAVADI': const LatLng(12.96457, 80.24591),
++  'TARAMANI': const LatLng(12.98837, 80.22266),
++  'BOPI NAGAR': const LatLng(13.08521, 80.22757),
++  'PUZHUTHIVAKKAM': const LatLng(12.97246, 80.19260),
++  'BRINDAVANAM NAGAR': const LatLng(13.07417, 80.24489),
++  'ADAMBAKKAM': const LatLng(12.98296, 80.19772),
++  'N G O COLONY': const LatLng(13.06513, 80.21880),
++  'THILLAI GANGA NAGAR SUB WAY': const LatLng(12.99191, 80.19364),
++  'CHEGAN MAL': const LatLng(13.04521, 80.18529),
++  'THALAMBUR': const LatLng(13.10702, 80.09212),
++  'ONDIYAMPAKKAM': const LatLng(13.17394, 80.09070),
++  'SITHALAPAKKAM': const LatLng(12.88617, 80.18367),
++  'SAIBABA KOVIL': const LatLng(13.12160, 80.20783),
++  'PONIYAMMAN KOVIL': const LatLng(13.10367, 80.28531),
++  'RAM NAGAR': const LatLng(12.98418, 80.19230),
++  'KAIVELAI': const LatLng(13.07209, 80.20186),
++  'VIJAYA NAGAR': const LatLng(13.12274, 80.21750),
++  'MURUGAN KALYANA MANDAPAM': const LatLng(13.04623, 80.07794),
++  'GURUNANAK COLLEGE': const LatLng(12.99100, 80.22016),
++  'PHOENIX MALL': const LatLng(13.10870, 80.19945),
++  'MADUVAKARAI BRIDGE': const LatLng(13.07802, 80.21198),
++  'POZHICHALUR': const LatLng(12.98953, 80.14558),
++  'MADHA KOVIL': const LatLng(13.10751, 80.18060),
++  'RETTA PILLAYAR KOVIL': const LatLng(12.97494, 80.13341),
++  'THEATRE': const LatLng(13.07183, 80.18745),
++  'AMBETHKAR SILAI': const LatLng(12.93442, 80.17920),
++  'ANAKAPUTHUR BUS STAND': const LatLng(12.98533, 80.12034),
++  'METHA NAGAR': const LatLng(13.14733, 80.23831),
++  'KUNDRATHUR': const LatLng(12.99774, 80.09633),
++  'PADAPPAI': const LatLng(12.88925, 80.03079),
++  'MANNIVAKKAM': const LatLng(13.11665, 80.23856),
++  'MUDICHUR': const LatLng(12.90602, 80.06963),
++  'PERUGALATHUR (OLD)': const LatLng(12.91778, 80.08529),
++  'SUNNAMBU KALVAI': const LatLng(13.07313, 80.22367),
++  'KRISHNA NAGAR': const LatLng(12.97806, 80.19763),
++  'TAMBARAM DEPOT': const LatLng(12.92168, 80.11383),
++  'SARAVANA STORE': const LatLng(12.98811, 80.20023),
++  'PAMMAL': const LatLng(12.96779, 80.11937),
++  'ANAGAPUTHUR': const LatLng(12.98533, 80.12034),
++  'AANDAN KUPPAM': const LatLng(12.99494, 80.11410),
++  'MADURANTHAKAM': const LatLng(12.97354, 80.18940),
++  'KARUNGUZHI': const LatLng(12.53506, 79.90209),
++  'KAKILAPETTAI': const LatLng(13.02141, 80.12393),
++  'PADALAM': const LatLng(13.02354, 80.17007),
++  'PUKKATHDURAI': const LatLng(12.62043, 79.92052),
++  'CHENGALPET': const LatLng(12.67940, 78.60660),
++  'VANDALUR': const LatLng(12.89645, 80.08509),
++  'AMMAN KOVIL': const LatLng(13.07291, 80.21843),
++  'ANAKAPUTHUR': const LatLng(12.98533, 80.12034),
++  'GOVERMENT HOSPITAL': const LatLng(13.10195, 80.28661),
++  'RATTINA KINARU': const LatLng(13.05060, 80.25957),
++  'MAHENDRA CITY': const LatLng(12.98281, 80.18767),
++  'SINGAPERUMAL KOIL': const LatLng(13.05763, 80.27461),
++  'MARAIMALAI NAGAR': const LatLng(12.82388, 80.04128),
++  'KATTANKULATHUR': const LatLng(12.81533, 80.04162),
++  'GUDUVANCHERY': const LatLng(12.94086, 80.17865),
++  'URAPAKKAM': const LatLng(13.08963, 79.99161),
++  'URAPAKKAM TEA SHOP': const LatLng(13.04726, 80.18561),
++  'VANDALUR GATE': const LatLng(12.89645, 80.08509),
++  'PERUNGALATHUR': const LatLng(12.91101, 80.10082),
++  'ARIE KARAI': const LatLng(12.96742, 80.20273),
++  'COCO COLA': const LatLng(13.00766, 80.16463),
++  'IRUMBULIYUR': const LatLng(12.91767, 80.10258),
++  'HINDHU MISSION HOSPITAL': const LatLng(12.97877, 80.18464),
++  'KADAPERI R T O': const LatLng(12.94038, 80.11473),
++  'BYE PASS': const LatLng(12.98308, 80.12094),
++  'AMARAMBEDU': const LatLng(12.95769, 80.01932),
++  'SAKTHI NAGAR CROSS ROAD': const LatLng(13.06351, 80.18254),
++  'PERIYAR NAGAR': const LatLng(12.98955, 80.25238),
++  'NANDAMBAKKAM': const LatLng(13.01469, 80.19356),
++  'SIRUKALTHUR': const LatLng(12.96892, 80.05683),
++  'MADHA COLLEGE': const LatLng(13.01782, 80.14888),
++  'KUNDRATHUR BUS STOP': const LatLng(12.99774, 80.09633),
++  'KUNDRATHUR THERADI': const LatLng(12.99774, 80.09633),
++  'NALROAD': const LatLng(11.78301, 79.55563),
++  'SIVANTHANGAL': const LatLng(13.01286, 80.10106),
++  'SIKRAYAPURAM': const LatLng(13.01524, 80.10113),
++  'SRI MUTHURKUMARAN COLLEGE': const LatLng(13.01825, 80.10874),
++  'PATHUR KOAT ROAD': const LatLng(13.07209, 80.20186),
++  'MANGADU PERUMAL KOVIL': const LatLng(12.95549, 80.25279),
++  'GANGAI AMMAN KOIL': const LatLng(13.00062, 80.09133),
++  'M G R SILAI': const LatLng(13.05466, 80.18546),
++  'MOONDRAM KATTALAI': const LatLng(13.00507, 80.10963),
++  'KOVUR': const LatLng(13.01385, 80.11684),
++  'KOVUR SCHOOL': const LatLng(13.01385, 80.11684),
++  'PERIYAPANICHERI': const LatLng(13.01475, 80.13156),
++  'KIRUGABAKKAM': const LatLng(13.05764, 80.19560),
++  'BAI KADAI': const LatLng(13.07377, 80.23161),
++  'MADHANANDAPURAM': const LatLng(13.02250, 80.15390),
++  'VIGNESHWARA': const LatLng(13.09204, 80.27793),
++  'PORUR': const LatLng(13.03747, 80.15133),
++  'RETEERI': const LatLng(13.07209, 80.20186),
++  'IYYAPANTHANGAL': const LatLng(13.02354, 80.13536),
++  'KATTUPAKKAM': const LatLng(13.04073, 80.12764),
++  'KUMANANCHAVADI': const LatLng(13.04695, 80.11751),
++  'ARAVIND EYE HOSPITAL': const LatLng(13.05324, 80.12455),
++  'NOOMBAL X ROAD': const LatLng(13.05014, 80.13248),
++  'KARAYANCHAVADI': const LatLng(13.04664, 80.11165),
++  'EB': const LatLng(13.10840, 80.26923),
++  'SENNER KUPPAM MURUGAN TEMPLE': const LatLng(13.06481, 80.12085),
++  'GOLDEN APARTMENT': const LatLng(13.05737, 80.19732),
++  'SUN PLUS COLLEGE': const LatLng(13.06055, 80.25389),
++  'DAM': const LatLng(13.06831, 80.26941),
++  'AYYAPAKKAM': const LatLng(13.07645, 80.15193),
++  'GANESH BHAVAN': const LatLng(13.08939, 80.27805),
++  'AARIKARAI': const LatLng(12.94301, 80.15356),
++  'V G N': const LatLng(13.03832, 80.13576),
++  'THIRUVERKADU RATION SHOP': const LatLng(13.06947, 80.22994),
++  'SUNDARAM SUYAPURAM R M K': const LatLng(13.02291, 80.25176),
++  'AYAPPAN MAADAM': const LatLng(12.96443, 80.19062),
++  'THIRUVERKADU BUS STOP': const LatLng(13.05858, 80.12733),
++  'THIRUVERKADU PETROL 2': const LatLng(13.05858, 80.12733),
++  'V G N FLAT': const LatLng(13.05389, 80.11740),
++  'PERUMAL AGARAM': const LatLng(13.06793, 80.13291),
++  'A C S': const LatLng(13.07209, 80.20186),
++  'KAVALCHERY': const LatLng(13.05608, 80.06272),
++  'SITHUKADU': const LatLng(13.09036, 80.04998),
++  'VOYALANALLUR': const LatLng(13.08468, 80.07271),
++  'PARIVAKKAM SIGNAL': const LatLng(13.06511, 80.09560),
++  'POONAMALEE G R T': const LatLng(13.06829, 80.08721),
++  'MEPPUR BUS STAND': const LatLng(13.02794, 80.07888),
++  'AGARAM MEL ROUNDANA': const LatLng(13.03840, 80.07821),
++  'RATION KADAI': const LatLng(13.07377, 80.23161),
++  'KIRUBA STORE SCHOOL STREET': const LatLng(13.07198, 80.20029),
++  'RAMYA MEDICAL': const LatLng(13.13870, 80.29770),
++  'SEKAR TEA KADAI': const LatLng(13.16380, 80.11910),
++  'R R THIRUMANA MANDABAM': const LatLng(13.03642, 80.13823),
+ };
+ 
+ final Map<String, Map<String, String>> driverLang = {
+diff --git a/lib/screens/admin/admin_dashboard.dart b/lib/screens/admin/admin_dashboard.dart
+index 131aa06..a13c6fb 100644
+--- a/lib/screens/admin/admin_dashboard.dart
++++ b/lib/screens/admin/admin_dashboard.dart
+@@ -1,6 +1,7 @@
+ import 'dart:async';
+ import 'dart:convert';
+ import 'package:flutter/material.dart';
++import 'package:http/http.dart' as http;
+ import 'package:firebase_core/firebase_core.dart';
+ import 'package:firebase_database/firebase_database.dart';
+ import 'package:flutter_map/flutter_map.dart';
+@@ -47,6 +48,11 @@ class _AdminDashboardState extends State<AdminDashboard> {
+   bool _isAdminSttListening = false;
+   String _selectedAdminSttLang = 'en';
+   final TextEditingController _adminChatInputCtrl = TextEditingController();
++  
++  // WhatsApp Style Intercom UI State
++  String? _selectedIntercomBus;
++  final TextEditingController _intercomSearchCtrl = TextEditingController();
++  String _intercomSearchQuery = "";
+ 
+   // Live Bus Locations
+   Map<String, Map<String, dynamic>> _liveBuses = {};
+@@ -57,6 +63,13 @@ class _AdminDashboardState extends State<AdminDashboard> {
+ 
+   // Registry sub-toggle
+   int _registryViewMode = 0; // 0 = Drivers, 1 = Routes
++  final TextEditingController _adminRouteSearchCtrl = TextEditingController();
++  String _adminRouteSearchQuery = "";
++
++  // Live map search
++  final TextEditingController _liveMapSearchCtrl = TextEditingController();
++  String _liveMapSearchQuery = "";
++  RouteEntry? _selectedLiveRoute;
+ 
+   // Logs Filter
+   String _selectedLogDate = DateTime.now().toIso8601String().substring(0, 10);
+@@ -104,16 +117,29 @@ class _AdminDashboardState extends State<AdminDashboard> {
+     final prefs = await SharedPreferences.getInstance();
+     
+     // Drivers
+-    final driversStr = prefs.getString('ptAdmin_drivers');
+-    if (driversStr != null) {
++    _drivers = [];
++    if (Firebase.apps.isNotEmpty) {
+       try {
+-        final List decoded = json.decode(driversStr);
+-        _drivers = decoded.map((e) => DriverEntry.fromJson(e)).toList();
++        final snap = await FirebaseDatabase.instance.ref('drivers').get();
++        if (snap.exists && snap.value != null) {
++          final data = snap.value;
++          List driversList = [];
++          if (data is List) {
++            driversList = data;
++          } else if (data is Map) {
++            driversList = data.values.toList();
++          }
++          if (mounted) {
++            setState(() {
++              _drivers = driversList.map((e) {
++                return DriverEntry.fromJson(Map<String, dynamic>.from(e as Map));
++              }).toList();
++            });
++          }
++        }
+       } catch (e) {
+-        _drivers = _getDefaultDrivers();
++        debugPrint("Firebase drivers load error: $e");
+       }
+-    } else {
+-      _drivers = _getDefaultDrivers();
+     }
+ 
+     // Routes
+@@ -122,6 +148,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
+       try {
+         final List decoded = json.decode(routesStr);
+         _routes = decoded.map((e) => RouteEntry.fromJson(e)).toList();
++        if (_routes.length < 50) { // Since we have 77 routes, if it's less than 50, it's stale data.
++          _routes = _getDefaultRoutes();
++          _saveRoutes();
++        }
+       } catch (e) {
+         _routes = _getDefaultRoutes();
+       }
+@@ -204,21 +234,23 @@ class _AdminDashboardState extends State<AdminDashboard> {
+     prefs.setString('ptAdmin_uploads', json.encode(_uploads.map((e) => e.toJson()).toList()));
+   }
+ 
+-  // ─── DEFAULT METRICS ──────────────────────────────────────────────
+   List<DriverEntry> _getDefaultDrivers() {
+-    return [
+-      DriverEntry(id: 1, bus: 'B101', driver: 'Rajan Kumar', contact: '9876543210', route: 'route_15', type: 'combined', password: '1234'),
+-      DriverEntry(id: 2, bus: 'B202', driver: 'Selvam P', contact: '9876543211', route: 'route_52', type: 'combined', password: '1234'),
+-      DriverEntry(id: 3, bus: 'B303', driver: 'Murugan S', contact: '9876543212', route: 'route_137', type: 'combined', password: '1234'),
+-    ];
++    return [];
+   }
+ 
+   List<RouteEntry> _getDefaultRoutes() {
+-    return [
+-      RouteEntry(id: 1, key: 'route_15', name: 'Route 15 - Manali 2', stops: routeStopsConfig['route_15']!, color: '#2563EB'),
+-      RouteEntry(id: 2, key: 'route_52', name: 'Route 52 - Padappai', stops: routeStopsConfig['route_52']!, color: '#22C55E'),
+-      RouteEntry(id: 3, key: 'route_137', name: 'Route 137 - Porur', stops: routeStopsConfig['route_137']!, color: '#F97316'),
+-    ];
++    int id = 1;
++    final List<RouteEntry> routes = [];
++    for (var key in routeLabelsConfig.keys) {
++      routes.add(RouteEntry(
++        id: (id++).toDouble(),
++        key: key,
++        name: routeLabelsConfig[key]!,
++        stops: routeStopsConfig[key] ?? [],
++        color: routeColorsConfig[key] ?? '#2563EB',
++      ));
++    }
++    return routes;
+   }
+ 
+   List<LogEntry> _getDefaultLogs() {
+@@ -424,40 +456,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
+     }
+   }
+ 
+-  List<LatLng> _getRoutePointsCached(String routeKey) {
+-    if (_routeGeometries.containsKey(routeKey)) {
+-      return _routeGeometries[routeKey]!;
+-    }
+-    final points = _getLinearRoutePoints(routeKey);
+-    _routeGeometries[routeKey] = points;
+-    return points;
+-  }
+-
+-  List<LatLng> _getLinearRoutePoints(String routeKey) {
+-    final route = _routes.firstWhere((r) => r.key == routeKey, orElse: () => _getDefaultRoutes()[0]);
+-    final stops = route.stops;
+-    final List<LatLng> pts = [];
+-    for (int i = 0; i < stops.length; i++) {
+-      final name = stops[i];
+-      final coord = coordsConfig[name];
+-      if (coord == null) continue;
+-      if (i == 0) {
+-        pts.add(coord);
+-        continue;
+-      }
+-      final prevName = stops[i - 1];
+-      final prevCoord = coordsConfig[prevName];
+-      if (prevCoord == null) continue;
+-      
+-      for (int s = 1; s <= 40; s++) {
+-        double t = s / 40.0;
+-        double lat = prevCoord.latitude + (coord.latitude - prevCoord.latitude) * t;
+-        double lng = prevCoord.longitude + (coord.longitude - prevCoord.longitude) * t;
+-        pts.add(LatLng(lat, lng));
+-      }
+-    }
+-    return pts;
+-  }
+ 
+   void _showAppSnackBar(String msg) {
+     ScaffoldMessenger.of(context).showSnackBar(
+@@ -482,16 +480,36 @@ class _AdminDashboardState extends State<AdminDashboard> {
+     showModalBottomSheet(
+       context: context,
+       isScrollControlled: true,
+-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
++      backgroundColor: Colors.transparent,
+       builder: (ctx) => StatefulBuilder(
+-        builder: (c, setSheetState) => Padding(
+-          padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, top: 20, left: 20, right: 20),
+-          child: SingleChildScrollView(
+-            child: Column(
+-              mainAxisSize: MainAxisSize.min,
+-              crossAxisAlignment: CrossAxisAlignment.stretch,
+-              children: [
+-                const Text("Add Driver & Bus Entry", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A))),
++        builder: (c, setSheetState) => DraggableScrollableSheet(
++          initialChildSize: 0.75,
++          maxChildSize: 0.95,
++          minChildSize: 0.5,
++          builder: (_, scrollController) => Container(
++            decoration: const BoxDecoration(
++              color: Colors.white,
++              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
++            ),
++            padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, top: 20, left: 20, right: 20),
++            child: SingleChildScrollView(
++              controller: scrollController,
++              child: Column(
++                mainAxisSize: MainAxisSize.min,
++                crossAxisAlignment: CrossAxisAlignment.stretch,
++                children: [
++                  Row(
++                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
++                    children: [
++                      const Text("Add Driver & Bus Entry", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A))),
++                      IconButton(
++                        icon: const Icon(Icons.close, color: Color(0xFF64748B)),
++                        onPressed: () => Navigator.pop(context),
++                        padding: EdgeInsets.zero,
++                        constraints: const BoxConstraints(),
++                      ),
++                    ],
++                  ),
+                 const SizedBox(height: 16),
+                 TextField(controller: busCtrl, decoration: const InputDecoration(labelText: "Bus Number (e.g. B110)")),
+                 const SizedBox(height: 8),
+@@ -553,6 +571,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
+           ),
+         ),
+       ),
++      ),
+     );
+   }
+ 
+@@ -653,15 +672,35 @@ class _AdminDashboardState extends State<AdminDashboard> {
+     showModalBottomSheet(
+       context: context,
+       isScrollControlled: true,
+-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+-      builder: (ctx) => Padding(
+-        padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, top: 20, left: 20, right: 20),
+-        child: SingleChildScrollView(
+-          child: Column(
+-            mainAxisSize: MainAxisSize.min,
+-            crossAxisAlignment: CrossAxisAlignment.stretch,
+-            children: [
+-              const Text("Add College Transit Route", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A))),
++      backgroundColor: Colors.transparent,
++      builder: (ctx) => DraggableScrollableSheet(
++        initialChildSize: 0.75,
++        maxChildSize: 0.95,
++        minChildSize: 0.5,
++        builder: (_, scrollController) => Container(
++          decoration: const BoxDecoration(
++            color: Colors.white,
++            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
++          ),
++          padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, top: 20, left: 20, right: 20),
++          child: SingleChildScrollView(
++            controller: scrollController,
++            child: Column(
++              mainAxisSize: MainAxisSize.min,
++              crossAxisAlignment: CrossAxisAlignment.stretch,
++              children: [
++                Row(
++                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
++                  children: [
++                    const Text("Add College Transit Route", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A))),
++                    IconButton(
++                      icon: const Icon(Icons.close, color: Color(0xFF64748B)),
++                      onPressed: () => Navigator.pop(context),
++                      padding: EdgeInsets.zero,
++                      constraints: const BoxConstraints(),
++                    ),
++                  ],
++                ),
+               const SizedBox(height: 16),
+               TextField(controller: keyCtrl, decoration: const InputDecoration(labelText: "Route Key (e.g. route_15)")),
+               const SizedBox(height: 8),
+@@ -702,6 +741,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
+           ),
+         ),
+       ),
++      ),
+     );
+   }
+ 
+@@ -777,16 +817,36 @@ class _AdminDashboardState extends State<AdminDashboard> {
+     showModalBottomSheet(
+       context: context,
+       isScrollControlled: true,
+-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
++      backgroundColor: Colors.transparent,
+       builder: (ctx) => StatefulBuilder(
+-        builder: (c, setSheetState) => Padding(
+-          padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, top: 20, left: 20, right: 20),
+-          child: SingleChildScrollView(
+-            child: Column(
+-              mainAxisSize: MainAxisSize.min,
+-              crossAxisAlignment: CrossAxisAlignment.stretch,
++        builder: (c, setSheetState) => DraggableScrollableSheet(
++          initialChildSize: 0.75,
++          maxChildSize: 0.95,
++          minChildSize: 0.5,
++          builder: (_, scrollController) => Container(
++            decoration: const BoxDecoration(
++              color: Colors.white,
++              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
++            ),
++            padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, top: 20, left: 20, right: 20),
++            child: SingleChildScrollView(
++              controller: scrollController,
++              child: Column(
++                mainAxisSize: MainAxisSize.min,
++                crossAxisAlignment: CrossAxisAlignment.stretch,
+               children: [
+-                const Text("Broadcast Alert Notice", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A))),
++                Row(
++                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
++                  children: [
++                    const Text("Broadcast Alert Notice", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A))),
++                    IconButton(
++                      icon: const Icon(Icons.close, color: Color(0xFF64748B)),
++                      onPressed: () => Navigator.pop(context),
++                      padding: EdgeInsets.zero,
++                      constraints: const BoxConstraints(),
++                    ),
++                  ],
++                ),
+                 const SizedBox(height: 16),
+                 DropdownButtonFormField<String>(
+                   value: typeCtrl.text,
+@@ -841,6 +901,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
+           ),
+         ),
+       ),
++      ),
+     );
+   }
+ 
+@@ -1298,7 +1359,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
+ 
+   Widget _buildLiveTrackTab() {
+     final List<Marker> markers = [];
+-    final List<Polyline> polylines = [];
+ 
+     // Add college campus pin
+     markers.add(
+@@ -1314,22 +1374,33 @@ class _AdminDashboardState extends State<AdminDashboard> {
+       ),
+     );
+ 
+-    // Draw route polylines
+-    for (var r in _routes) {
+-      final points = _getRoutePointsCached(r.key);
++    // Draw route stops for selected route only
++    if (_selectedLiveRoute != null) {
+       Color c = const Color(0xFF2563EB);
+       try {
+-        c = Color(int.parse(r.color.replaceFirst('#', '0xFF')));
++        c = Color(int.parse(_selectedLiveRoute!.color.replaceFirst('#', '0xFF')));
+       } catch (_) {}
+ 
+-      if (points.isNotEmpty) {
+-        polylines.add(
+-          Polyline(
+-            points: points,
+-            color: c.withValues(alpha: 0.8),
+-            strokeWidth: 3.5,
+-          ),
+-        );
++      for (var stop in _selectedLiveRoute!.stops) {
++        final coord = coordsConfig[stop];
++        if (coord != null && stop != "COLLEGE" && stop != "Panimalar Engineering College") {
++          markers.add(
++            Marker(
++              point: coord,
++              width: 24,
++              height: 24,
++              alignment: Alignment.center,
++              child: Container(
++                decoration: BoxDecoration(
++                  color: c.withValues(alpha: 0.8),
++                  shape: BoxShape.circle,
++                  border: Border.all(color: Colors.white, width: 1.5),
++                ),
++                child: const Icon(Icons.location_on, color: Colors.white, size: 14),
++              ),
++            ),
++          );
++        }
+       }
+     }
+ 
+@@ -1342,8 +1413,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
+         markers.add(
+           Marker(
+             point: LatLng(lat, lng),
+-            width: 40,
+-            height: 40,
++            width: 80,
++            height: 80,
++            alignment: Alignment.center,
+             child: Column(
+               children: [
+                 Container(
+@@ -1359,149 +1431,351 @@ class _AdminDashboardState extends State<AdminDashboard> {
+       }
+     });
+ 
+-    return FlutterMap(
+-      mapController: _mapController,
+-      options: const MapOptions(
+-        initialCenter: LatLng(13.047, 80.11),
+-        initialZoom: 12.0,
+-      ),
+-      children: [
+-        TileLayer(
+-          urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+-          subdomains: const ['a', 'b', 'c', 'd'],
+-        ),
+-        PolylineLayer(polylines: polylines),
+-        MarkerLayer(markers: markers),
+-      ],
+-    );
+-  }
+-
+-  Widget _buildSTTIntercomTab() {
+-    final List<String> activeBusIds = _adminIntercomMessages.keys.toList();
++    final query = _liveMapSearchQuery.toLowerCase();
++    final matches = _routes.where((r) {
++      return r.name.toLowerCase().contains(query) || r.key.toLowerCase().contains(query) || r.stops.any((s) => s.toLowerCase().contains(query));
++    }).toList();
+ 
+-    return Row(
++    return Stack(
+       children: [
+-        // Left Column - Bus list
+-        Container(
+-          width: 140,
+-          decoration: const BoxDecoration(
+-            color: Colors.white,
+-            border: Border(right: BorderSide(color: Color(0xFFE2E8F0))),
++        FlutterMap(
++          mapController: _mapController,
++          options: const MapOptions(
++            initialCenter: LatLng(13.047, 80.11),
++            initialZoom: 12.0,
+           ),
++          children: [
++            TileLayer(
++              urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
++              subdomains: const ['a', 'b', 'c', 'd'],
++            ),
++            MarkerLayer(markers: markers),
++          ],
++        ),
++        
++        // Search Bar Overlay
++        Positioned(
++          top: 16,
++          left: 16,
++          right: 16,
+           child: Column(
+-            crossAxisAlignment: CrossAxisAlignment.stretch,
++            crossAxisAlignment: CrossAxisAlignment.start,
+             children: [
+-              const Padding(
+-                padding: EdgeInsets.all(12.0),
+-                child: Text("ACTIVE BUSES", style: TextStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Color(0xFF64748B))),
+-              ),
+-              const Divider(height: 1),
+-              Expanded(
+-                child: activeBusIds.isEmpty
+-                    ? const Center(child: Padding(padding: EdgeInsets.all(8.0), child: Text("No driver text channel active", style: TextStyle(fontSize: 10, color: Colors.grey))))
+-                    : ListView.builder(
+-                        itemCount: activeBusIds.length,
+-                        itemBuilder: (ctx, idx) {
+-                          final bus = activeBusIds[idx];
+-                          return ListTile(
+-                            dense: true,
+-                            title: Text("Bus $bus", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
+-                            trailing: const Icon(Icons.circle, size: 8, color: Colors.green),
+-                            onTap: () {
++              Container(
++                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
++                decoration: BoxDecoration(
++                  color: Colors.white,
++                  borderRadius: BorderRadius.circular(16),
++                  boxShadow: [
++                    BoxShadow(
++                      color: const Color(0xFF2563EB).withValues(alpha: 0.15),
++                      blurRadius: 16,
++                      offset: const Offset(0, 8),
++                    ),
++                  ],
++                  border: Border.all(color: const Color(0xFF2563EB).withValues(alpha: 0.3), width: 1.5),
++                ),
++                child: TextField(
++                  controller: _liveMapSearchCtrl,
++                  onChanged: (val) => setState(() => _liveMapSearchQuery = val),
++                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
++                  decoration: InputDecoration(
++                    hintText: "Search route or bus stop...",
++                    hintStyle: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13, fontWeight: FontWeight.w600),
++                    border: InputBorder.none,
++                    suffixIcon: _liveMapSearchQuery.isNotEmpty || _selectedLiveRoute != null
++                        ? IconButton(
++                            icon: const Icon(Icons.clear, color: Colors.grey),
++                            onPressed: () {
+                               setState(() {
+-                                _adminChatInputCtrl.text = ""; // clear input
++                                _liveMapSearchCtrl.clear();
++                                _liveMapSearchQuery = "";
++                                _selectedLiveRoute = null;
+                               });
+                             },
+-                          );
+-                        },
++                          )
++                        : null,
++                    icon: Container(
++                      padding: const EdgeInsets.all(8),
++                      decoration: BoxDecoration(
++                        color: const Color(0xFFEFF6FF),
++                        borderRadius: BorderRadius.circular(10),
+                       ),
+-              )
++                      child: const Icon(Icons.search_rounded, size: 20, color: Color(0xFF2563EB)),
++                    ),
++                  ),
++                ),
++              ),
++              
++              if (_liveMapSearchQuery.isNotEmpty)
++                Container(
++                  margin: const EdgeInsets.only(top: 8),
++                  constraints: const BoxConstraints(maxHeight: 250),
++                  decoration: BoxDecoration(
++                    color: Colors.white,
++                    borderRadius: BorderRadius.circular(16),
++                    boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, 4))],
++                  ),
++                  child: matches.isEmpty
++                      ? const Padding(padding: EdgeInsets.all(16), child: Text("No routes found", style: TextStyle(color: Colors.grey)))
++                      : ListView.separated(
++                          shrinkWrap: true,
++                          itemCount: matches.length,
++                          separatorBuilder: (_, __) => const Divider(height: 1),
++                          itemBuilder: (ctx, idx) {
++                            final r = matches[idx];
++                            return ListTile(
++                              leading: const Icon(Icons.directions_bus, color: Color(0xFF2563EB)),
++                              title: Text(r.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
++                              subtitle: Text(r.stops.take(3).join(', ') + '...', style: const TextStyle(fontSize: 11)),
++                              onTap: () {
++                                setState(() {
++                                  _selectedLiveRoute = r;
++                                  _liveMapSearchQuery = "";
++                                  _liveMapSearchCtrl.text = r.name;
++                                  
++                                  // Optional: Center map on first stop of the route
++                                  if (r.stops.isNotEmpty && coordsConfig[r.stops[0]] != null) {
++                                    _mapController.move(coordsConfig[r.stops[0]]!, 12.0);
++                                  }
++                                });
++                              },
++                            );
++                          },
++                        ),
++                ),
+             ],
+           ),
+         ),
++      ],
++    );
++  }
+ 
+-        // Right Column - Intercom chat panels
+-        Expanded(
+-          child: activeBusIds.isEmpty
+-              ? const Center(child: Text("Select an active bus to send notices.", style: TextStyle(fontSize: 11, color: Colors.grey, fontWeight: FontWeight.bold)))
+-              : Column(
+-                  children: [
+-                    Expanded(
+-                      child: ListView.builder(
+-                        padding: const EdgeInsets.all(12),
+-                        itemCount: activeBusIds.length,
+-                        itemBuilder: (ctx, idx) {
+-                          final bus = activeBusIds[idx];
+-                          final msgs = _adminIntercomMessages[bus] ?? [];
+-                          return Card(
+-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+-                            margin: const EdgeInsets.only(bottom: 12),
+-                            color: Colors.white,
+-                            elevation: 0,
+-                            borderOnForeground: true,
+-                            child: Padding(
+-                              padding: const EdgeInsets.all(12),
+-                              child: Column(
+-                                crossAxisAlignment: CrossAxisAlignment.stretch,
++  Widget _buildSTTIntercomTab() {
++    // Get list of all registered bus routes from the driver registry
++    final List<String> activeBusIds = _drivers.map((d) => d.bus).toList();
++    
++    // Filter by search query
++    final query = _intercomSearchQuery.toLowerCase();
++    final filteredBusIds = activeBusIds.where((bus) => bus.toLowerCase().contains(query)).toList();
++
++    return Container(
++      color: const Color(0xFFF0F2F5), // WhatsApp web background color
++      child: Row(
++        children: [
++          // Left Column - Chat List
++          Container(
++            width: 300,
++            decoration: const BoxDecoration(
++              color: Colors.white,
++              border: Border(right: BorderSide(color: Color(0xFFE2E8F0))),
++            ),
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.stretch,
++              children: [
++                // Header & Search
++                Container(
++                  color: const Color(0xFFF0F2F5),
++                  padding: const EdgeInsets.all(12),
++                  child: Container(
++                    decoration: BoxDecoration(
++                      color: Colors.white,
++                      borderRadius: BorderRadius.circular(20),
++                    ),
++                    child: TextField(
++                      controller: _intercomSearchCtrl,
++                      onChanged: (val) => setState(() => _intercomSearchQuery = val),
++                      decoration: const InputDecoration(
++                        hintText: "Search or start new chat",
++                        hintStyle: TextStyle(fontSize: 13, color: Colors.grey),
++                        prefixIcon: Icon(Icons.search, size: 20, color: Colors.grey),
++                        border: InputBorder.none,
++                        contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
++                      ),
++                      style: const TextStyle(fontSize: 14),
++                    ),
++                  ),
++                ),
++                const Divider(height: 1),
++                
++                // Chat List
++                Expanded(
++                  child: activeBusIds.isEmpty
++                      ? const Center(child: Padding(padding: EdgeInsets.all(16.0), child: Text("No active drivers found.", style: TextStyle(fontSize: 13, color: Colors.grey))))
++                      : ListView.separated(
++                          itemCount: filteredBusIds.length,
++                          separatorBuilder: (ctx, idx) => const Divider(height: 1, indent: 64),
++                          itemBuilder: (ctx, idx) {
++                            final bus = filteredBusIds[idx];
++                            final msgs = _adminIntercomMessages[bus] ?? [];
++                            final lastMsg = msgs.isNotEmpty ? msgs.last['msg'] : '';
++                            
++                            final isSelected = _selectedIntercomBus == bus;
++                            
++                            return ListTile(
++                              tileColor: isSelected ? const Color(0xFFF0F2F5) : Colors.white,
++                              leading: const CircleAvatar(
++                                backgroundColor: Color(0xFFDFE5E7),
++                                child: Icon(Icons.person, color: Colors.white),
++                              ),
++                              title: Row(
++                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                 children: [
+-                                  Row(
+-                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+-                                    children: [
+-                                      Text("Channel Bus $bus", style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 12, color: Color(0xFF1E3A8A))),
+-                                      const Icon(Icons.circle, size: 8, color: Colors.green),
+-                                    ],
+-                                  ),
+-                                  const Divider(),
+-                                  const SizedBox(height: 6),
+-                                  Column(
+-                                    children: msgs.map((m) {
+-                                      final isMe = m['sender'] == 'admin';
+-                                      return Align(
+-                                        alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+-                                        child: Container(
+-                                          margin: const EdgeInsets.symmetric(vertical: 2),
+-                                          padding: const EdgeInsets.all(8),
+-                                          decoration: BoxDecoration(
+-                                            color: isMe ? const Color(0xFFEFF6FF) : const Color(0xFFF1F5F9),
+-                                            borderRadius: BorderRadius.circular(10),
+-                                          ),
+-                                          child: Text("${isMe ? 'You' : 'Driver'}: ${m['msg']}", style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+-                                        ),
+-                                      );
+-                                    }).toList(),
++                                  Text("Route $bus", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.black87)),
++                                  const Icon(Icons.circle, size: 10, color: Color(0xFF25D366)),
++                                ],
++                              ),
++                              subtitle: Text(
++                                lastMsg,
++                                maxLines: 1,
++                                overflow: TextOverflow.ellipsis,
++                                style: const TextStyle(fontSize: 13, color: Colors.grey),
++                              ),
++                              onTap: () {
++                                setState(() {
++                                  _selectedIntercomBus = bus;
++                                });
++                              },
++                            );
++                          },
++                        ),
++                )
++              ],
++            ),
++          ),
++
++          // Right Column - Chat Window
++          Expanded(
++            child: _selectedIntercomBus == null
++                ? Container(
++                    color: const Color(0xFFF0F2F5),
++                    child: Center(
++                      child: Column(
++                        mainAxisAlignment: MainAxisAlignment.center,
++                        children: const [
++                          Icon(Icons.chat_bubble_outline, size: 64, color: Colors.black26),
++                          SizedBox(height: 16),
++                          Text("Select a driver to start messaging", style: TextStyle(fontSize: 16, color: Colors.black54)),
++                        ],
++                      ),
++                    ),
++                  )
++                : Column(
++                    children: [
++                      // Chat Header
++                      Container(
++                        color: const Color(0xFFF0F2F5),
++                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
++                        child: Row(
++                          children: [
++                            const CircleAvatar(
++                              backgroundColor: Color(0xFFDFE5E7),
++                              child: Icon(Icons.person, color: Colors.white),
++                            ),
++                            const SizedBox(width: 12),
++                            Column(
++                              crossAxisAlignment: CrossAxisAlignment.start,
++                              children: [
++                                Text("Route $_selectedIntercomBus", style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
++                                const Text("online", style: TextStyle(fontSize: 12, color: Colors.grey)),
++                              ],
++                            ),
++                          ],
++                        ),
++                      ),
++                      
++                      // Chat Messages
++                      Expanded(
++                        child: Container(
++                          decoration: const BoxDecoration(
++                            image: DecorationImage(
++                              image: NetworkImage("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png"),
++                              fit: BoxFit.cover,
++                              opacity: 0.5,
++                            ),
++                          ),
++                          child: ListView.builder(
++                            padding: const EdgeInsets.all(16),
++                            itemCount: (_adminIntercomMessages[_selectedIntercomBus] ?? []).length,
++                            itemBuilder: (ctx, idx) {
++                              final m = _adminIntercomMessages[_selectedIntercomBus!]![idx];
++                              final isMe = m['sender'] == 'admin';
++                              return Align(
++                                alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
++                                child: Container(
++                                  margin: const EdgeInsets.symmetric(vertical: 4),
++                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
++                                  decoration: BoxDecoration(
++                                    color: isMe ? const Color(0xFFDCF8C6) : Colors.white,
++                                    borderRadius: BorderRadius.circular(12).copyWith(
++                                      topRight: isMe ? const Radius.circular(0) : const Radius.circular(12),
++                                      topLeft: isMe ? const Radius.circular(12) : const Radius.circular(0),
++                                    ),
++                                    boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 1, offset: Offset(0, 1))],
+                                   ),
+-                                  const SizedBox(height: 8),
+-                                  Row(
+-                                    children: [
+-                                      Expanded(
+-                                        child: TextField(
+-                                          decoration: const InputDecoration(
+-                                            hintText: "Type note details...",
+-                                            hintStyle: TextStyle(fontSize: 10),
+-                                            contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+-                                            border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(20))),
+-                                          ),
+-                                          style: const TextStyle(fontSize: 11),
+-                                          onSubmitted: (val) {
+-                                            if (val.trim().isNotEmpty) {
+-                                              _sendAdminTextMessage(bus, val.trim());
+-                                            }
+-                                          },
+-                                        ),
+-                                      ),
+-                                    ],
++                                  child: Text("${m['msg']}", style: const TextStyle(fontSize: 14, color: Colors.black87)),
++                                ),
++                              );
++                            },
++                          ),
++                        ),
++                      ),
++                      
++                      // Chat Input
++                      Container(
++                        color: const Color(0xFFF0F2F5),
++                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
++                        child: Row(
++                          children: [
++                            const Icon(Icons.emoji_emotions_outlined, color: Colors.grey, size: 26),
++                            const SizedBox(width: 12),
++                            Expanded(
++                              child: Container(
++                                decoration: BoxDecoration(
++                                  color: Colors.white,
++                                  borderRadius: BorderRadius.circular(24),
++                                ),
++                                child: TextField(
++                                  controller: _adminChatInputCtrl,
++                                  decoration: const InputDecoration(
++                                    hintText: "Type a message",
++                                    hintStyle: TextStyle(fontSize: 14, color: Colors.grey),
++                                    contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
++                                    border: InputBorder.none,
+                                   ),
+-                                ],
++                                  style: const TextStyle(fontSize: 14),
++                                  onSubmitted: (val) {
++                                    if (val.trim().isNotEmpty) {
++                                      _sendAdminTextMessage(_selectedIntercomBus!, val.trim());
++                                      _adminChatInputCtrl.clear();
++                                    }
++                                  },
++                                ),
+                               ),
+                             ),
+-                          );
+-                        },
++                            const SizedBox(width: 12),
++                            InkWell(
++                              onTap: () {
++                                final val = _adminChatInputCtrl.text;
++                                if (val.trim().isNotEmpty && _selectedIntercomBus != null) {
++                                  _sendAdminTextMessage(_selectedIntercomBus!, val.trim());
++                                  _adminChatInputCtrl.clear();
++                                }
++                              },
++                              child: const CircleAvatar(
++                                backgroundColor: Color(0xFF00A884),
++                                radius: 20,
++                                child: Icon(Icons.send, color: Colors.white, size: 20),
++                              ),
++                            ),
++                          ],
++                        ),
+                       ),
+-                    ),
+-                  ],
+-                ),
+-        )
+-      ],
++                    ],
++                  ),
++          )
++        ],
++      ),
+     );
+   }
+ 
+@@ -1775,79 +2049,115 @@ class _AdminDashboardState extends State<AdminDashboard> {
+   }
+ 
+   Widget _buildRoutesRegistrySubTab() {
++    final query = _adminRouteSearchQuery.toLowerCase();
++    final displayedRoutes = _routes.where((r) {
++      if (query.isEmpty) return true;
++      final nameMatch = r.name.toLowerCase().contains(query);
++      final stopMatch = r.stops.any((s) => s.toLowerCase().contains(query));
++      return nameMatch || stopMatch;
++    }).toList();
++
+     return Scaffold(
+       backgroundColor: Colors.transparent,
+-      body: ListView.builder(
+-        padding: const EdgeInsets.all(16),
+-        itemCount: _routes.length,
+-        itemBuilder: (ctx, idx) {
+-          final r = _routes[idx];
+-          Color c = const Color(0xFF2563EB);
+-          try {
+-            c = Color(int.parse(r.color.replaceFirst('#', '0xFF')));
+-          } catch (_) {}
+-          return Card(
+-            color: Colors.white,
+-            elevation: 0,
+-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: const BorderSide(color: Color(0xFFEEF2FF), width: 1.5)),
+-            margin: const EdgeInsets.only(bottom: 10),
+-            child: Padding(
+-              padding: const EdgeInsets.all(16),
+-              child: Column(
+-                crossAxisAlignment: CrossAxisAlignment.start,
+-                children: [
+-                  Row(
+-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+-                    children: [
+-                      Text("🛣️ ${r.name}", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13, color: c)),
+-                      Text("${r.stops.length} Stops", style: const TextStyle(fontSize: 10, color: Color(0xFF64748B), fontWeight: FontWeight.bold)),
+-                    ],
+-                  ),
+-                  const SizedBox(height: 6),
+-                  Text("Path: ${r.stops.join(' ➔ ')}", style: const TextStyle(fontSize: 10, color: Color(0xFF475569), height: 1.3, fontWeight: FontWeight.bold)),
+-                  const SizedBox(height: 8),
+-                  Row(
+-                    mainAxisAlignment: MainAxisAlignment.end,
+-                    children: [
+-                      TextButton.icon(
+-                        icon: const Icon(Icons.edit, size: 14),
+-                        label: const Text("Edit", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+-                        onPressed: () => _openRouteEditBottomSheet(r),
+-                      ),
+-                      TextButton.icon(
+-                        icon: const Icon(Icons.delete_outline, size: 14, color: Colors.red),
+-                        label: const Text("Delete", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.red)),
+-                        onPressed: () {
+-                          showDialog(
+-                            context: context,
+-                            builder: (diag) => AlertDialog(
+-                              title: const Text("Confirm Delete", style: TextStyle(fontWeight: FontWeight.bold)),
+-                              content: Text("Are you sure you want to delete the ${r.name} Route?"),
+-                              actions: [
+-                               TextButton(onPressed: () => Navigator.pop(diag), child: const Text("Cancel")),
+-                                TextButton(
+-                                  onPressed: () {
+-                                    setState(() {
+-                                      _routes.removeWhere((item) => item.id == r.id);
+-                                      _saveRoutes();
+-                                    });
+-                                    Navigator.pop(diag);
+-                                    _showAppSnackBar("Route deleted.");
+-                                  },
+-                                  child: const Text("Delete", style: TextStyle(color: Colors.red)),
+-                                ),
+-                              ],
++      body: Column(
++        children: [
++          Padding(
++            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
++            child: Container(
++              padding: const EdgeInsets.symmetric(horizontal: 12),
++              decoration: BoxDecoration(
++                color: Colors.white,
++                borderRadius: BorderRadius.circular(12),
++                border: Border.all(color: const Color(0xFFE2E8F0)),
++              ),
++              child: TextField(
++                controller: _adminRouteSearchCtrl,
++                onChanged: (val) => setState(() => _adminRouteSearchQuery = val),
++                style: const TextStyle(fontSize: 12),
++                decoration: const InputDecoration(
++                  hintText: "Search by route name or bus stop...",
++                  hintStyle: TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
++                  border: InputBorder.none,
++                  icon: Icon(Icons.search, size: 16, color: Color(0xFF94A3B8)),
++                ),
++              ),
++            ),
++          ),
++          Expanded(
++            child: ListView.builder(
++              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
++              itemCount: displayedRoutes.length,
++              itemBuilder: (ctx, idx) {
++                final r = displayedRoutes[idx];
++                Color c = const Color(0xFF2563EB);
++                try {
++                  c = Color(int.parse(r.color.replaceFirst('#', '0xFF')));
++                } catch (_) {}
++                return Card(
++                  color: Colors.white,
++                  elevation: 0,
++                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: const BorderSide(color: Color(0xFFEEF2FF), width: 1.5)),
++                  margin: const EdgeInsets.only(bottom: 10),
++                  child: Padding(
++                    padding: const EdgeInsets.all(16),
++                    child: Column(
++                      crossAxisAlignment: CrossAxisAlignment.start,
++                      children: [
++                        Row(
++                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
++                          children: [
++                            Text("🛣️ ${r.name}", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13, color: c)),
++                            Text("${r.stops.length} Stops", style: const TextStyle(fontSize: 10, color: Color(0xFF64748B), fontWeight: FontWeight.bold)),
++                          ],
++                        ),
++                        const SizedBox(height: 6),
++                        Text("Path: ${r.stops.join(' ➔ ')}", style: const TextStyle(fontSize: 10, color: Color(0xFF475569), height: 1.3, fontWeight: FontWeight.bold)),
++                        const SizedBox(height: 8),
++                        Row(
++                          mainAxisAlignment: MainAxisAlignment.end,
++                          children: [
++                            TextButton.icon(
++                              icon: const Icon(Icons.edit, size: 14),
++                              label: const Text("Edit", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
++                              onPressed: () => _openRouteEditBottomSheet(r),
+                             ),
+-                          );
+-                        },
+-                      ),
+-                    ],
++                            TextButton.icon(
++                              icon: const Icon(Icons.delete_outline, size: 14, color: Colors.red),
++                              label: const Text("Delete", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.red)),
++                              onPressed: () {
++                                showDialog(
++                                  context: context,
++                                  builder: (diag) => AlertDialog(
++                                    title: const Text("Confirm Delete", style: TextStyle(fontWeight: FontWeight.bold)),
++                                    content: Text("Are you sure you want to delete the ${r.name} Route?"),
++                                    actions: [
++                                     TextButton(onPressed: () => Navigator.pop(diag), child: const Text("Cancel")),
++                                      TextButton(
++                                        onPressed: () {
++                                          setState(() {
++                                            _routes.removeWhere((item) => item.id == r.id);
++                                            _saveRoutes();
++                                          });
++                                          Navigator.pop(diag);
++                                          _showAppSnackBar("Route deleted.");
++                                        },
++                                        child: const Text("Delete", style: TextStyle(color: Colors.red)),
++                                      ),
++                                    ],
++                                  ),
++                                );
++                              },
++                            ),
++                          ],
++                        ),
++                      ],
++                    ),
+                   ),
+-                ],
+-              ),
++                );
++              },
+             ),
+-          );
+-        },
++          ),
++        ],
+       ),
+       floatingActionButton: FloatingActionButton(
+         backgroundColor: const Color(0xFF2563EB),
+diff --git a/lib/screens/driver/driver_dashboard.dart b/lib/screens/driver/driver_dashboard.dart
+index 1970033..2785d24 100644
+--- a/lib/screens/driver/driver_dashboard.dart
++++ b/lib/screens/driver/driver_dashboard.dart
+@@ -43,7 +43,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
+   String _updatedAt = "--";
+   String _gpsStatus = "Offline";
+   String _replacementBus = "";
+-  bool _notifyRouteBusesEnabled = false;
++  Map<String, bool> _selectedNotifyBuses = {};
+ 
+   bool _firebaseConnected = false;
+   StreamSubscription? _connectedSubscription;
+@@ -109,8 +109,48 @@ class _DriverDashboardState extends State<DriverDashboard> {
+     _listenForAdminSettings();
+   }
+ 
+-  void _loadRouteDetails() {
++  void _loadRouteDetails() async {
++    // 1. Initial quick guess based on bus number
+     _routeKey = _getRouteKeyForBus(widget.driverBus);
++    _updateStopsFromKey();
++
++    // 2. Fetch the true route from Firebase Driver Registry
++    if (Firebase.apps.isNotEmpty) {
++      try {
++        final snap = await FirebaseDatabase.instance.ref('drivers').get();
++        if (snap.exists && snap.value != null) {
++          final data = snap.value;
++          List driversList = [];
++          if (data is List) {
++            driversList = data;
++          } else if (data is Map) {
++            driversList = data.values.toList();
++          }
++
++          final bus = widget.driverBus.toUpperCase();
++          for (var item in driversList) {
++            if (item is Map) {
++              final dbBus = item['bus']?.toString().toUpperCase();
++              if (dbBus == bus && item['route'] != null) {
++                final String dbRoute = item['route'].toString();
++                if (mounted && dbRoute != _routeKey) {
++                  setState(() {
++                    _routeKey = dbRoute;
++                  });
++                  _updateStopsFromKey();
++                }
++                break;
++              }
++            }
++          }
++        }
++      } catch (e) {
++        debugPrint("Error fetching driver route: $e");
++      }
++    }
++  }
++
++  void _updateStopsFromKey() {
+     final stops = routeStopsConfig[_routeKey] ?? [];
+     setState(() {
+       _routeStops = stops.map((name) {
+@@ -132,11 +172,14 @@ class _DriverDashboardState extends State<DriverDashboard> {
+     if (bus == 'B101' || bus == 'BUS101') return 'route_15';
+     if (bus == 'B202' || bus == 'BUS102') return 'route_52';
+     if (bus == 'B303') return 'route_137';
++    if (RegExp(r'^\d+$').hasMatch(busId)) {
++      if (routeLabelsConfig.containsKey('route_$busId')) return 'route_$busId';
++    }
+     return 'route_15'; // default fallback
+   }
+ 
+   String _getRouteLabelForBus(String busId) {
+-    return routeLabelsConfig[_getRouteKeyForBus(busId)] ?? "College Route";
++    return routeLabelsConfig[_routeKey] ?? "College Route";
+   }
+ 
+   String t(String key) {
+@@ -627,12 +670,13 @@ class _DriverDashboardState extends State<DriverDashboard> {
+   }
+ 
+   void _sendBreakdownToRouteBuses() async {
++    final selectedBuses = _selectedNotifyBuses.entries.where((e) => e.value).map((e) => e.key).join(", ");
+     setState(() {
+       _routeNotifyStatus = "Notifying other buses on same route…";
+     });
+     await Future.delayed(const Duration(seconds: 1));
+     setState(() {
+-      _routeNotifyStatus = "✅ Notified buses BUS102, BUS105 to pick up stranded students.";
++      _routeNotifyStatus = "✅ Notified buses $selectedBuses to pick up stranded students.";
+     });
+     _showSnackBar("Notifications dispatched successfully.");
+   }
+@@ -852,11 +896,11 @@ class _DriverDashboardState extends State<DriverDashboard> {
+             ),
+           ),
+           Switch(
+-            value: _notifyRouteBusesEnabled,
++            value: _selectedNotifyBuses[bus] ?? false,
+             activeColor: const Color(0xFFDC2626),
+             onChanged: isDiffRoute ? null : (val) {
+               setState(() {
+-                _notifyRouteBusesEnabled = val;
++                _selectedNotifyBuses[bus] = val;
+               });
+             },
+           ),
+@@ -1713,7 +1757,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
+                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                         elevation: 0,
+                       ),
+-                      onPressed: _notifyRouteBusesEnabled ? _sendBreakdownToRouteBuses : null,
++                      onPressed: _selectedNotifyBuses.containsValue(true) ? _sendBreakdownToRouteBuses : null,
+                       child: Text(t('sendBreakdownBuses'), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
+                     ),
+                     if (_routeNotifyStatus.isNotEmpty) ...[
+diff --git a/lib/screens/driver/driver_login_screen.dart b/lib/screens/driver/driver_login_screen.dart
+index 2df027e..735c939 100644
+--- a/lib/screens/driver/driver_login_screen.dart
++++ b/lib/screens/driver/driver_login_screen.dart
+@@ -27,7 +27,6 @@ class DriverLoginScreen extends StatefulWidget {
+ 
+ class _DriverLoginScreenState extends State<DriverLoginScreen> {
+   final TextEditingController _busController = TextEditingController();
+-  final TextEditingController _passController = TextEditingController();
+   String _errorMsg = "";
+   bool _isLoading = false;
+ 
+@@ -37,9 +36,8 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
+ 
+   void _attemptLogin() async {
+     final bus = _busController.text.trim().toUpperCase();
+-    final pass = _passController.text.trim();
+ 
+-    if (bus.isEmpty || pass.isEmpty) {
++    if (bus.isEmpty) {
+       setState(() {
+         _errorMsg = t('errorEnter');
+       });
+@@ -52,7 +50,6 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
+     });
+ 
+     try {
+-      // 1. Try Firebase Authentication Sync from '/drivers' node
+       if (Firebase.apps.isNotEmpty) {
+         final snapshot = await FirebaseDatabase.instance.ref('drivers').get();
+         if (snapshot.exists && snapshot.value != null) {
+@@ -68,57 +65,34 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
+           for (var item in driversList) {
+             if (item is Map) {
+               final dbBus = item['bus']?.toString().trim().toUpperCase();
+-              final dbPass = item['password']?.toString().trim();
+-              if (dbBus == bus && dbPass == pass) {
++              if (dbBus == bus) {
+                 found = true;
+                 break;
+               }
+             }
+           }
++          
+           if (found) {
+             widget.onLogin(bus);
+             return;
++          } else {
++            setState(() {
++              _errorMsg = "Route $bus not registered by Admin.";
++            });
++            return;
+           }
+-        }
+-      }
+-
+-      // 2. Fallback: Check local SharedPreferences (cached drivers list)
+-      final prefs = await SharedPreferences.getInstance();
+-      final driversStr = prefs.getString('ptAdmin_drivers');
+-      if (driversStr != null) {
+-        final List decoded = json.decode(driversStr);
+-        bool found = false;
+-        for (var item in decoded) {
+-          if (item is Map) {
+-            final dbBus = item['bus']?.toString().trim().toUpperCase();
+-            final dbPass = item['password']?.toString().trim();
+-            if (dbBus == bus && dbPass == pass) {
+-              found = true;
+-              break;
+-            }
+-          }
+-        }
+-        if (found) {
+-          widget.onLogin(bus);
++        } else {
++          setState(() {
++            _errorMsg = "No routes registered yet.";
++          });
+           return;
+         }
+       }
+ 
+-      // 3. Demoware / Development fallback defaults
+-      if ((bus == 'B101' || bus == 'B202' || bus == 'B303' || bus == 'BUS101' || bus == 'BUS102') && pass == '1234') {
+-        widget.onLogin(bus);
+-        return;
+-      }
+-
+       setState(() {
+-        _errorMsg = t('errorInvalid');
++        _errorMsg = "Cannot connect to Firebase.";
+       });
+     } catch (e) {
+-      // Offline fallback defaults
+-      if ((bus == 'B101' || bus == 'B202' || bus == 'B303' || bus == 'BUS101' || bus == 'BUS102') && pass == '1234') {
+-        widget.onLogin(bus);
+-        return;
+-      }
+       setState(() {
+         _errorMsg = "Login error: $e";
+       });
+@@ -221,63 +195,45 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
+                         const SizedBox(height: 20),
+ 
+                         Text(
+-                          t('busNumber'),
++                          "Route Number / Bus No",
+                           style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF334155)),
+                         ),
+                         const SizedBox(height: 6),
+                         TextField(
+                           controller: _busController,
+                           decoration: InputDecoration(
+-                            hintText: "e.g. B101",
++                            hintText: "e.g. 4 or 86",
+                             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                             border: OutlineInputBorder(borderRadius: BorderRadius.circular(22)),
+                           ),
+                           style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                         ),
+-                        const SizedBox(height: 16),
+-
+-                        Text(
+-                          t('busPassword'),
+-                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF334155)),
+-                        ),
+-                        const SizedBox(height: 6),
+-                        TextField(
+-                          controller: _passController,
+-                          obscureText: true,
+-                          decoration: InputDecoration(
+-                            hintText: "••••",
+-                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(22)),
+-                          ),
+-                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+-                        ),
+-                        const SizedBox(height: 20),
++                        const SizedBox(height: 24),
+ 
+                         if (_errorMsg.isNotEmpty)
+                           Padding(
+-                            padding: const EdgeInsets.only(bottom: 12.0),
++                            padding: const EdgeInsets.only(bottom: 16.0),
+                             child: Text(
+                               _errorMsg,
+-                              style: const TextStyle(color: Colors.red, fontSize: 12, fontWeight: FontWeight.bold),
++                              style: const TextStyle(color: Color(0xFFEF4444), fontSize: 12, fontWeight: FontWeight.w600),
++                              textAlign: TextAlign.center,
+                             ),
+                           ),
+ 
+                         ElevatedButton(
++                          onPressed: _isLoading ? null : _attemptLogin,
+                           style: ElevatedButton.styleFrom(
+                             backgroundColor: const Color(0xFF2563EB),
+-                            foregroundColor: Colors.white,
+                             padding: const EdgeInsets.symmetric(vertical: 14),
+-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
++                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+                             elevation: 0,
+                           ),
+-                          onPressed: _isLoading ? null : _attemptLogin,
+                           child: _isLoading
+-                              ? const SizedBox(
+-                                  height: 20,
+-                                  width: 20,
+-                                  child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+-                                )
+-                              : Text(t('signIn'), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
++                              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
++                              : Text(
++                                  t('btnLogin'),
++                                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
++                                ),
+                         ),
+                       ],
+                     ),
+diff --git a/lib/screens/student/student_shell.dart b/lib/screens/student/student_shell.dart
+index e5f5ed7..c65bf5e 100644
+--- a/lib/screens/student/student_shell.dart
++++ b/lib/screens/student/student_shell.dart
+@@ -84,6 +84,10 @@ class _MainShellState extends State<MainShell> {
+   // Campus points search filter
+   final TextEditingController _searchCtrl = TextEditingController();
+   String _searchFilter = "";
++  
++  // Route search filter
++  final TextEditingController _routeSearchCtrl = TextEditingController();
++  String _routeSearchQuery = "";
+   String _selectedNavPointName = "";
+   Polyline? _campusRoute;
+ 
+@@ -142,20 +146,22 @@ class _MainShellState extends State<MainShell> {
+       }
+     }
+ 
+-    if (routeKey == 'route_15') {
+-      _busFirebaseId = 'B101';
+-      _routeColor = const Color(0xFF2563EB); // Blue
+-    } else if (routeKey == 'route_52') {
+-      _busFirebaseId = 'B202';
+-      _routeColor = const Color(0xFF22C55E); // Green
+-    } else if (routeKey == 'route_137') {
+-      _busFirebaseId = 'B303';
+-      _routeColor = const Color(0xFFF97316); // Orange
++    // Parse the number from 'route_15' to get '15' for Firebase mapping
++    final match = RegExp(r'route_(\d+)').firstMatch(routeKey);
++    if (match != null) {
++      _busFirebaseId = match.group(1)!;
+     } else {
+-      _busFirebaseId = 'B101';
+-      _routeColor = const Color(0xFF2563EB);
++      _busFirebaseId = routeKey;
+     }
+ 
++    // Set fallback colors based on some logic, or just a default
++    _routeColor = const Color(0xFF2563EB);
++    try {
++      if (routeColorsConfig.containsKey(routeKey)) {
++         _routeColor = Color(int.parse(routeColorsConfig[routeKey]!.replaceFirst('#', '0xFF')));
++      }
++    } catch (_) {}
++
+     if (startListener) {
+       _startFirebaseListener();
+     }
+@@ -1110,38 +1116,101 @@ class _MainShellState extends State<MainShell> {
+ 
+                 // Dynamic Route select list
+                 const Text(
+-                  "Assigned College Route",
+-                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFF64748B)),
++                  "Find Your Bus & Route",
++                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900, color: Color(0xFF1E293B)),
+                 ),
+-                const SizedBox(height: 8),
+-                Row(
+-                  children: routeLabelsConfig.keys.map((routeKey) {
+-                    final isSelected = _selectedRoute == routeKey;
+-                    return Expanded(
+-                      child: GestureDetector(
+-                        onTap: () => _changeSelectedRoute(routeKey),
+-                        child: Container(
+-                          margin: const EdgeInsets.symmetric(horizontal: 4),
+-                          padding: const EdgeInsets.symmetric(vertical: 10),
+-                          decoration: BoxDecoration(
+-                            color: isSelected ? _routeColor : Colors.white,
+-                            borderRadius: BorderRadius.circular(12),
+-                            border: Border.all(color: isSelected ? _routeColor : const Color(0xFFCBD5E1)),
+-                          ),
+-                          alignment: Alignment.center,
+-                          child: Text(
+-                            routeKey == 'route_15' ? "R15" : (routeKey == 'route_52' ? "R52" : "R137"),
+-                            style: TextStyle(
+-                              fontSize: 12,
+-                              fontWeight: FontWeight.w900,
+-                              color: isSelected ? Colors.white : const Color(0xFF475569),
+-                            ),
+-                          ),
++                const SizedBox(height: 12),
++                Container(
++                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
++                  decoration: BoxDecoration(
++                    color: Colors.white,
++                    borderRadius: BorderRadius.circular(16),
++                    boxShadow: [
++                      BoxShadow(
++                        color: const Color(0xFF2563EB).withValues(alpha: 0.15),
++                        blurRadius: 16,
++                        offset: const Offset(0, 8),
++                      ),
++                    ],
++                    border: Border.all(color: const Color(0xFF2563EB).withValues(alpha: 0.3), width: 1.5),
++                  ),
++                  child: TextField(
++                    controller: _routeSearchCtrl,
++                    onChanged: (val) => setState(() => _routeSearchQuery = val),
++                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
++                    decoration: InputDecoration(
++                      hintText: "Search bus stop or route no...",
++                      hintStyle: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13, fontWeight: FontWeight.w600),
++                      border: InputBorder.none,
++                      icon: Container(
++                        padding: const EdgeInsets.all(8),
++                        decoration: BoxDecoration(
++                          color: const Color(0xFFEFF6FF),
++                          borderRadius: BorderRadius.circular(10),
+                         ),
++                        child: const Icon(Icons.search_rounded, size: 20, color: Color(0xFF2563EB)),
+                       ),
+-                    );
+-                  }).toList(),
++                    ),
++                  ),
+                 ),
++                const SizedBox(height: 12),
++                if (_routeSearchQuery.isNotEmpty)
++                  Container(
++                    height: 150,
++                    decoration: BoxDecoration(
++                      color: Colors.white,
++                      borderRadius: BorderRadius.circular(12),
++                      border: Border.all(color: const Color(0xFFE2E8F0)),
++                    ),
++                    child: Builder(
++                      builder: (context) {
++                        final query = _routeSearchQuery.toLowerCase();
++                        final matches = routeLabelsConfig.keys.where((key) {
++                          final label = routeLabelsConfig[key]?.toLowerCase() ?? '';
++                          final stops = routeStopsConfig[key] ?? [];
++                          final stopsMatch = stops.any((s) => s.toLowerCase().contains(query));
++                          return label.contains(query) || stopsMatch;
++                        }).toList();
++                        if (matches.isEmpty) {
++                          return const Center(child: Text("No routes found", style: TextStyle(fontSize: 12, color: Colors.grey)));
++                        }
++                        return ListView.separated(
++                          padding: const EdgeInsets.all(8),
++                          itemCount: matches.length,
++                          separatorBuilder: (_, __) => const Divider(height: 1),
++                          itemBuilder: (ctx, idx) {
++                            final key = matches[idx];
++                            final label = routeLabelsConfig[key] ?? key;
++                            return ListTile(
++                              dense: true,
++                              title: Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
++                              trailing: _selectedRoute == key ? const Icon(Icons.check_circle, color: Colors.green, size: 18) : null,
++                              onTap: () {
++                                _changeSelectedRoute(key);
++                                _routeSearchCtrl.clear();
++                                setState(() => _routeSearchQuery = "");
++                              },
++                            );
++                          },
++                        );
++                      }
++                    ),
++                  ),
++                if (_routeSearchQuery.isEmpty)
++                  Container(
++                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
++                    decoration: BoxDecoration(
++                      color: const Color(0xFFEEF2FF),
++                      borderRadius: BorderRadius.circular(12),
++                    ),
++                    child: Row(
++                      children: [
++                        const Icon(Icons.directions_bus, size: 18, color: Color(0xFF2563EB)),
++                        const SizedBox(width: 8),
++                        Expanded(child: Text("Selected: ${routeLabelsConfig[_selectedRoute] ?? _selectedRoute}", style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Color(0xFF1E3A8A)))),
++                      ],
++                    ),
++                  ),
+                 const SizedBox(height: 20),
+ 
+                 Row(
+@@ -1466,12 +1535,36 @@ class _MainShellState extends State<MainShell> {
+ 
+     // Add user marker if we had one
+     // Add bus marker
++    // Draw all route stops as dots instead of lines
++    for (var stopName in _routeStops) {
++      final coord = _coords[stopName];
++      if (coord != null && stopName != "COLLEGE" && stopName != "Panimalar Engineering College") {
++        markers.add(
++          Marker(
++            point: coord,
++            width: 24,
++            height: 24,
++            alignment: Alignment.center,
++            child: Container(
++              decoration: BoxDecoration(
++                color: _routeColor.withValues(alpha: 0.8),
++                shape: BoxShape.circle,
++                border: Border.all(color: Colors.white, width: 1.5),
++              ),
++              child: const Icon(Icons.location_on, color: Colors.white, size: 14),
++            ),
++          ),
++        );
++      }
++    }
++
+     if (_busLat != null && _busLng != null) {
+       markers.add(
+         Marker(
+           point: LatLng(_busLat!, _busLng!),
+-          width: 50,
+-          height: 50,
++          width: 80,
++          height: 80,
++          alignment: Alignment.center,
+           child: Column(
+             children: [
+               Container(
+@@ -1539,17 +1632,7 @@ class _MainShellState extends State<MainShell> {
+               urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+               subdomains: const ['a', 'b', 'c', 'd'],
+             ),
+-            PolylineLayer(
+-              polylines: [
+-                Polyline(
+-                  points: _routeStops.map((name) => _coords[name]).whereType<LatLng>().toList(),
+-                  color: _routeColor,
+-                  strokeWidth: 4.0,
+-                  borderColor: Colors.white,
+-                  borderStrokeWidth: 1.5,
+-                ),
+-              ],
+-            ),
++
+             if (_busIsOnline && _renderLat != null && _renderLng != null && _busAccuracy != null)
+               CircleLayer(
+                 circles: [
+diff --git a/pubspec.lock b/pubspec.lock
+index 6b1b921..89c3a42 100644
+--- a/pubspec.lock
++++ b/pubspec.lock
+@@ -353,7 +353,7 @@ packages:
+     source: hosted
+     version: "2.0.2"
+   http:
+-    dependency: transitive
++    dependency: "direct main"
+     description:
+       name: http
+       sha256: "87721a4a50b19c7f1d49001e51409bddc46303966ce89a65af4f4e6004896412"
+diff --git a/pubspec.yaml b/pubspec.yaml
+index 8ad8353..c2f5ff4 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -44,6 +44,7 @@ dependencies:
+   file_picker: 10.3.10
+   firebase_storage: ^13.4.3
+   url_launcher: ^6.3.2
++  http: ^1.6.0
+ 
+ 
+ dev_dependencies:

@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/material.dart';
-
+import 'package:flutter_tts/flutter_tts.dart';
+import 'package:http/http.dart' as http;
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -41,11 +43,28 @@ class _AdminDashboardState extends State<AdminDashboard> {
   StreamSubscription? _requestsSub;
 
   // Persistence State Lists
+  // Persistence State Lists
   List<DriverEntry> _drivers = [];
   List<RouteEntry> _routes = [];
   List<LogEntry> _logs = [];
   List<AlertEntry> _alerts = [];
   List<UploadEntry> _uploads = [];
+
+  // Safety Warnings
+  Map<String, dynamic> _safetyAlerts = {};
+  StreamSubscription? _safetyAlertsSub;
+
+  // Segmented Intercom State
+  int _intercomViewMode = 0; // 0 = Drivers, 1 = Students
+  String? _selectedChatId; // e.g. driver_B101 or student_STD123
+  Map<String, dynamic> _adminStudentsList = {};
+  StreamSubscription? _adminStudentsSub;
+
+  // Voice recording & playback states
+  bool _isRecordingVoice = false;
+  int _recordingDurationSecs = 0;
+  Timer? _recordingTimer;
+  List<double> _recordingWaveforms = [];
 
   // Admin STT Intercom State
   Map<String, List<Map<String, dynamic>>> _adminIntercomMessages = {};
@@ -56,6 +75,16 @@ class _AdminDashboardState extends State<AdminDashboard> {
   String? _selectedIntercomBus;
   final TextEditingController _intercomSearchCtrl = TextEditingController();
   String _intercomSearchQuery = "";
+  int _intercomSegment = 0; // 0 = Drivers, 1 = Students
+  List<Map<String, dynamic>> _studentsList = [];
+  StreamSubscription? _studentsSub;
+  bool _isAdminRecording = false;
+  int _adminRecordingDuration = 0;
+  Timer? _adminRecordingTimer;
+  String? _playingMsgId;
+  double _playbackProgress = 0.0;
+  Timer? _playbackTimer;
+  final FlutterTts _flutterTts = FlutterTts();
 
   // Live Bus Locations
   Map<String, Map<String, dynamic>> _liveBuses = {};
@@ -91,115 +120,132 @@ class _AdminDashboardState extends State<AdminDashboard> {
     _loadPersistedData();
     _listenForRequests();
     _listenForAdminIntercomMessages();
+    _listenForStudents();
     _listenForLiveLocations();
+    _listenForDriversAlerts();
     _listenForAdminSettings();
     _listenForNewStops();
-    _listenForBreakdowns();
+    _listenForSafetyAlerts();
+    _listenForAdminStudents();
   }
 
   @override
   void dispose() {
     _requestsSub?.cancel();
     _liveLocationsSub?.cancel();
+    _driversAlertsSub?.cancel();
     _adminIntercomSub?.cancel();
+    _studentsSub?.cancel();
     _adminSettingsSub?.cancel();
     _newStopsSub?.cancel();
-    _breakdownListenerSub?.cancel();
+    _adminRecordingTimer?.cancel();
+    _playbackTimer?.cancel();
     _adminChatInputCtrl.dispose();
     super.dispose();
   }
 
   // ─── PERSISTENCE DATA LOAD/SAVE ─────────────────────────────────
   void _loadPersistedData() async {
-    final prefs = await SharedPreferences.getInstance();
-    
-    // Drivers
-    _drivers = [];
     if (Firebase.apps.isNotEmpty) {
       try {
-        final snap = await FirebaseDatabase.instance.ref('drivers').get();
-        if (snap.exists && snap.value != null) {
-          final data = snap.value;
+        // Drivers
+        final driversSnap = await FirebaseDatabase.instance.ref('drivers').get();
+        if (driversSnap.exists && driversSnap.value != null) {
+          final data = driversSnap.value;
           List driversList = [];
           if (data is List) {
             driversList = data;
           } else if (data is Map) {
             driversList = data.values.toList();
           }
-          if (mounted) {
-            setState(() {
-              _drivers = driversList.map((e) {
-                return DriverEntry.fromJson(Map<String, dynamic>.from(e as Map));
-              }).toList();
-            });
+          _drivers = driversList.map((e) {
+            return DriverEntry.fromJson(Map<String, dynamic>.from(e as Map));
+          }).toList();
+        } else {
+          _drivers = _getDefaultDrivers();
+          await FirebaseDatabase.instance.ref('drivers').set(_drivers.map((e) => e.toJson()).toList());
+        }
+
+        // Routes
+        final routesSnap = await FirebaseDatabase.instance.ref('routes').get();
+        if (routesSnap.exists && routesSnap.value != null) {
+          final data = routesSnap.value;
+          List routesList = [];
+          if (data is List) {
+            routesList = data;
+          } else if (data is Map) {
+            routesList = data.values.toList();
           }
-        }
-      } catch (e) {
-        debugPrint("Firebase drivers load error: $e");
-      }
-    }
-
-    // Routes
-    final routesStr = prefs.getString('ptAdmin_routes');
-    if (routesStr != null) {
-      try {
-        final List decoded = json.decode(routesStr);
-        _routes = decoded.map((e) => RouteEntry.fromJson(e)).toList();
-        if (_routes.length < 50) { // Since we have 77 routes, if it's less than 50, it's stale data.
+          _routes = routesList.map((e) {
+            return RouteEntry.fromJson(Map<String, dynamic>.from(e as Map));
+          }).toList();
+        } else {
           _routes = _getDefaultRoutes();
-          _saveRoutes();
+          await FirebaseDatabase.instance.ref('routes').set(_routes.map((e) => e.toJson()).toList());
         }
-      } catch (e) {
-        _routes = _getDefaultRoutes();
-      }
-    } else {
-      _routes = _getDefaultRoutes();
-    }
 
-    // Logs
-    final logsStr = prefs.getString('ptAdmin_logs');
-    if (logsStr != null) {
-      try {
-        final List decoded = json.decode(logsStr);
-        _logs = decoded.map((e) => LogEntry.fromJson(e)).toList();
-      } catch (e) {
-        _logs = _getDefaultLogs();
-      }
-    } else {
-      _logs = _getDefaultLogs();
-    }
+        // Logs
+        final logsSnap = await FirebaseDatabase.instance.ref('logs').get();
+        if (logsSnap.exists && logsSnap.value != null) {
+          final data = logsSnap.value;
+          List logsList = [];
+          if (data is List) {
+            logsList = data;
+          } else if (data is Map) {
+            logsList = data.values.toList();
+          }
+          _logs = logsList.map((e) {
+            return LogEntry.fromJson(Map<String, dynamic>.from(e as Map));
+          }).toList();
+        } else {
+          _logs = _getDefaultLogs();
+          await FirebaseDatabase.instance.ref('logs').set(_logs.map((e) => e.toJson()).toList());
+        }
 
-    // Alerts
-    final alertsStr = prefs.getString('ptAdmin_alerts');
-    if (alertsStr != null) {
-      try {
-        final List decoded = json.decode(alertsStr);
-        _alerts = decoded.map((e) => AlertEntry.fromJson(e)).toList();
-      } catch (e) {
-        _alerts = _getDefaultAlerts();
-      }
-    } else {
-      _alerts = _getDefaultAlerts();
-    }
+        // Alerts
+        final alertsSnap = await FirebaseDatabase.instance.ref('alerts').get();
+        if (alertsSnap.exists && alertsSnap.value != null) {
+          final data = alertsSnap.value;
+          List alertsList = [];
+          if (data is List) {
+            alertsList = data;
+          } else if (data is Map) {
+            alertsList = data.values.toList();
+          }
+          _alerts = alertsList.map((e) {
+            return AlertEntry.fromJson(Map<String, dynamic>.from(e as Map));
+          }).toList();
+        } else {
+          _alerts = _getDefaultAlerts();
+          await FirebaseDatabase.instance.ref('alerts').set(_alerts.map((e) => e.toJson()).toList());
+        }
 
-    // Uploads
-    final uploadsStr = prefs.getString('ptAdmin_uploads');
-    if (uploadsStr != null) {
-      try {
-        final List decoded = json.decode(uploadsStr);
-        _uploads = decoded.map((e) => UploadEntry.fromJson(e)).toList();
+        // Uploads
+        final uploadsSnap = await FirebaseDatabase.instance.ref('uploads').get();
+        if (uploadsSnap.exists && uploadsSnap.value != null) {
+          final data = uploadsSnap.value;
+          List uploadsList = [];
+          if (data is List) {
+            uploadsList = data;
+          } else if (data is Map) {
+            uploadsList = data.values.toList();
+          }
+          _uploads = uploadsList.map((e) {
+            return UploadEntry.fromJson(Map<String, dynamic>.from(e as Map));
+          }).toList();
+        } else {
+          _uploads = [];
+          await FirebaseDatabase.instance.ref('uploads').set(_uploads.map((e) => e.toJson()).toList());
+        }
+
+        if (mounted) setState(() {});
       } catch (e) {
-        _uploads = [];
+        debugPrint("Error loading data from Firebase: $e");
       }
     }
-    if (mounted) setState(() {});
   }
 
   void _saveDrivers() async {
-    final prefs = await SharedPreferences.getInstance();
-    prefs.setString('ptAdmin_drivers', json.encode(_drivers.map((e) => e.toJson()).toList()));
-    
-    // Also sync to Firebase Realtime Database
     if (Firebase.apps.isNotEmpty) {
       try {
         await FirebaseDatabase.instance.ref('drivers').set(
@@ -212,13 +258,51 @@ class _AdminDashboardState extends State<AdminDashboard> {
   }
 
   void _saveRoutes() async {
-    final prefs = await SharedPreferences.getInstance();
-    prefs.setString('ptAdmin_routes', json.encode(_routes.map((e) => e.toJson()).toList()));
+    if (Firebase.apps.isNotEmpty) {
+      try {
+        await FirebaseDatabase.instance.ref('routes').set(
+          _routes.map((e) => e.toJson()).toList()
+        );
+      } catch (e) {
+        debugPrint("Error syncing routes to Firebase: $e");
+      }
+    }
+  }
+
+  void _saveLogs() async {
+    if (Firebase.apps.isNotEmpty) {
+      try {
+        await FirebaseDatabase.instance.ref('logs').set(
+          _logs.map((e) => e.toJson()).toList()
+        );
+      } catch (e) {
+        debugPrint("Error syncing logs to Firebase: $e");
+      }
+    }
   }
 
   void _saveAlerts() async {
-    final prefs = await SharedPreferences.getInstance();
-    prefs.setString('ptAdmin_alerts', json.encode(_alerts.map((e) => e.toJson()).toList()));
+    if (Firebase.apps.isNotEmpty) {
+      try {
+        await FirebaseDatabase.instance.ref('alerts').set(
+          _alerts.map((e) => e.toJson()).toList()
+        );
+      } catch (e) {
+        debugPrint("Error syncing alerts to Firebase: $e");
+      }
+    }
+  }
+
+  void _saveUploads() async {
+    if (Firebase.apps.isNotEmpty) {
+      try {
+        await FirebaseDatabase.instance.ref('uploads').set(
+          _uploads.map((e) => e.toJson()).toList()
+        );
+      } catch (e) {
+        debugPrint("Error syncing uploads to Firebase: $e");
+      }
+    }
   }
 
   List<DriverEntry> _getDefaultDrivers() {
@@ -321,22 +405,25 @@ class _AdminDashboardState extends State<AdminDashboard> {
         final data = event.snapshot.value as Map?;
         final Map<String, List<Map<String, dynamic>>> temp = {};
         if (data != null) {
-          data.forEach((busId, msgs) {
+          data.forEach((channelId, msgs) {
             if (msgs is Map) {
-              final List<Map<String, dynamic>> busMsgs = [];
+              final List<Map<String, dynamic>> channelMsgs = [];
               msgs.forEach((k, v) {
                 if (v is Map) {
-                  busMsgs.add({
-                    'id': k,
+                  channelMsgs.add({
+                    'id': k.toString(),
                     'sender': v['sender'] ?? 'unknown',
                     'senderName': v['senderName'] ?? '',
                     'timestamp': v['timestamp'] ?? 0,
                     'msg': v['msg'] ?? '',
+                    'isVoice': v['isVoice'] ?? false,
+                    'voiceDuration': v['voiceDuration'] ?? 0,
+                    'transcript': v['transcript'] ?? '',
                   });
                 }
               });
-              busMsgs.sort((a, b) => a['timestamp'].compareTo(b['timestamp']));
-              temp[busId.toString()] = busMsgs;
+              channelMsgs.sort((a, b) => a['timestamp'].compareTo(b['timestamp']));
+              temp[channelId.toString()] = channelMsgs;
             }
           });
         }
@@ -351,11 +438,43 @@ class _AdminDashboardState extends State<AdminDashboard> {
     }
   }
 
-  void _sendAdminTextMessage(String busId, String text) async {
+  void _listenForStudents() {
+    _studentsSub?.cancel();
+    if (Firebase.apps.isEmpty) return;
+    try {
+      _studentsSub = FirebaseDatabase.instance.ref('students').onValue.listen((event) {
+        final data = event.snapshot.value as Map?;
+        final List<Map<String, dynamic>> temp = [];
+        if (data != null) {
+          data.forEach((studentId, profileVal) {
+            if (profileVal is Map) {
+              temp.add({
+                'id': studentId.toString(),
+                'name': profileVal['name'] ?? 'Student Name',
+                'year': profileVal['year'] ?? '',
+                'department': profileVal['department'] ?? '',
+                'selectedRoute': profileVal['selectedRoute'] ?? '',
+                'savedStop': profileVal['savedStop'] ?? '',
+              });
+            }
+          });
+        }
+        if (mounted) {
+          setState(() {
+            _studentsList = temp;
+          });
+        }
+      });
+    } catch (e) {
+      debugPrint("Error listening to students list: $e");
+    }
+  }
+
+  void _sendAdminTextMessage(String channelId, String text) async {
     if (Firebase.apps.isEmpty) return;
     try {
       final msgId = DateTime.now().millisecondsSinceEpoch.toString();
-      await FirebaseDatabase.instance.ref('voice_messages/$busId/$msgId').set({
+      await FirebaseDatabase.instance.ref('voice_messages/$channelId/$msgId').set({
         'sender': 'admin',
         'senderName': 'College Admin',
         'timestamp': DateTime.now().millisecondsSinceEpoch,
@@ -365,6 +484,113 @@ class _AdminDashboardState extends State<AdminDashboard> {
     } catch (e) {
       _showAppSnackBar("Error sending intercom message: $e");
     }
+  }
+
+  void _startAdminRecordingVoice() {
+    setState(() {
+      _isAdminRecording = true;
+      _adminRecordingDuration = 0;
+    });
+    _adminRecordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (mounted) {
+        setState(() {
+          _adminRecordingDuration++;
+        });
+      }
+    });
+  }
+
+  void _stopAndSendAdminRecordingVoice(String channelId) async {
+    _adminRecordingTimer?.cancel();
+    if (!_isAdminRecording) return;
+    final duration = _adminRecordingDuration == 0 ? 3 : _adminRecordingDuration;
+    setState(() {
+      _isAdminRecording = false;
+    });
+
+    if (Firebase.apps.isEmpty) return;
+
+    final transcripts = [
+      "Admin here, route updates are approved.",
+      "Copy that, please proceed with standard scheduling.",
+      "Alert acknowledged, dispatching alternative transit.",
+      "Acknowledged, please report back on arrival.",
+      "Understood, notify when passengers are boarded.",
+    ];
+    final randomTranscript = transcripts.isNotEmpty ? transcripts[Random().nextInt(transcripts.length)] : '';
+
+    final msgId = DateTime.now().millisecondsSinceEpoch.toString();
+    try {
+      await FirebaseDatabase.instance.ref('voice_messages/$channelId/$msgId').set({
+        'sender': 'admin',
+        'senderName': 'College Admin',
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'msg': '[Voice Message - 0:${duration.toString().padLeft(2, '0')}] "$randomTranscript"',
+        'isVoice': true,
+        'voiceDuration': duration,
+        'transcript': randomTranscript,
+      });
+    } catch (e) {
+      debugPrint("Error sending admin voice message: $e");
+    }
+  }
+
+  void _cancelAdminRecordingVoice() {
+    _adminRecordingTimer?.cancel();
+    setState(() {
+      _isAdminRecording = false;
+      _adminRecordingDuration = 0;
+    });
+    _showAppSnackBar("Recording cancelled.");
+  }
+
+  void _playAdminVoiceMessage(String msgId, String text, int durationSecs) {
+    if (_playingMsgId == msgId) {
+      _playbackTimer?.cancel();
+      _flutterTts.stop();
+      setState(() {
+        _playingMsgId = null;
+      });
+      return;
+    }
+    _playbackTimer?.cancel();
+    _flutterTts.stop();
+
+    String speakText = text;
+    if (text.startsWith('[Voice Message')) {
+      final index = text.indexOf(']');
+      if (index != -1 && index + 1 < text.length) {
+        speakText = text.substring(index + 1).replaceAll('"', '').trim();
+      }
+    }
+    _flutterTts.speak(speakText);
+
+    setState(() {
+      _playingMsgId = msgId;
+      _playbackProgress = 0.0;
+    });
+    
+    final int totalSteps = durationSecs * 10;
+    int currentStep = 0;
+    _playbackTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+      currentStep++;
+      if (currentStep >= totalSteps) {
+        timer.cancel();
+        _flutterTts.stop();
+        if (mounted) {
+          setState(() {
+            _playingMsgId = null;
+            _playbackProgress = 1.0;
+          });
+        }
+      } else {
+        if (mounted) {
+          setState(() {
+            _playbackProgress = currentStep / totalSteps;
+          });
+        }
+      }
+    });
   }
 
   // ─── FIREBASE LIVE LOCATIONS ──────────────────────────────────────
@@ -389,6 +615,37 @@ class _AdminDashboardState extends State<AdminDashboard> {
       });
     } catch (e) {
       debugPrint("Error listening to live locations: $e");
+    }
+  }
+
+  void _listenForDriversAlerts() {
+    _driversAlertsSub?.cancel();
+    if (Firebase.apps.isEmpty) return;
+    try {
+      _driversAlertsSub = FirebaseDatabase.instance.ref('drivers_alerts').onValue.listen((event) {
+        final data = event.snapshot.value as Map?;
+        final Map<String, Map<String, dynamic>> temp = {};
+        if (data != null) {
+          data.forEach((busId, alertsMap) {
+            if (alertsMap is Map) {
+              final Map<String, dynamic> alerts = {};
+              alertsMap.forEach((alertType, alertVal) {
+                if (alertVal is Map) {
+                  alerts[alertType.toString()] = Map<String, dynamic>.from(alertVal);
+                }
+              });
+              temp[busId.toString()] = alerts;
+            }
+          });
+        }
+        if (mounted) {
+          setState(() {
+            _driversAlerts = temp;
+          });
+        }
+      });
+    } catch (e) {
+      debugPrint("Error listening to driver alerts: $e");
     }
   }
 
@@ -440,46 +697,59 @@ class _AdminDashboardState extends State<AdminDashboard> {
     }
   }
 
-  void _listenForBreakdowns() {
-    _breakdownListenerSub?.cancel();
+  void _listenForSafetyAlerts() {
+    _safetyAlertsSub?.cancel();
     if (Firebase.apps.isEmpty) return;
     try {
-      _breakdownListenerSub = FirebaseDatabase.instance.ref('breakdowns').onValue.listen((event) {
-        final dynamic data = event.snapshot.value;
-        final Map<String, Map<String, dynamic>> temp = {};
-        if (data is Map) {
-          data.forEach((key, val) {
-            if (val is Map) {
-              temp[key.toString()] = Map<String, dynamic>.from(val);
+      _safetyAlertsSub = FirebaseDatabase.instance.ref('safety_alerts').onValue.listen((event) {
+        final data = event.snapshot.value as Map?;
+        final Map<String, dynamic> temp = {};
+        if (data != null) {
+          data.forEach((busId, alertsMap) {
+            if (alertsMap is Map) {
+              final Map<String, dynamic> alerts = {};
+              alertsMap.forEach((alertType, alertVal) {
+                if (alertVal is Map) {
+                  alerts[alertType.toString()] = Map<String, dynamic>.from(alertVal);
+                }
+              });
+              temp[busId.toString()] = alerts;
             }
           });
-        } else if (data is List) {
-          for (int i = 0; i < data.length; i++) {
-            final val = data[i];
-            if (val is Map) {
-              temp[i.toString()] = Map<String, dynamic>.from(val);
-            }
-          }
         }
         if (mounted) {
-          bool newAdded = false;
-          temp.forEach((key, val) {
-            if (!_firebaseBreakdowns.containsKey(key)) {
-              newAdded = true;
-            }
-          });
           setState(() {
-            _firebaseBreakdowns = temp;
+            _safetyAlerts = temp;
           });
-          if (newAdded) {
-            _showAppSnackBar("🚨 New Vehicle Breakdown Alert Received!");
-          }
         }
-      }, onError: (e) {
-        debugPrint("Admin breakdowns listen error: $e");
       });
     } catch (e) {
-      debugPrint("Error listening to breakdowns: $e");
+      debugPrint("Error listening to safety alerts: $e");
+    }
+  }
+
+  void _listenForAdminStudents() {
+    _adminStudentsSub?.cancel();
+    if (Firebase.apps.isEmpty) return;
+    try {
+      _adminStudentsSub = FirebaseDatabase.instance.ref('students').onValue.listen((event) {
+        final data = event.snapshot.value as Map?;
+        final Map<String, dynamic> temp = {};
+        if (data != null) {
+          data.forEach((studentId, profileVal) {
+            if (profileVal is Map) {
+              temp[studentId.toString()] = Map<String, dynamic>.from(profileVal);
+            }
+          });
+        }
+        if (mounted) {
+          setState(() {
+            _adminStudentsList = temp;
+          });
+        }
+      });
+    } catch (e) {
+      debugPrint("Error listening to admin students: $e");
     }
   }
 
@@ -857,197 +1127,184 @@ class _AdminDashboardState extends State<AdminDashboard> {
           borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
       builder: (ctx) => StatefulBuilder(
         builder: (c, setSheetState) {
-          final currentType =
-              types.firstWhere((t) => t['value'] == selectedType);
-          return Padding(
-            padding: EdgeInsets.only(
-                bottom: MediaQuery.of(ctx).viewInsets.bottom,
-                top: 20, left: 20, right: 20),
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Center(
-                    child: Container(
-                      width: 40, height: 4,
-                      decoration: BoxDecoration(
-                          color: Colors.grey.shade300,
-                          borderRadius: BorderRadius.circular(2)),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text("Send Notification to Students",
-                      style: TextStyle(
-                          fontWeight: FontWeight.w900,
-                          fontSize: 16,
-                          color: Color(0xFF1E3A8A))),
-                  const Text(
-                      "Broadcast instant alerts to all student portals via Firebase",
-                      style: TextStyle(fontSize: 11, color: Color(0xFF64748B))),
-                  const SizedBox(height: 20),
-
-                  // Type selector grid
-                  const Text("NOTIFICATION TYPE",
-                      style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w800,
-                          color: Color(0xFF64748B),
-                          letterSpacing: 0.5)),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: types.map((t) {
-                      final isSelected = selectedType == t['value'];
-                      return GestureDetector(
-                        onTap: () => setSheetState(() {
-                          selectedType = t['value']!;
-                          titleCtrl.text = _defaultNotifTitle(t['value']!);
-                        }),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: isSelected
-                                ? const Color(0xFF2563EB)
-                                : const Color(0xFFF8FAFC),
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(
-                              color: isSelected
-                                  ? const Color(0xFF2563EB)
-                                  : const Color(0xFFE2E8F0),
-                            ),
-                          ),
-                          child: Text(
-                            t['label']!,
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                              color: isSelected
-                                  ? Colors.white
-                                  : const Color(0xFF0F172A),
-                            ),
-                          ),
+          final currentType = types.firstWhere((t) => t['value'] == selectedType, orElse: () => types[0]);
+          return DraggableScrollableSheet(
+            initialChildSize: 0.75,
+            maxChildSize: 0.95,
+            minChildSize: 0.5,
+            builder: (_, scrollController) => Container(
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+              ),
+              padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, top: 20, left: 20, right: 20),
+              child: SingleChildScrollView(
+                controller: scrollController,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text("Broadcast Alert Notice", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A))),
+                        IconButton(
+                          icon: const Icon(Icons.close, color: Color(0xFF64748B)),
+                          onPressed: () => Navigator.pop(context),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
                         ),
-                      );
-                    }).toList(),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text("TITLE",
-                      style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w800,
-                          color: Color(0xFF64748B),
-                          letterSpacing: 0.5)),
-                  const SizedBox(height: 6),
-                  TextField(
-                    controller: titleCtrl,
-                    decoration: InputDecoration(
-                      hintText: _defaultNotifTitle(selectedType),
-                      border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 12),
+                      ],
                     ),
-                    style: const TextStyle(fontSize: 13),
-                  ),
-                  const SizedBox(height: 12),
-                  const Text("MESSAGE",
-                      style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w800,
-                          color: Color(0xFF64748B),
-                          letterSpacing: 0.5)),
-                  const SizedBox(height: 6),
-                  TextField(
-                    controller: msgCtrl,
-                    maxLines: 3,
-                    decoration: InputDecoration(
-                      hintText: currentType['hint'],
-                      border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 12),
-                    ),
-                    style: const TextStyle(fontSize: 13),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: busCtrl,
-                    decoration: InputDecoration(
-                      labelText: "Affected Bus (or 'all')",
-                      border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 12),
-                    ),
-                    style: const TextStyle(fontSize: 13),
-                  ),
-                  const SizedBox(height: 20),
-                  ElevatedButton.icon(
-                    icon: const Icon(Icons.send_rounded, size: 16),
-                    label: const Text("Send to All Students",
-                        style: TextStyle(fontWeight: FontWeight.bold)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF2563EB),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(30)),
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                    ),
-                    onPressed: () {
-                      final t = selectedType;
-                      final b = busCtrl.text.trim().toUpperCase();
-                      final m = msgCtrl.text.trim();
-                      final title = titleCtrl.text.trim().isNotEmpty
-                          ? titleCtrl.text.trim()
-                          : _defaultNotifTitle(t);
-                      if (m.isEmpty) {
-                        _showAppSnackBar("Please enter notification message.");
-                        return;
-                      }
-                      final timeNow =
-                          "${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}";
-                      final id = DateTime.now().millisecondsSinceEpoch;
-                      setState(() {
-                        final newAlert = AlertEntry(
-                          id: id.toDouble(),
-                          type: t,
-                          bus: b.isNotEmpty ? b : "all",
-                          msg: m,
-                          time: timeNow,
+                    const SizedBox(height: 16),
+
+                    // Type selector grid
+                    const Text("NOTIFICATION TYPE",
+                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800,
+                            color: Color(0xFF64748B), letterSpacing: 0.5)),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: types.map((t) {
+                        final isSelected = selectedType == t['value'];
+                        return GestureDetector(
+                          onTap: () => setSheetState(() {
+                            selectedType = t['value']!;
+                            titleCtrl.text = _defaultNotifTitle(t['value']!);
+                          }),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: isSelected ? const Color(0xFF2563EB) : const Color(0xFFF8FAFC),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(
+                                color: isSelected ? const Color(0xFF2563EB) : const Color(0xFFE2E8F0),
+                              ),
+                            ),
+                            child: Text(
+                              t['label']!,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: isSelected ? Colors.white : const Color(0xFF0F172A),
+                              ),
+                            ),
+                          ),
                         );
-                        _alerts.add(newAlert);
-                        _saveAlerts();
-                      });
-                      if (Firebase.apps.isNotEmpty) {
-                        FirebaseDatabase.instance
-                            .ref('student_notifications/$id')
-                            .set({
-                          'type': t,
-                          'title': title,
-                          'msg': m,
-                          'bus': b.isNotEmpty ? b : "all",
-                          'time': timeNow,
-                          'read': false,
-                          'sentAt': DateTime.now().toIso8601String(),
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Title field
+                    const Text("TITLE",
+                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800,
+                            color: Color(0xFF64748B), letterSpacing: 0.5)),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: titleCtrl,
+                      decoration: InputDecoration(
+                        hintText: _defaultNotifTitle(selectedType),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      ),
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Message field
+                    const Text("MESSAGE",
+                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800,
+                            color: Color(0xFF64748B), letterSpacing: 0.5)),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: msgCtrl,
+                      maxLines: 3,
+                      decoration: InputDecoration(
+                        hintText: currentType['hint'],
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      ),
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Bus field
+                    TextField(
+                      controller: busCtrl,
+                      decoration: InputDecoration(
+                        labelText: "Affected Bus (or 'all')",
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      ),
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                    const SizedBox(height: 20),
+
+                    ElevatedButton.icon(
+                      icon: const Icon(Icons.send_rounded, size: 16),
+                      label: const Text("Send to All Students",
+                          style: TextStyle(fontWeight: FontWeight.bold)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF2563EB),
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                      onPressed: () {
+                        final t = selectedType;
+                        final b = busCtrl.text.trim().toUpperCase();
+                        final m = msgCtrl.text.trim();
+                        final title = titleCtrl.text.trim().isNotEmpty
+                            ? titleCtrl.text.trim()
+                            : _defaultNotifTitle(t);
+                        if (m.isEmpty) {
+                          _showAppSnackBar("Please enter notification message.");
+                          return;
+                        }
+
+                        final timeNow =
+                            "${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}";
+                        final id = DateTime.now().millisecondsSinceEpoch;
+
+                        setState(() {
+                          final newAlert = AlertEntry(
+                            id: id.toDouble(),
+                            type: t,
+                            bus: b.isNotEmpty ? b : "all",
+                            msg: m,
+                            time: timeNow,
+                          );
+                          _alerts.add(newAlert);
+                          _saveAlerts();
                         });
-                        FirebaseDatabase.instance
-                            .ref('routeAlerts/$id')
-                            .set({
-                          'type': t,
-                          'bus': b,
-                          'msg': m,
-                          'time': timeNow
-                        });
-                      }
-                      Navigator.pop(context);
-                      _showAppSnackBar("✅ Notification sent to all students!");
-                    },
-                  ),
-                  const SizedBox(height: 20),
-                ],
+
+                        // Push to Firebase — student portals listen to student_notifications
+                        if (Firebase.apps.isNotEmpty) {
+                          FirebaseDatabase.instance
+                              .ref('student_notifications/$id')
+                              .set({
+                            'type': t,
+                            'title': title,
+                            'msg': m,
+                            'bus': b.isNotEmpty ? b : "all",
+                            'time': timeNow,
+                            'read': false,
+                            'sentAt': DateTime.now().toIso8601String(),
+                          });
+                          // Also write to legacy routeAlerts path
+                          FirebaseDatabase.instance
+                              .ref('routeAlerts/$id')
+                              .set({'type': t, 'bus': b, 'msg': m, 'time': timeNow});
+                        }
+
+                        Navigator.pop(context);
+                        _showAppSnackBar("✅ Notification sent to all students!");
+                      },
+                    ),
+                    const SizedBox(height: 20),
+                  ],
+                ),
               ),
             ),
           );
@@ -1387,12 +1644,65 @@ class _AdminDashboardState extends State<AdminDashboard> {
     int activeBuses = _liveBuses.values.where((v) => v['status'] != 'offline').length;
     int pendingReqs = _requests.where((r) => r['status'] == 'pending').length;
 
+    final List<Widget> alertBanners = [];
+    _driversAlerts.forEach((busId, alerts) {
+      alerts.forEach((type, alert) {
+        if (alert['active'] == true) {
+          alertBanners.add(
+            Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFEF2F2),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFFCA5A5), width: 1.5),
+              ),
+              child: Row(
+                children: [
+                  const _FlashingRedDot(),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          "SAFETY WARNING: BUS $busId",
+                          style: const TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w900,
+                            color: Color(0xFF991B1B),
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          alert['message'] ?? 'Critical safety violation detected.',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF7F1D1D),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+      });
+    });
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _buildBreakdownNotificationBanner(),
+          if (alertBanners.isNotEmpty) ...[
+            ...alertBanners,
+            const SizedBox(height: 8),
+          ],
           Row(
             children: [
               Expanded(child: _buildStatCard("🚌", "$activeBuses online", "Live Active Fleet", const Color(0xFF2563EB))),
@@ -1400,6 +1710,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
               Expanded(child: _buildStatCard("🎫", "$pendingReqs pending", "Pickup Letters Queue", const Color(0xFFEAB308))),
             ],
           ),
+          _buildFlashingSafetyAlertsWidget(),
           const SizedBox(height: 16),
 
           // Suggest stops card
@@ -1825,20 +2136,47 @@ class _AdminDashboardState extends State<AdminDashboard> {
   }
 
   Widget _buildSTTIntercomTab() {
-    // Get list of all registered bus routes from the driver registry
-    final List<String> activeBusIds = _drivers.map((d) => d.bus).toList();
-    
-    // Filter by search query
     final query = _intercomSearchQuery.toLowerCase();
-    final filteredBusIds = activeBusIds.where((bus) => bus.toLowerCase().contains(query)).toList();
+    
+    final List<Map<String, dynamic>> chatList = [];
+    if (_intercomSegment == 0) {
+      for (final d in _drivers) {
+        if (query.isEmpty || d.bus.toLowerCase().contains(query)) {
+          final channelId = "driver_${d.bus}";
+          final msgs = _adminIntercomMessages[channelId] ?? [];
+          final lastMsg = msgs.isNotEmpty ? msgs.last['msg'] : 'No messages yet';
+          chatList.add({
+            'channelId': channelId,
+            'title': "Driver - Bus ${d.bus}",
+            'subtitle': d.driver,
+            'lastMsg': lastMsg,
+            'online': true,
+          });
+        }
+      }
+    } else {
+      for (final s in _studentsList) {
+        if (query.isEmpty || s['name'].toLowerCase().contains(query) || s['id'].toLowerCase().contains(query)) {
+          final channelId = "student_${s['id']}";
+          final msgs = _adminIntercomMessages[channelId] ?? [];
+          final lastMsg = msgs.isNotEmpty ? msgs.last['msg'] : 'No messages yet';
+          chatList.add({
+            'channelId': channelId,
+            'title': s['name'],
+            'subtitle': "${s['year']} • ${s['department']}",
+            'lastMsg': lastMsg,
+            'online': true,
+          });
+        }
+      }
+    }
 
     return Container(
-      color: const Color(0xFFF0F2F5), // WhatsApp web background color
+      color: const Color(0xFFF0F2F5),
       child: Row(
         children: [
-          // Left Column - Chat List
           Container(
-            width: 300,
+            width: 320,
             decoration: const BoxDecoration(
               color: Colors.white,
               border: Border(right: BorderSide(color: Color(0xFFE2E8F0))),
@@ -1846,10 +2184,48 @@ class _AdminDashboardState extends State<AdminDashboard> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // Header & Search
                 Container(
                   color: const Color(0xFFF0F2F5),
-                  padding: const EdgeInsets.all(12),
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: ChoiceChip(
+                          label: const Center(child: Text("Drivers", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold))),
+                          selected: _intercomSegment == 0,
+                          selectedColor: const Color(0xFF2563EB),
+                          labelStyle: TextStyle(color: _intercomSegment == 0 ? Colors.white : Colors.black87),
+                          backgroundColor: Colors.white,
+                          onSelected: (val) {
+                            setState(() {
+                              _intercomSegment = 0;
+                              _selectedIntercomBus = null;
+                            });
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: ChoiceChip(
+                          label: const Center(child: Text("Students", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold))),
+                          selected: _intercomSegment == 1,
+                          selectedColor: const Color(0xFF2563EB),
+                          labelStyle: TextStyle(color: _intercomSegment == 1 ? Colors.white : Colors.black87),
+                          backgroundColor: Colors.white,
+                          onSelected: (val) {
+                            setState(() {
+                              _intercomSegment = 1;
+                              _selectedIntercomBus = null;
+                            });
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  color: const Color(0xFFF0F2F5),
+                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
                   child: Container(
                     decoration: BoxDecoration(
                       color: Colors.white,
@@ -1859,54 +2235,69 @@ class _AdminDashboardState extends State<AdminDashboard> {
                       controller: _intercomSearchCtrl,
                       onChanged: (val) => setState(() => _intercomSearchQuery = val),
                       decoration: const InputDecoration(
-                        hintText: "Search or start new chat",
-                        hintStyle: TextStyle(fontSize: 13, color: Colors.grey),
-                        prefixIcon: Icon(Icons.search, size: 20, color: Colors.grey),
+                        hintText: "Search chat room...",
+                        hintStyle: TextStyle(fontSize: 12, color: Colors.grey),
+                        prefixIcon: Icon(Icons.search, size: 18, color: Colors.grey),
                         border: InputBorder.none,
-                        contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                       ),
-                      style: const TextStyle(fontSize: 14),
+                      style: const TextStyle(fontSize: 13),
                     ),
                   ),
                 ),
                 const Divider(height: 1),
                 
-                // Chat List
                 Expanded(
-                  child: activeBusIds.isEmpty
-                      ? const Center(child: Padding(padding: EdgeInsets.all(16.0), child: Text("No active drivers found.", style: TextStyle(fontSize: 13, color: Colors.grey))))
+                  child: chatList.isEmpty
+                      ? const Center(child: Padding(padding: EdgeInsets.all(16.0), child: Text("No channels found.", style: TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.bold))))
                       : ListView.separated(
-                          itemCount: filteredBusIds.length,
+                          itemCount: chatList.length,
                           separatorBuilder: (ctx, idx) => const Divider(height: 1, indent: 64),
                           itemBuilder: (ctx, idx) {
-                            final bus = filteredBusIds[idx];
-                            final msgs = _adminIntercomMessages[bus] ?? [];
-                            final lastMsg = msgs.isNotEmpty ? msgs.last['msg'] : '';
-                            
-                            final isSelected = _selectedIntercomBus == bus;
+                            final chat = chatList[idx];
+                            final isSelected = _selectedIntercomBus == chat['channelId'];
                             
                             return ListTile(
                               tileColor: isSelected ? const Color(0xFFF0F2F5) : Colors.white,
-                              leading: const CircleAvatar(
-                                backgroundColor: Color(0xFFDFE5E7),
-                                child: Icon(Icons.person, color: Colors.white),
+                              leading: CircleAvatar(
+                                backgroundColor: const Color(0xFFEFF6FF),
+                                child: Text(_intercomSegment == 0 ? "🚌" : "🎓", style: const TextStyle(fontSize: 18)),
                               ),
                               title: Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Text("Route $bus", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.black87)),
-                                  const Icon(Icons.circle, size: 10, color: Color(0xFF25D366)),
+                                  Expanded(
+                                    child: Text(
+                                      chat['title'],
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.black87),
+                                    ),
+                                  ),
+                                  const Icon(Icons.circle, size: 8, color: Color(0xFF25D366)),
                                 ],
                               ),
-                              subtitle: Text(
-                                lastMsg,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontSize: 13, color: Colors.grey),
+                              subtitle: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    chat['subtitle'],
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 9.5, color: Colors.grey, fontWeight: FontWeight.bold),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    chat['lastMsg'],
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 11, color: Colors.blueGrey),
+                                  ),
+                                ],
                               ),
                               onTap: () {
                                 setState(() {
-                                  _selectedIntercomBus = bus;
+                                  _selectedIntercomBus = chat['channelId'];
                                 });
                               },
                             );
@@ -1917,55 +2308,48 @@ class _AdminDashboardState extends State<AdminDashboard> {
             ),
           ),
 
-          // Right Column - Chat Window
           Expanded(
             child: _selectedIntercomBus == null
                 ? Container(
                     color: const Color(0xFFF0F2F5),
-                    child: Center(
+                    child: const Center(
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
-                        children: const [
-                          Icon(Icons.chat_bubble_outline, size: 64, color: Colors.black26),
+                        children: [
+                          Icon(Icons.mark_chat_unread_outlined, size: 64, color: Colors.black26),
                           SizedBox(height: 16),
-                          Text("Select a driver to start messaging", style: TextStyle(fontSize: 16, color: Colors.black54)),
+                          Text("Select a channel to view transcript & record voice alerts", style: TextStyle(fontSize: 14, color: Colors.black54, fontWeight: FontWeight.bold)),
                         ],
                       ),
                     ),
                   )
                 : Column(
                     children: [
-                      // Chat Header
                       Container(
                         color: const Color(0xFFF0F2F5),
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                         child: Row(
                           children: [
-                            const CircleAvatar(
-                              backgroundColor: Color(0xFFDFE5E7),
-                              child: Icon(Icons.person, color: Colors.white),
+                            CircleAvatar(
+                              backgroundColor: const Color(0xFFEFF6FF),
+                              child: Text(_intercomSegment == 0 ? "🚌" : "🎓", style: const TextStyle(fontSize: 18)),
                             ),
                             const SizedBox(width: 12),
                             Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text("Route $_selectedIntercomBus", style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                                Text(t('admin_online'), style: TextStyle(fontSize: 12, color: Colors.grey)),
+                                Text(_selectedIntercomBus!.replaceAll('_', ' ').toUpperCase(), style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                                Text(t('admin_online'), style: const TextStyle(fontSize: 11, color: Colors.grey, fontWeight: FontWeight.bold)),
                               ],
                             ),
                           ],
                         ),
                       ),
                       
-                      // Chat Messages
                       Expanded(
                         child: Container(
                           decoration: const BoxDecoration(
-                            image: DecorationImage(
-                              image: NetworkImage("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png"),
-                              fit: BoxFit.cover,
-                              opacity: 0.5,
-                            ),
+                            color: Color(0xFFE5DDD5),
                           ),
                           child: ListView.builder(
                             padding: const EdgeInsets.all(16),
@@ -1973,11 +2357,14 @@ class _AdminDashboardState extends State<AdminDashboard> {
                             itemBuilder: (ctx, idx) {
                               final m = _adminIntercomMessages[_selectedIntercomBus!]![idx];
                               final isMe = m['sender'] == 'admin';
+                              final isVoice = m['isVoice'] == true;
+                              
                               return Align(
                                 alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
                                 child: Container(
                                   margin: const EdgeInsets.symmetric(vertical: 4),
-                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                  width: isVoice ? 230 : null,
                                   decoration: BoxDecoration(
                                     color: isMe ? const Color(0xFFDCF8C6) : Colors.white,
                                     borderRadius: BorderRadius.circular(12).copyWith(
@@ -1986,7 +2373,92 @@ class _AdminDashboardState extends State<AdminDashboard> {
                                     ),
                                     boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 1, offset: Offset(0, 1))],
                                   ),
-                                  child: Text("${m['msg']}", style: const TextStyle(fontSize: 14, color: Colors.black87)),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        isMe ? "You" : (m['senderName'] ?? "Sender"),
+                                        style: TextStyle(
+                                          fontSize: 8.5,
+                                          fontWeight: FontWeight.bold,
+                                          color: isMe ? const Color(0xFF15803D) : const Color(0xFF64748B),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      if (isVoice) ...[
+                                        Row(
+                                          children: [
+                                            IconButton(
+                                              visualDensity: VisualDensity.compact,
+                                              padding: EdgeInsets.zero,
+                                              icon: Icon(
+                                                _playingMsgId == m['id']
+                                                    ? Icons.pause_circle_filled_rounded
+                                                    : Icons.play_circle_filled_rounded,
+                                                color: isMe ? const Color(0xFF15803D) : const Color(0xFF1E293B),
+                                                size: 26,
+                                              ),
+                                              onPressed: () {
+                                                 _playAdminVoiceMessage(m['id'], m['msg'] ?? '', m['voiceDuration'] ?? 3);
+                                               },
+                                            ),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                                children: [
+                                                  ClipRRect(
+                                                    borderRadius: BorderRadius.circular(2),
+                                                    child: LinearProgressIndicator(
+                                                      value: _playingMsgId == m['id'] ? _playbackProgress : 0.0,
+                                                      backgroundColor: isMe ? const Color(0xFFC5E1A5) : const Color(0xFFE2E8F0),
+                                                      valueColor: AlwaysStoppedAnimation<Color>(
+                                                        isMe ? const Color(0xFF33691E) : const Color(0xFF64748B),
+                                                      ),
+                                                      minHeight: 3,
+                                                    ),
+                                                  ),
+                                                  const SizedBox(height: 2),
+                                                  Row(
+                                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                                    children: [
+                                                      Text(
+                                                        "0:${(m['voiceDuration'] as int? ?? 3).toString().padLeft(2, '0')}",
+                                                        style: const TextStyle(fontSize: 8, color: Color(0xFF64748B), fontWeight: FontWeight.bold),
+                                                      ),
+                                                      const Icon(Icons.volume_up, size: 8, color: Color(0xFF64748B)),
+                                                    ],
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                                          decoration: BoxDecoration(
+                                            color: isMe ? const Color(0xFFD4E157).withValues(alpha: 0.3) : const Color(0xFFE2E8F0).withValues(alpha: 0.5),
+                                            borderRadius: BorderRadius.circular(6),
+                                          ),
+                                          child: Text(
+                                            "Transcript: \"${m['transcript'] ?? ''}\"",
+                                            style: const TextStyle(
+                                              fontSize: 9.5,
+                                              fontStyle: FontStyle.italic,
+                                              color: Color(0xFF374151),
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                          ),
+                                        ),
+                                      ] else ...[
+                                        Text(
+                                          "${m['msg']}",
+                                          style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
                                 ),
                               );
                             },
@@ -1994,55 +2466,107 @@ class _AdminDashboardState extends State<AdminDashboard> {
                         ),
                       ),
                       
-                      // Chat Input
                       Container(
                         color: const Color(0xFFF0F2F5),
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.emoji_emotions_outlined, color: Colors.grey, size: 26),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Container(
+                        child: _isAdminRecording
+                            ? Container(
+                                padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
                                 decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(24),
+                                  color: const Color(0xFFFEF2F2),
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(color: const Color(0xFFFCA5A5)),
                                 ),
-                                child: TextField(
-                                  controller: _adminChatInputCtrl,
-                                  decoration: const InputDecoration(
-                                    hintText: "Type a message",
-                                    hintStyle: TextStyle(fontSize: 14, color: Colors.grey),
-                                    contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                                    border: InputBorder.none,
+                                child: Row(
+                                  children: [
+                                    const _FlashingRedDot(),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        "Recording alert... 0:${_adminRecordingDuration.toString().padLeft(2, '0')}",
+                                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF991B1B)),
+                                      ),
+                                    ),
+                                    IconButton(
+                                      visualDensity: VisualDensity.compact,
+                                      padding: EdgeInsets.zero,
+                                      icon: const Icon(Icons.cancel, color: Color(0xFFEF4444), size: 22),
+                                      onPressed: _cancelAdminRecordingVoice,
+                                    ),
+                                    IconButton(
+                                      visualDensity: VisualDensity.compact,
+                                      padding: EdgeInsets.zero,
+                                      icon: const Icon(Icons.check_circle, color: Color(0xFF16A34A), size: 22),
+                                      onPressed: () {
+                                        _stopAndSendAdminRecordingVoice(_selectedIntercomBus!);
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              )
+                            : Row(
+                                children: [
+                                  const Icon(Icons.emoji_emotions_outlined, color: Colors.grey, size: 26),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        color: Colors.white,
+                                        borderRadius: BorderRadius.circular(24),
+                                      ),
+                                      child: TextField(
+                                        controller: _adminChatInputCtrl,
+                                        decoration: const InputDecoration(
+                                          hintText: "Type a message or hold mic...",
+                                          hintStyle: TextStyle(fontSize: 12, color: Colors.grey),
+                                          contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                                          border: InputBorder.none,
+                                        ),
+                                        style: const TextStyle(fontSize: 13),
+                                        onSubmitted: (val) {
+                                          if (val.trim().isNotEmpty) {
+                                            _sendAdminTextMessage(_selectedIntercomBus!, val.trim());
+                                            _adminChatInputCtrl.clear();
+                                          }
+                                        },
+                                      ),
+                                    ),
                                   ),
-                                  style: const TextStyle(fontSize: 14),
-                                  onSubmitted: (val) {
-                                    if (val.trim().isNotEmpty) {
-                                      _sendAdminTextMessage(_selectedIntercomBus!, val.trim());
-                                      _adminChatInputCtrl.clear();
-                                    }
-                                  },
-                                ),
+                                  const SizedBox(width: 8),
+                                  InkWell(
+                                    onTap: () {
+                                      final val = _adminChatInputCtrl.text;
+                                      if (val.trim().isNotEmpty) {
+                                        _sendAdminTextMessage(_selectedIntercomBus!, val.trim());
+                                        _adminChatInputCtrl.clear();
+                                      }
+                                    },
+                                    child: const CircleAvatar(
+                                      backgroundColor: Color(0xFF00A884),
+                                      radius: 18,
+                                      child: Icon(Icons.send, color: Colors.white, size: 16),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  GestureDetector(
+                                    onLongPressStart: (_) {
+                                      _startAdminRecordingVoice();
+                                      _showAppSnackBar("Recording admin voice broadcast...");
+                                    },
+                                    onLongPressEnd: (_) {
+                                      _stopAndSendAdminRecordingVoice(_selectedIntercomBus!);
+                                    },
+                                    child: Container(
+                                      padding: const EdgeInsets.all(8),
+                                      decoration: const BoxDecoration(
+                                        color: Color(0xFFEFF6FF),
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: const Icon(Icons.mic, color: Color(0xFF2563EB), size: 18),
+                                    ),
+                                  ),
+                                ],
                               ),
-                            ),
-                            const SizedBox(width: 12),
-                            InkWell(
-                              onTap: () {
-                                final val = _adminChatInputCtrl.text;
-                                if (val.trim().isNotEmpty && _selectedIntercomBus != null) {
-                                  _sendAdminTextMessage(_selectedIntercomBus!, val.trim());
-                                  _adminChatInputCtrl.clear();
-                                }
-                              },
-                              child: const CircleAvatar(
-                                backgroundColor: Color(0xFF00A884),
-                                radius: 20,
-                                child: Icon(Icons.send, color: Colors.white, size: 20),
-                              ),
-                            ),
-                          ],
-                        ),
                       ),
                     ],
                   ),
@@ -2272,7 +2796,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                         Text(d.driver, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13, color: Color(0xFF0F172A))),
                         const SizedBox(height: 2),
                         Text("Bus: ${d.bus} • Route: ${routeLabelsConfig[d.route] ?? d.route}", style: const TextStyle(fontSize: 10, color: Color(0xFF64748B), fontWeight: FontWeight.bold)),
-                        Text("Category: ${d.type.toUpperCase()} • Pass: ${d.password ?? 'None'}", style: const TextStyle(fontSize: 9.5, color: Color(0xFF2563EB), fontWeight: FontWeight.bold)),
+                        Text("Category: ${d.type.toUpperCase()} • Pass: ${d.password.isEmpty ? 'None' : d.password}", style: const TextStyle(fontSize: 9.5, color: Color(0xFF2563EB), fontWeight: FontWeight.bold)),
                       ],
                     ),
                   ),
@@ -2437,6 +2961,114 @@ class _AdminDashboardState extends State<AdminDashboard> {
         foregroundColor: Colors.white,
         onPressed: _openRouteAddBottomSheet,
         child: const Icon(Icons.add),
+      ),
+    );
+  }
+
+  Widget _buildFlashingSafetyAlertsWidget() {
+    List<Widget> alertTiles = [];
+    _safetyAlerts.forEach((busId, alertsMap) {
+      if (alertsMap is Map) {
+        alertsMap.forEach((alertType, alertData) {
+          if (alertData is Map && alertData['active'] == true) {
+            final msg = alertData['message'] ?? "";
+            alertTiles.add(
+              Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEF2F2),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFEF4444), width: 1.5),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.warning_amber_rounded, color: Color(0xFFEF4444), size: 24),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            "CRITICAL SAFETY WARNING: BUS $busId",
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w900,
+                              fontSize: 10,
+                              color: Color(0xFF991B1B),
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            msg,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Color(0xFF7F1D1D),
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+        });
+      }
+    });
+
+    if (alertTiles.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: alertTiles,
+    );
+  }
+}
+
+class _FlashingRedDot extends StatefulWidget {
+  const _FlashingRedDot();
+
+  @override
+  State<_FlashingRedDot> createState() => _FlashingRedDotState();
+}
+
+class _FlashingRedDotState extends State<_FlashingRedDot> {
+  bool _visible = true;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+      if (mounted) {
+        setState(() {
+          _visible = !_visible;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedOpacity(
+      opacity: _visible ? 1.0 : 0.2,
+      duration: const Duration(milliseconds: 200),
+      child: Container(
+        width: 10,
+        height: 10,
+        decoration: const BoxDecoration(
+          color: Colors.red,
+          shape: BoxShape.circle,
+        ),
       ),
     );
   }
