@@ -85,6 +85,8 @@ class _MainShellState extends State<MainShell> {
       _studentRollNo = "";
       _isLoggedIn = false;
     });
+    
+    widget.onSwitchRole();
   }
 
   @override
