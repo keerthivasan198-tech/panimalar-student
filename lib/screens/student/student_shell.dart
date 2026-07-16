@@ -90,9 +90,12 @@ class _MainShellState extends State<MainShell> {
   @override
   Widget build(BuildContext context) {
     if (!_isLoggedIn) {
-      return StudentLoginScreen(
+      return StudentDashboard(
+        studentRollNo: "",
+        isFirstTimeSignup: true,
+        onFirstTimeSave: _login,
+        onLogout: _logout,
         currentLang: widget.currentLang,
-        onLogin: _login,
         onLanguageChanged: widget.onLanguageChanged,
         onSwitchRole: widget.onSwitchRole,
       );
@@ -1152,7 +1155,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   void _saveProfile(String name, String year, String dept,
       {String busNo = '', String boardingStop = '', String rollNo = ''}) async {
       
-    final actualRollNo = widget.isFirstTimeSignup ? rollNo : widget.studentRollNo;
+    final actualRollNo = rollNo.isNotEmpty ? rollNo : widget.studentRollNo;
     if (actualRollNo.trim().isEmpty) {
       _showSnackBar("Roll No is required");
       return;
@@ -1199,6 +1202,10 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       }
       _isEditingProfile = false;
     });
+    
+    if (widget.isFirstTimeSignup && widget.onFirstTimeSave != null) {
+      widget.onFirstTimeSave!(actualRollNo);
+    }
     
     _showSnackBar("✅ Profile saved successfully");
   }
@@ -3736,7 +3743,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 const SizedBox(height: 16),
 
                 if (_isEditingProfile) ...[
-                  if (_isEditingProfile && widget.isFirstTimeSignup) ...[
+                  if (_isEditingProfile) ...[
                     const Text(
                       "ROLL NO",
                       style: TextStyle(
