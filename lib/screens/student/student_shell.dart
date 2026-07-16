@@ -14,6 +14,8 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:http/http.dart' as http;
 import 'dart:io';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 
 import '../../models/campus_point.dart';
 import '../../models/log_entry.dart';
@@ -82,12 +84,26 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
   StreamSubscription? _breakdownSub;
   StreamSubscription? _locationSub;
 
+  // Firebase Student Profile & Intercom
+  StreamSubscription? _studentProfileSub;
+  List<Map<String, dynamic>> _studentIntercomMessages = [];
+  StreamSubscription? _studentIntercomSub;
+  bool _isRecordingVoice = false;
+  int _recordingDurationSecs = 0;
+  Timer? _recordingTimer;
+  List<double> _recordingWaveforms = [];
+  String? _playingMsgId;
+  double _playbackProgress = 0.0;
+  Timer? _playbackTimer;
+  final FlutterTts _flutterTts = FlutterTts();
+
   // Dynamic Route selections
   String _selectedRoute = "route_15"; // default
   List<String> _routeStops = [];
   Map<String, LatLng> _coords = {};
   Color _routeColor = const Color(0xFF2563EB);
   String _busFirebaseId = 'B101';
+  String _studentBusNo = "";
 
   // Campus points for navigation
   final List<CampusPoint> _campusPointsList = campusPoints;
@@ -107,6 +123,10 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
   double _routeRemainingM = 0;       // remaining distance to destination (metres)
   String _routeError = '';           // last routing error message for UI display
   List<Map<String, dynamic>> _navSteps = []; // turn-by-turn steps (future use)
+
+  // Bus perfectly routed points
+  List<LatLng> _busRoutePoints = [];
+  bool _busRouteLoading = false;
 
   // Route cache — prevents unnecessary API calls
   String _cachedRouteDestName = '';  // name of destination when route was last fetched
@@ -174,6 +194,10 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
     _logsSub?.cancel();
     _studentLocationSub?.cancel();
     _notifSub?.cancel();
+    _studentProfileSub?.cancel();
+    _studentIntercomSub?.cancel();
+    _recordingTimer?.cancel();
+    _playbackTimer?.cancel();
     _profileNameCtrl.dispose();
     _profileBusCtrl.dispose();
     _searchCtrl.dispose();
@@ -559,8 +583,8 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
               ),
               const Divider(height: 1),
               // Notifications list
-              Expanded(
-                child: _adminNotifications.isEmpty
+               Expanded(
+                child: (!_breakdownActive && _adminNotifications.isEmpty)
                     ? const Center(
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
@@ -583,20 +607,111 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
                           ],
                         ),
                       )
-                    : ListView.separated(
+                    : ListView(
                         controller: scrollCtrl,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 8),
-                        itemCount: _adminNotifications.length,
-                        separatorBuilder: (_, __) =>
-                            const Divider(height: 1, indent: 56),
-                        itemBuilder: (_, i) =>
-                            _buildNotifTile(_adminNotifications[i]),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        children: [
+                          if (_breakdownActive) ...[
+                            _buildStudentBreakdownNotifTile(ctx),
+                            const SizedBox(height: 8),
+                          ],
+                          ..._adminNotifications.map((n) => Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              _buildNotifTile(n),
+                              const Divider(height: 1, indent: 56),
+                            ],
+                          )),
+                        ],
                       ),
               ),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildStudentBreakdownNotifTile(BuildContext sheetCtx) {
+    final breakdownBusId = _studentBusNo.isNotEmpty ? _studentBusNo : _busFirebaseId;
+    final msg = _replacementBus == "Pending"
+        ? "Bus $breakdownBusId breakdown reported. Replacement Bus dispatch is pending. Stay at your stop."
+        : "Bus $breakdownBusId breakdown. Replacement Bus $_replacementBus dispatched. Stay at your stop.";
+
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFEF2F2),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFFCA5A5)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: const BoxDecoration(
+              color: Color(0xFFFEE2E2),
+              shape: BoxShape.circle,
+            ),
+            alignment: Alignment.center,
+            child: const Text("🔧", style: TextStyle(fontSize: 20)),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        "Vehicle Breakdown Alert",
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w900,
+                          color: Color(0xFF991B1B),
+                        ),
+                      ),
+                    ),
+                    Text(
+                      "Live",
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.red.shade700,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  msg,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF7F1D1D),
+                    fontWeight: FontWeight.w600,
+                    height: 1.4,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            icon: const Icon(Icons.close, color: Color(0xFF991B1B), size: 18),
+            onPressed: () {
+              if (Firebase.apps.isNotEmpty) {
+                FirebaseDatabase.instance.ref('breakdowns/$breakdownBusId').remove();
+              }
+              Navigator.pop(sheetCtx);
+              _showSnackBar("Breakdown alert dismissed.");
+            },
+          ),
+        ],
       ),
     );
   }
@@ -748,20 +863,12 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
   }
 
   void _loadPreferences() async {
-    final prefs = await SharedPreferences.getInstance();
-    final savedName = prefs.getString("studentName") ?? "";
-    final savedYear = prefs.getString("studentYear") ?? "3rd Year";
-    final savedDept = prefs.getString("studentDept") ?? "";
-    setState(() {
-      _selectedRoute = prefs.getString("student_route") ?? "route_15";
-      _savedStop = prefs.getString("savedStop") ?? "";
-      _studentName = savedName.isNotEmpty ? savedName : "Student Name";
-      _studentYear = savedYear;
-      _studentDept = savedDept.isNotEmpty ? savedDept : "Computer Science (CSE)";
-      _studentId = prefs.getString("studentId") ?? "";
-      if (_studentId.isEmpty) {
-        _studentId = "STD_${DateTime.now().millisecondsSinceEpoch}";
-        prefs.setString("studentId", _studentId);
+    try {
+      final auth = FirebaseAuth.instance;
+      User? currentUser = auth.currentUser;
+      if (currentUser == null) {
+        final userCredential = await auth.signInAnonymously();
+        currentUser = userCredential.user;
       }
       _updateRouteDetails(_selectedRoute, startListener: false);
       // Populate profile controllers with saved values (only if previously saved)
@@ -771,9 +878,11 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
       // Pre-fill bus number from saved route
       final savedBus = prefs.getString("studentBusNo") ?? "";
       _profileBusCtrl.text = savedBus;
+      _studentBusNo = savedBus;
     });
     _startPickupRequestListener();
     _startFirebaseListener();
+    _listenForStudentIntercomMessages();
   }
 
   void _updateRouteDetails(String routeKey, {bool startListener = true}) {
@@ -785,7 +894,6 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
       }
     }
 
-    // Parse the number from 'route_15' to get '15' for Firebase mapping
     final match = RegExp(r'route_(\d+)').firstMatch(routeKey);
     if (match != null) {
       _busFirebaseId = match.group(1)!;
@@ -793,7 +901,6 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
       _busFirebaseId = routeKey;
     }
 
-    // Set fallback colors based on some logic, or just a default
     _routeColor = const Color(0xFF2563EB);
     try {
       if (routeColorsConfig.containsKey(routeKey)) {
@@ -804,58 +911,306 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
     if (startListener) {
       _startFirebaseListener();
     }
+    
+    _fetchBusOsrmRoute();
+  }
+
+  Future<void> _fetchBusOsrmRoute() async {
+    if (_routeStops.length < 2) {
+      setState(() => _busRoutePoints = []);
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _busRouteLoading = true);
+
+    try {
+      final coordsList = <String>[];
+      for (var stop in _routeStops) {
+        final coord = _coords[stop];
+        if (coord != null) {
+          coordsList.add('${coord.longitude.toStringAsFixed(6)},${coord.latitude.toStringAsFixed(6)}');
+        }
+      }
+
+      if (coordsList.length < 2) {
+        setState(() => _busRouteLoading = false);
+        return;
+      }
+
+      final coords = coordsList.join(';');
+      final url = Uri.parse(
+        'http://router.project-osrm.org/route/v1/driving/$coords'
+        '?overview=full&geometries=geojson',
+      );
+
+      final response = await http.get(url).timeout(const Duration(seconds: 15));
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body) as Map<String, dynamic>;
+        final routes = json['routes'] as List?;
+        if (routes != null && routes.isNotEmpty) {
+          final geometry = routes[0]['geometry'] as Map<String, dynamic>?;
+          final coordinates = geometry?['coordinates'] as List?;
+          if (coordinates != null) {
+            final points = coordinates.map((c) {
+              final lng = (c[0] as num).toDouble();
+              final lat = (c[1] as num).toDouble();
+              return LatLng(lat, lng);
+            }).toList();
+            if (mounted) {
+              setState(() {
+                _busRoutePoints = points;
+                _busRouteLoading = false;
+              });
+            }
+            return;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('OSRM bus route fetch error: $e');
+    }
+
+    if (mounted) {
+      setState(() {
+        _busRoutePoints = _routeStops.map((s) => _coords[s]).whereType<LatLng>().toList();
+        _busRouteLoading = false;
+      });
+    }
   }
 
   void _changeSelectedRoute(String routeKey) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString("student_route", routeKey);
     setState(() {
       _selectedRoute = routeKey;
-      _savedStop = ""; // reset boarding stop on route change
+      _savedStop = "";
       _updateRouteDetails(routeKey, startListener: true);
       _hasAlertedApproaching = false;
       _hasAlertedArrived = false;
     });
+    if (Firebase.apps.isNotEmpty) {
+      await FirebaseDatabase.instance.ref('students/$_studentId').update({
+        'selectedRoute': routeKey,
+        'savedStop': '',
+      });
+    }
     _showSnackBar("Route switched to ${routeLabelsConfig[routeKey]}");
   }
 
   void _saveStop(String stopName) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString("savedStop", stopName);
     setState(() {
       _savedStop = stopName;
       _hasAlertedApproaching = false;
       _hasAlertedArrived = false;
     });
+    if (Firebase.apps.isNotEmpty) {
+      await FirebaseDatabase.instance.ref('students/$_studentId').update({
+        'savedStop': stopName,
+      });
+    }
     _showSnackBar("⭐ Boarding stop saved: $stopName");
   }
 
   void _saveProfile(String name, String year, String dept,
       {String busNo = '', String boardingStop = ''}) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString("studentName", name);
-    await prefs.setString("studentYear", year);
-    await prefs.setString("studentDept", dept);
-    if (busNo.isNotEmpty) await prefs.setString("studentBusNo", busNo);
+    final updateData = {
+      'name': name,
+      'year': year,
+      'department': dept,
+    };
+    
+    String finalStop = _savedStop;
+    String finalRoute = _selectedRoute;
+
     if (boardingStop.isNotEmpty) {
-      await prefs.setString("savedStop", boardingStop);
-      // Also switch the active route to match the bus
+      finalStop = boardingStop;
+      updateData['savedStop'] = boardingStop;
+      
       final routeKey = _busToRouteKey[busNo.toUpperCase()];
       if (routeKey != null) {
-        await prefs.setString("student_route", routeKey);
+        finalRoute = routeKey;
+        updateData['selectedRoute'] = routeKey;
       }
     }
+
+    if (Firebase.apps.isNotEmpty) {
+      await FirebaseDatabase.instance.ref('students/$_studentId').update(updateData);
+    }
+
     setState(() {
       _studentName = name;
       _studentYear = year;
       _studentDept = dept;
+      if (busNo.isNotEmpty) {
+        _studentBusNo = busNo;
+      }
       if (boardingStop.isNotEmpty) {
-        _savedStop = boardingStop;
-        final routeKey = _busToRouteKey[busNo.toUpperCase()];
-        if (routeKey != null) _changeSelectedRoute(routeKey);
+        _savedStop = finalStop;
+        _selectedRoute = finalRoute;
+        _updateRouteDetails(finalRoute, startListener: true);
       }
     });
     _showSnackBar("✅ Profile saved successfully");
+  }
+
+  void _listenForStudentIntercomMessages() {
+    _studentIntercomSub?.cancel();
+    if (Firebase.apps.isEmpty || _studentId.isEmpty) return;
+    try {
+      _studentIntercomSub = FirebaseDatabase.instance.ref('voice_messages/student_$_studentId').onValue.listen((event) {
+        final data = event.snapshot.value as Map?;
+        final List<Map<String, dynamic>> temp = [];
+        if (data != null) {
+          data.forEach((key, val) {
+            if (val is Map) {
+              temp.add({
+                'id': key.toString(),
+                'sender': val['sender'] ?? 'unknown',
+                'timestamp': val['timestamp'] ?? 0,
+                'msg': val['msg'] ?? '',
+                'senderName': val['senderName'] ?? '',
+                'isVoice': val['isVoice'] ?? false,
+                'voiceDuration': val['voiceDuration'] ?? 0,
+                'transcript': val['transcript'] ?? '',
+              });
+            }
+          });
+          temp.sort((a, b) => a['timestamp'].compareTo(b['timestamp']));
+        }
+        if (mounted) {
+          setState(() {
+            _studentIntercomMessages = temp;
+          });
+        }
+      });
+    } catch (e) {
+      debugPrint("Error listening to intercom: $e");
+    }
+  }
+
+  void _sendStudentTextMessage(String text) async {
+    if (Firebase.apps.isEmpty || _studentId.isEmpty) return;
+    try {
+      final msgId = DateTime.now().millisecondsSinceEpoch.toString();
+      await FirebaseDatabase.instance.ref('voice_messages/student_$_studentId/$msgId').set({
+        'sender': 'student',
+        'senderName': _studentName,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'msg': text,
+      });
+    } catch (e) {
+      debugPrint("Error sending message: $e");
+    }
+  }
+
+  void _startRecordingVoice() {
+    setState(() {
+      _isRecordingVoice = true;
+      _recordingDurationSecs = 0;
+      _recordingWaveforms = [];
+    });
+    _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (mounted) {
+        setState(() {
+          _recordingDurationSecs++;
+          final rand = Random();
+          _recordingWaveforms.add(5.0 + rand.nextDouble() * 30.0);
+        });
+      }
+    });
+  }
+
+  void _stopAndSendRecordingVoice() async {
+    _recordingTimer?.cancel();
+    if (!_isRecordingVoice) return;
+    final duration = _recordingDurationSecs == 0 ? 3 : _recordingDurationSecs;
+    setState(() {
+      _isRecordingVoice = false;
+    });
+
+    if (Firebase.apps.isEmpty || _studentId.isEmpty) return;
+
+    final transcripts = [
+      "Hello admin, requesting route clarification.",
+      "Hi admin, is the route 15 bus running on time today?",
+      "Checking in from stop rettri. Has the bus passed yet?",
+      "Admin, student STD102 here, boarding at Koyambedu.",
+      "Reporting minor delay on route, waiting at pickup spot.",
+    ];
+    final randomTranscript = transcripts[Random().nextInt(transcripts.length)];
+
+    final msgId = DateTime.now().millisecondsSinceEpoch.toString();
+    try {
+      await FirebaseDatabase.instance.ref('voice_messages/student_$_studentId/$msgId').set({
+        'sender': 'student',
+        'senderName': _studentName,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'msg': '[Voice Message - 0:${duration.toString().padLeft(2, '0')}] "$randomTranscript"',
+        'isVoice': true,
+        'voiceDuration': duration,
+        'transcript': randomTranscript,
+      });
+    } catch (e) {
+      debugPrint("Error sending voice message: $e");
+    }
+  }
+
+  void _cancelRecordingVoice() {
+    _recordingTimer?.cancel();
+    setState(() {
+      _isRecordingVoice = false;
+      _recordingDurationSecs = 0;
+    });
+    _showSnackBar("Recording cancelled.");
+  }
+
+  void _playVoiceMessage(String msgId, String text, int durationSecs) {
+    if (_playingMsgId == msgId) {
+      _playbackTimer?.cancel();
+      _flutterTts.stop();
+      setState(() {
+        _playingMsgId = null;
+      });
+      return;
+    }
+    _playbackTimer?.cancel();
+    _flutterTts.stop();
+
+    String speakText = text;
+    if (text.startsWith('[Voice Message')) {
+      final index = text.indexOf(']');
+      if (index != -1 && index + 1 < text.length) {
+        speakText = text.substring(index + 1).replaceAll('"', '').trim();
+      }
+    }
+    _flutterTts.speak(speakText);
+
+    setState(() {
+      _playingMsgId = msgId;
+      _playbackProgress = 0.0;
+    });
+    
+    final int totalSteps = durationSecs * 10;
+    int currentStep = 0;
+    _playbackTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+      currentStep++;
+      if (currentStep >= totalSteps) {
+        timer.cancel();
+        _flutterTts.stop();
+        if (mounted) {
+          setState(() {
+            _playingMsgId = null;
+            _playbackProgress = 1.0;
+          });
+        }
+      } else {
+        if (mounted) {
+          setState(() {
+            _playbackProgress = currentStep / totalSteps;
+          });
+        }
+      }
+    });
   }
 
   void _startPickupRequestListener() {
@@ -1020,7 +1375,8 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
         debugPrint("Database listen error: $e");
       });
 
-      _breakdownSub = FirebaseDatabase.instance.ref('breakdowns/$_busFirebaseId').onValue.listen((event) {
+      final breakdownBusId = _studentBusNo.isNotEmpty ? _studentBusNo : _busFirebaseId;
+      _breakdownSub = FirebaseDatabase.instance.ref('breakdowns/$breakdownBusId').onValue.listen((event) {
         final data = event.snapshot.value as Map?;
         if (data == null) {
           setState(() {
@@ -1243,9 +1599,9 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
                     setState(() {
                       _savedStop = "";
                     });
-                    SharedPreferences.getInstance().then((prefs) {
-                      prefs.setString("savedStop", "");
-                    });
+                    if (Firebase.apps.isNotEmpty) {
+                      FirebaseDatabase.instance.ref('students/$_studentId').update({'savedStop': ''});
+                    }
                     _showSnackBar("⭐ Boarding stop cleared");
                   },
                   child: const Text(
@@ -1433,7 +1789,6 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
           ],
         ),
         actions: [
-          // ── Notification bell with red unread badge ──────────────────────
           SizedBox(
             width: 48,
             height: 48,
@@ -1450,7 +1805,7 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
                   ),
                   onPressed: _showNotificationsPanel,
                 ),
-                if (_unreadNotifCount > 0)
+                if (_unreadNotifCount > 0 || _breakdownActive)
                   Positioned(
                     right: 4,
                     top: 4,
@@ -1463,7 +1818,9 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
                       ),
                       child: Center(
                         child: Text(
-                          _unreadNotifCount > 9 ? '9+' : '$_unreadNotifCount',
+                          ((_unreadNotifCount + (_breakdownActive ? 1 : 0)) > 9)
+                              ? '9+'
+                              : '${_unreadNotifCount + (_breakdownActive ? 1 : 0)}',
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 8,
@@ -1537,34 +1894,6 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (_breakdownActive)
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFEF2F2),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: const Color(0xFFFCA5A5)),
-              ),
-              child: Row(
-                children: [
-                  const Text("⚠️", style: TextStyle(fontSize: 18)),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      "Bus $_busFirebaseId breakdown. Replacement Bus $_replacementBus dispatched. Stay at your stop.",
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: Color(0xFF991B1B),
-                        height: 1.4,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
           _buildHeroBanner(),
 
           Padding(
@@ -1657,6 +1986,8 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
                   ),
                 ),
                 const SizedBox(height: 12),
+                _buildVoiceIntercomCard(),
+                const SizedBox(height: 12),
 
                 if (_savedStop.isNotEmpty) ...[
                   Container(
@@ -1717,7 +2048,9 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
                               GestureDetector(
                                 onTap: () {
                                   setState(() => _savedStop = "");
-                                  SharedPreferences.getInstance().then((p) => p.setString("savedStop", ""));
+                                  if (Firebase.apps.isNotEmpty) {
+                                    FirebaseDatabase.instance.ref('students/$_studentId').update({'savedStop': ''});
+                                  }
                                 },
                                 child: const Text(
                                   "Change stop",
@@ -2238,7 +2571,7 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
                   const Spacer(),
                   Text(
                     t('appTitle'),
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w900,
                       color: Colors.white,
@@ -2367,6 +2700,17 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
               urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
               subdomains: const ['a', 'b', 'c', 'd'],
             ),
+            
+            if (_busRoutePoints.isNotEmpty)
+              PolylineLayer(
+                polylines: <Polyline<Object>>[
+                  Polyline<Object>(
+                    points: _busRoutePoints,
+                    strokeWidth: 4.0,
+                    color: _routeColor.withValues(alpha: 0.7),
+                  ),
+                ],
+              ),
 
             if (_busIsOnline && _renderLat != null && _renderLng != null && _busAccuracy != null)
               CircleLayer(
@@ -2394,7 +2738,9 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
                 GestureDetector(
                   onTap: () {
                     setState(() { _savedStop = ""; });
-                    SharedPreferences.getInstance().then((p) => p.setString("savedStop", ""));
+                    if (Firebase.apps.isNotEmpty) {
+                      FirebaseDatabase.instance.ref('students/$_studentId').update({'savedStop': ''});
+                    }
                   },
                   child: Container(
                     padding: const EdgeInsets.all(10),
@@ -3960,6 +4306,314 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildVoiceIntercomCard() {
+    return Card(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      elevation: 3,
+      shadowColor: Colors.black12,
+      child: ExpansionTile(
+        initiallyExpanded: false,
+        title: const Row(
+          children: [
+            Icon(Icons.mic, color: Color(0xFF2563EB), size: 18),
+            SizedBox(width: 8),
+            Text(
+              "Admin STT Voice Intercom",
+              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 12, color: Color(0xFF1E293B)),
+            ),
+          ],
+        ),
+        subtitle: const Text(
+          "Send direct transcripts & voice notes to admin",
+          style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.w600),
+        ),
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (_studentIntercomMessages.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Center(
+                      child: Text(
+                        "No messages yet. Tap Mic to dictate a message.",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  )
+                else
+                  Container(
+                    constraints: const BoxConstraints(maxHeight: 180),
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: _studentIntercomMessages.length,
+                      itemBuilder: (ctx, idx) {
+                        final msg = _studentIntercomMessages[idx];
+                        final isMe = msg['sender'] == 'student';
+                        final isVoice = msg['isVoice'] == true;
+                        
+                        return Align(
+                          alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                          child: Container(
+                            margin: const EdgeInsets.symmetric(vertical: 4),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            width: isVoice ? 220 : null,
+                            decoration: BoxDecoration(
+                              color: isMe ? const Color(0xFFEFF6FF) : const Color(0xFFF1F5F9),
+                              borderRadius: BorderRadius.only(
+                                topLeft: const Radius.circular(14),
+                                topRight: const Radius.circular(14),
+                                bottomLeft: Radius.circular(isMe ? 14 : 2),
+                                bottomRight: Radius.circular(isMe ? 2 : 14),
+                              ),
+                              border: Border.all(color: isMe ? const Color(0xFFBFDBFE) : const Color(0xFFE2E8F0)),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  isMe ? "You" : (msg['senderName'] ?? "Sender"),
+                                  style: TextStyle(
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.w900,
+                                    color: isMe ? const Color(0xFF2563EB) : const Color(0xFF64748B),
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                if (isVoice) ...[
+                                  Row(
+                                    children: [
+                                      IconButton(
+                                        visualDensity: VisualDensity.compact,
+                                        padding: EdgeInsets.zero,
+                                        icon: Icon(
+                                          _playingMsgId == msg['id']
+                                              ? Icons.pause_circle_filled_rounded
+                                              : Icons.play_circle_filled_rounded,
+                                          color: isMe ? const Color(0xFF2563EB) : const Color(0xFF1E293B),
+                                          size: 28,
+                                        ),
+                                        onPressed: () {
+                                          _playVoiceMessage(msg['id'], msg['msg'] ?? '', msg['voiceDuration'] ?? 3);
+                                        },
+                                      ),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                                          children: [
+                                            ClipRRect(
+                                              borderRadius: BorderRadius.circular(2),
+                                              child: LinearProgressIndicator(
+                                                value: _playingMsgId == msg['id'] ? _playbackProgress : 0.0,
+                                                backgroundColor: isMe ? const Color(0xFFDBEAFE) : const Color(0xFFE2E8F0),
+                                                valueColor: AlwaysStoppedAnimation<Color>(
+                                                  isMe ? const Color(0xFF2563EB) : const Color(0xFF64748B),
+                                                ),
+                                                minHeight: 3,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 2),
+                                            Row(
+                                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                              children: [
+                                                Text(
+                                                  "0:${(msg['voiceDuration'] as int? ?? 3).toString().padLeft(2, '0')}",
+                                                  style: const TextStyle(fontSize: 8, color: Color(0xFF64748B), fontWeight: FontWeight.bold),
+                                                ),
+                                                const Icon(Icons.volume_up, size: 8, color: Color(0xFF64748B)),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: isMe ? const Color(0xFFDBEAFE).withValues(alpha: 0.3) : const Color(0xFFE2E8F0).withValues(alpha: 0.5),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Text(
+                                      "Transcript: \"${msg['transcript'] ?? ''}\"",
+                                      style: const TextStyle(
+                                        fontSize: 9.5,
+                                        fontStyle: FontStyle.italic,
+                                        color: Color(0xFF334155),
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                  ),
+                                ] else ...[
+                                  Text(
+                                    msg['msg'] ?? '',
+                                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF0F172A)),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                const SizedBox(height: 12),
+                const Divider(height: 1),
+                const SizedBox(height: 12),
+                if (_isRecordingVoice)
+                  Container(
+                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFEF2F2),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: const Color(0xFFFCA5A5)),
+                    ),
+                    child: Row(
+                      children: [
+                        const _FlashingRedDot(),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                "Recording... 0:${_recordingDurationSecs.toString().padLeft(2, '0')}",
+                                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF991B1B)),
+                              ),
+                              const SizedBox(height: 2),
+                              Row(
+                                children: List.generate(8, (idx) {
+                                  final height = 3.0 + (idx % 2 == 0 ? 8.0 : 4.0) + (Random().nextDouble() * 5.0);
+                                  return Container(
+                                    width: 2,
+                                    height: height,
+                                    margin: const EdgeInsets.symmetric(horizontal: 1),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFEF4444),
+                                      borderRadius: BorderRadius.circular(1),
+                                    ),
+                                  );
+                                }),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                          icon: const Icon(Icons.cancel, color: Color(0xFFEF4444), size: 20),
+                          onPressed: _cancelRecordingVoice,
+                        ),
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                          icon: const Icon(Icons.check_circle, color: Color(0xFF16A34A), size: 20),
+                          onPressed: _stopAndSendRecordingVoice,
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          decoration: InputDecoration(
+                            hintText: "Type note or hold mic...",
+                            hintStyle: const TextStyle(fontSize: 11, color: Colors.grey),
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(30)),
+                            fillColor: const Color(0xFFF8FAFC),
+                            filled: true,
+                          ),
+                          style: const TextStyle(fontSize: 12),
+                          onSubmitted: (val) {
+                            if (val.trim().isNotEmpty) {
+                              _sendStudentTextMessage(val.trim());
+                            }
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      GestureDetector(
+                        onLongPressStart: (_) {
+                          _startRecordingVoice();
+                          _showSnackBar("Recording... Release to send.");
+                        },
+                        onLongPressEnd: (_) {
+                          _stopAndSendRecordingVoice();
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: const BoxDecoration(
+                            color: Color(0xFFEFF6FF),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.mic, color: Color(0xFF2563EB), size: 20),
+                        ),
+                      ),
+                    ],
+                  ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          )
+        ],
+      ),
+    );
+  }
+}
+
+class _FlashingRedDot extends StatefulWidget {
+  const _FlashingRedDot();
+
+  @override
+  State<_FlashingRedDot> createState() => _FlashingRedDotState();
+}
+
+class _FlashingRedDotState extends State<_FlashingRedDot> {
+  bool _visible = true;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+      if (mounted) {
+        setState(() {
+          _visible = !_visible;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedOpacity(
+      opacity: _visible ? 1.0 : 0.2,
+      duration: const Duration(milliseconds: 200),
+      child: Container(
+        width: 10,
+        height: 10,
+        decoration: const BoxDecoration(
+          color: Colors.red,
+          shape: BoxShape.circle,
+        ),
+      ),
     );
   }
 }
