@@ -870,6 +870,9 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
         final userCredential = await auth.signInAnonymously();
         currentUser = userCredential.user;
       }
+      final prefs = await SharedPreferences.getInstance();
+      final savedName = prefs.getString("studentName") ?? "";
+      final savedYear = prefs.getString("studentYear") ?? "";
       _updateRouteDetails(_selectedRoute, startListener: false);
       // Populate profile controllers with saved values (only if previously saved)
       // Leave empty so placeholder shows when no real data exists yet
@@ -879,7 +882,9 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
       final savedBus = prefs.getString("studentBusNo") ?? "";
       _profileBusCtrl.text = savedBus;
       _studentBusNo = savedBus;
-    });
+    } catch (e) {
+      debugPrint("Error loading preferences: $e");
+    }
     _startPickupRequestListener();
     _startFirebaseListener();
     _listenForStudentIntercomMessages();

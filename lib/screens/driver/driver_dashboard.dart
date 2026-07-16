@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -794,6 +795,10 @@ class _DriverDashboardState extends State<DriverDashboard> {
   }
 
   Future<void> _fbUpdateLocation(Position pos) async {
+    await _fbUpdateLocationRaw(pos.latitude, pos.longitude, pos.accuracy);
+  }
+
+  Future<void> _fbUpdateLocationRaw(double lat, double lng, double acc) async {
     if (Firebase.apps.isEmpty) return;
     setState(() {
       _isSyncing = true;
@@ -826,10 +831,6 @@ class _DriverDashboardState extends State<DriverDashboard> {
         });
       }
     }
-  }
-
-  Future<void> _fbUpdateLocation(Position pos) async {
-    await _fbUpdateLocationRaw(pos.latitude, pos.longitude, pos.accuracy);
   }
 
   void _startSafetyTimer() {
