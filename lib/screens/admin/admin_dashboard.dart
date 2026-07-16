@@ -63,6 +63,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
   // Live Bus Locations
   Map<String, Map<String, dynamic>> _liveBuses = {};
   StreamSubscription? _liveLocationsSub;
+  Map<String, Map<String, dynamic>> _firebaseBreakdowns = {};
+  StreamSubscription? _breakdownListenerSub;
+  Map<String, Map<String, dynamic>> _driversAlerts = {};
+  StreamSubscription? _driversAlertsSub;
 
   // Map Controllers
   final MapController _mapController = MapController();

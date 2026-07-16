@@ -14,6 +14,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'dart:io';
 import '../../config/routes_config.dart';
@@ -1160,7 +1161,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
     }
 
     if (_currentPosition != null) {
-      _fbUpdateLocation(_currentPosition!);
+      _fbUpdateLocationRaw(_currentPosition!.latitude, _currentPosition!.longitude, _currentPosition!.accuracy);
     }
   }
 
