@@ -44,5 +44,6 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
-# Heap dumps
-*.hprof
+# Environment variables (never commit secrets!)
+.env
+.env.*
