@@ -23,6 +23,10 @@ import '../../models/alert_entry.dart';
 import '../../config/routes_config.dart';
 import '../../config/lang_config.dart';
 import '../../widgets/marquee_notice_bar.dart';
+import 'package:record/record.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:flutter/foundation.dart';
 import '../../widgets/legend_item.dart';
 import '../../services/campus_path_graph.dart';
 import 'student_login_screen.dart';
@@ -214,13 +218,18 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   double _playbackProgress = 0.0;
   Timer? _playbackTimer;
   final FlutterTts _flutterTts = FlutterTts();
+  final AudioRecorder _audioRecorder = AudioRecorder();
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  String? _recordPath;
 
   // Dynamic Route selections
-  String _selectedRoute = "route_15"; // default
+  String _selectedRoute = "route_1"; // default
   List<String> _routeStops = [];
   Map<String, LatLng> _coords = {};
+
+  String _busFirebaseId = '1';
+  String get _displayBusId => (_breakdownActive && _replacementBus.isNotEmpty && _replacementBus != 'Unknown') ? _replacementBus : _busFirebaseId;
   Color _routeColor = const Color(0xFF2563EB);
-  String _busFirebaseId = 'B101';
   String _studentBusNo = "";
 
   // Campus points for navigation
@@ -759,7 +768,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   }
 
   Widget _buildStudentBreakdownNotifTile(BuildContext sheetCtx) {
-    final breakdownBusId = _studentBusNo.isNotEmpty ? _studentBusNo : _busFirebaseId;
+    final breakdownBusId = _busFirebaseId;
     final msg = _replacementBus == "Pending"
         ? "Bus $breakdownBusId breakdown reported. Replacement Bus dispatch is pending. Stay at your stop."
         : "Bus $breakdownBusId breakdown. Replacement Bus $_replacementBus dispatched. Stay at your stop.";
@@ -1309,60 +1318,90 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     }
   }
 
-  void _startRecordingVoice() {
-    setState(() {
-      _isRecordingVoice = true;
-      _recordingDurationSecs = 0;
-      _recordingWaveforms = [];
-    });
-    _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (mounted) {
-        setState(() {
-          _recordingDurationSecs++;
-          final rand = Random();
-          _recordingWaveforms.add(5.0 + rand.nextDouble() * 30.0);
-        });
+  void _startRecordingVoice() async {
+    if (await _audioRecorder.hasPermission()) {
+      if (kIsWeb) {
+        await _audioRecorder.start(const RecordConfig(), path: '');
+      } else {
+        final dir = await getApplicationDocumentsDirectory();
+        _recordPath = '${dir.path}/voice_message.m4a';
+        await _audioRecorder.start(const RecordConfig(), path: _recordPath!);
       }
-    });
+      setState(() {
+        _isRecordingVoice = true;
+        _recordingDurationSecs = 0;
+        _recordingWaveforms = [];
+      });
+      _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        if (mounted) {
+          setState(() {
+            _recordingDurationSecs++;
+            final rand = Random();
+            _recordingWaveforms.add(5.0 + rand.nextDouble() * 30.0);
+          });
+        }
+      });
+    }
   }
 
   void _stopAndSendRecordingVoice() async {
     _recordingTimer?.cancel();
     if (!_isRecordingVoice) return;
+    
+    final path = await _audioRecorder.stop();
     final duration = _recordingDurationSecs == 0 ? 3 : _recordingDurationSecs;
     setState(() {
       _isRecordingVoice = false;
     });
 
-    if (Firebase.apps.isEmpty || _studentId.isEmpty) return;
-
-    final transcripts = [
-      "Hello admin, requesting route clarification.",
-      "Hi admin, is the route 15 bus running on time today?",
-      "Checking in from stop rettri. Has the bus passed yet?",
-      "Admin, student STD102 here, boarding at Koyambedu.",
-      "Reporting minor delay on route, waiting at pickup spot.",
-    ];
-    final randomTranscript = transcripts[Random().nextInt(transcripts.length)];
-
-    final msgId = DateTime.now().millisecondsSinceEpoch.toString();
-    try {
-      await FirebaseDatabase.instance.ref('voice_messages/student_$_studentId/$msgId').set({
-        'sender': 'student',
-        'senderName': _studentName,
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
-        'msg': '[Voice Message - 0:${duration.toString().padLeft(2, '0')}] "$randomTranscript"',
-        'isVoice': true,
-        'voiceDuration': duration,
-        'transcript': randomTranscript,
-      });
-    } catch (e) {
-      debugPrint("Error sending voice message: $e");
+    if (path != null && Firebase.apps.isNotEmpty && _studentId.isNotEmpty) {
+      try {
+        Uint8List bytes;
+        if (kIsWeb) {
+          final res = await http.get(Uri.parse(path));
+          bytes = res.bodyBytes;
+        } else {
+          bytes = await File(path).readAsBytes();
+        }
+        final base64Audio = base64Encode(bytes);
+        
+        final String apiUrl = kIsWeb ? 'http://localhost:5000/api/voice' : 'http://10.0.2.2:5000/api/voice';
+        
+        final response = await http.post(
+          Uri.parse(apiUrl),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'sender': 'student_$_studentId',
+            'receiver': 'admin',
+            'audioBase64': base64Audio,
+            'duration': duration,
+          }),
+        );
+        
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          final mongoId = data['id'];
+          
+          final msgId = DateTime.now().millisecondsSinceEpoch.toString();
+          await FirebaseDatabase.instance.ref('voice_messages/student_$_studentId/$msgId').set({
+            'sender': 'student',
+            'senderName': _studentName,
+            'timestamp': DateTime.now().millisecondsSinceEpoch,
+            'msg': '[Voice Message - 0:${duration.toString().padLeft(2, '0')}] "$mongoId"',
+            'isVoice': true,
+            'voiceDuration': duration,
+            'mongoId': mongoId,
+          });
+        }
+      } catch (e) {
+        debugPrint("Error sending voice message: $e");
+      }
     }
   }
 
-  void _cancelRecordingVoice() {
+  void _cancelRecordingVoice() async {
     _recordingTimer?.cancel();
+    await _audioRecorder.stop();
     setState(() {
       _isRecordingVoice = false;
       _recordingDurationSecs = 0;
@@ -1370,26 +1409,39 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     _showSnackBar("Recording cancelled.");
   }
 
-  void _playVoiceMessage(String msgId, String text, int durationSecs) {
+  void _playVoiceMessage(String msgId, String text, int durationSecs) async {
     if (_playingMsgId == msgId) {
       _playbackTimer?.cancel();
-      _flutterTts.stop();
+      await _audioPlayer.stop();
       setState(() {
         _playingMsgId = null;
       });
       return;
     }
     _playbackTimer?.cancel();
-    _flutterTts.stop();
+    await _audioPlayer.stop();
 
-    String speakText = text;
+    String mongoId = "";
     if (text.startsWith('[Voice Message')) {
       final index = text.indexOf(']');
       if (index != -1 && index + 1 < text.length) {
-        speakText = text.substring(index + 1).replaceAll('"', '').trim();
+        mongoId = text.substring(index + 1).replaceAll('"', '').trim();
       }
     }
-    _flutterTts.speak(speakText);
+    
+    if (mongoId.isNotEmpty) {
+      try {
+        final String apiUrl = kIsWeb ? 'http://localhost:5000/api/voice/$mongoId' : 'http://10.0.2.2:5000/api/voice/$mongoId';
+        final response = await http.get(Uri.parse(apiUrl));
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          final audioBytes = base64Decode(data['audioBase64']);
+          await _audioPlayer.play(BytesSource(audioBytes));
+        }
+      } catch (e) {
+        debugPrint("Error playing audio: $e");
+      }
+    }
 
     setState(() {
       _playingMsgId = msgId;
@@ -1400,19 +1452,17 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     int currentStep = 0;
     _playbackTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
       currentStep++;
+      if (mounted) {
+        setState(() {
+          _playbackProgress = currentStep / totalSteps;
+        });
+      }
       if (currentStep >= totalSteps) {
         timer.cancel();
-        _flutterTts.stop();
         if (mounted) {
           setState(() {
             _playingMsgId = null;
-            _playbackProgress = 1.0;
-          });
-        }
-      } else {
-        if (mounted) {
-          setState(() {
-            _playbackProgress = currentStep / totalSteps;
+            _playbackProgress = 0.0;
           });
         }
       }
@@ -1481,8 +1531,10 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     _locationSub?.cancel();
     _breakdownSub?.cancel();
     if (Firebase.apps.isEmpty) return;
-    try {
-      _locationSub = FirebaseDatabase.instance.ref('liveLocations/$_busFirebaseId').onValue.listen((event) {
+    
+    void startLocationTracker(String targetBusId) {
+      _locationSub?.cancel();
+      _locationSub = FirebaseDatabase.instance.ref('liveLocations/$targetBusId').onValue.listen((event) {
         final data = event.snapshot.value as Map?;
         if (data == null || data['status'] == 'offline') {
           setState(() {
@@ -1525,7 +1577,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
 
         if (justCameOnline) {
           _showInAppNotification(
-            "🚌 Bus $_busFirebaseId is Ready!",
+            "🚌 Bus $targetBusId is Ready!",
             "The bus has started its route. Live GPS tracking is now active. Get ready to board!",
             "✅",
             durationMs: 10000,
@@ -1547,15 +1599,15 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
             if (logicalNearestIdx == myStopIdx - 1 && !_hasAlertedApproaching) {
               _hasAlertedApproaching = true;
               _showInAppNotification(
-                "Bus $_busFirebaseId is approaching!",
-                "Bus $_busFirebaseId is at ${displayStops[logicalNearestIdx]}, which is 1 stop away from $_savedStop.",
+                "Bus $targetBusId is approaching!",
+                "Bus $targetBusId is at ${displayStops[logicalNearestIdx]}, which is 1 stop away from $_savedStop.",
                 "🔔",
               );
             } else if (logicalNearestIdx == myStopIdx && !_hasAlertedArrived) {
               _hasAlertedArrived = true;
               _showInAppNotification(
-                "Bus $_busFirebaseId has arrived!",
-                "Bus $_busFirebaseId is now at your boarding stop: $_savedStop. Get ready to board!",
+                "Bus $targetBusId has arrived!",
+                "Bus $targetBusId is now at your boarding stop: $_savedStop. Get ready to board!",
                 "🚏",
               );
             }
@@ -1580,21 +1632,31 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       }, onError: (e) {
         debugPrint("Database listen error: $e");
       });
+    }
 
-      final breakdownBusId = _studentBusNo.isNotEmpty ? _studentBusNo : _busFirebaseId;
-      _breakdownSub = FirebaseDatabase.instance.ref('breakdowns/$breakdownBusId').onValue.listen((event) {
+    try {
+      startLocationTracker(_busFirebaseId);
+
+      _breakdownSub = FirebaseDatabase.instance.ref('breakdowns/$_busFirebaseId').onValue.listen((event) {
         final data = event.snapshot.value as Map?;
         if (data == null) {
           setState(() {
             _breakdownActive = false;
             _replacementBus = "";
           });
+          startLocationTracker(_busFirebaseId);
           return;
         }
         setState(() {
           _breakdownActive = true;
           _replacementBus = data['replacement'] as String? ?? "Unknown";
         });
+        
+        if (_replacementBus.isNotEmpty && _replacementBus != "Unknown") {
+          startLocationTracker(_replacementBus);
+        } else {
+          startLocationTracker(_busFirebaseId);
+        }
       }, onError: (e) {
         debugPrint("Breakdown database listen error: $e");
       });
@@ -1881,7 +1943,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        "PANIMALAR TRANSIT — BUS $_busFirebaseId",
+                        "PANIMALAR TRANSIT — BUS $_displayBusId",
                         style: const TextStyle(
                           fontSize: 9,
                           fontWeight: FontWeight.w800,
@@ -2097,7 +2159,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              _busIsOnline ? "Bus $_busFirebaseId is online" : "Bus $_busFirebaseId is offline",
+                              _busIsOnline ? "Bus $_displayBusId is online" : "Bus $_displayBusId is offline",
                               style: TextStyle(
                                 fontSize: 13,
                                 fontWeight: FontWeight.w800,
@@ -2697,7 +2759,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text(
-                      "BUS $_busFirebaseId",
+                      "BUS $_displayBusId",
                       style: const TextStyle(
                         fontSize: 10,
                         fontWeight: FontWeight.w800,
@@ -2781,7 +2843,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                   boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))],
                 ),
                 child: Text(
-                  "Bus $_busFirebaseId",
+                  "Bus $_displayBusId",
                   style: const TextStyle(fontSize: 8, fontWeight: FontWeight.w900, color: Colors.white),
                 ),
               ),
@@ -2943,7 +3005,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          "BUS $_busFirebaseId DETAILS",
+                          "BUS $_displayBusId DETAILS",
                           style: TextStyle(
                             fontSize: 10,
                             fontWeight: FontWeight.w800,

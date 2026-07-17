@@ -19,6 +19,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io';
 import '../../config/routes_config.dart';
 import '../../config/lang_config.dart';
+import 'package:record/record.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:path_provider/path_provider.dart';
 
 class DriverDashboard extends StatefulWidget {
   final String driverBus;
@@ -122,7 +125,9 @@ class _DriverDashboardState extends State<DriverDashboard> {
   double _playbackProgress = 0.0;
   Timer? _playbackTimer;
   final FlutterTts _flutterTts = FlutterTts();
-
+  final AudioRecorder _audioRecorder = AudioRecorder();
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  String? _recordPath;
   final double _warnThresholdPct = 20.0;
 
   List<Map<String, dynamic>> _routeStops = [];
@@ -587,60 +592,91 @@ class _DriverDashboardState extends State<DriverDashboard> {
     }
   }
 
-  void _startRecordingVoice() {
-    setState(() {
-      _isRecordingVoice = true;
-      _recordingDurationSecs = 0;
-      _recordingWaveforms = [];
-    });
-    _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (mounted) {
-        setState(() {
-          _recordingDurationSecs++;
-          final rand = Random();
-          _recordingWaveforms.add(5.0 + rand.nextDouble() * 30.0);
-        });
+  void _startRecordingVoice() async {
+    if (await _audioRecorder.hasPermission()) {
+      if (kIsWeb) {
+        await _audioRecorder.start(const RecordConfig(), path: '');
+      } else {
+        final dir = await getApplicationDocumentsDirectory();
+        _recordPath = '${dir.path}/voice_message.m4a';
+        await _audioRecorder.start(const RecordConfig(), path: _recordPath!);
       }
-    });
+      setState(() {
+        _isRecordingVoice = true;
+        _recordingDurationSecs = 0;
+        _recordingWaveforms = [];
+      });
+      _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        if (mounted) {
+          setState(() {
+            _recordingDurationSecs++;
+            final rand = Random();
+            _recordingWaveforms.add(5.0 + rand.nextDouble() * 30.0);
+          });
+        }
+      });
+    }
   }
 
   void _stopAndSendRecordingVoice() async {
     _recordingTimer?.cancel();
     if (!_isRecordingVoice) return;
+    
+    final path = await _audioRecorder.stop();
     final duration = _recordingDurationSecs == 0 ? 3 : _recordingDurationSecs;
     setState(() {
       _isRecordingVoice = false;
     });
 
-    if (Firebase.apps.isEmpty) return;
-
-    final transcripts = [
-      "Hello admin, route 15 bus starting from Manali.",
-      "Hi admin, reached rettri roundna just now.",
-      "Driver B101 here, heavy traffic near gate. ETA 15 mins.",
-      "Reporting minor delay for passenger boarding.",
-      "Admin, breakdown occurred near Tambaram depot, need assistance.",
-    ];
-    final randomTranscript = transcripts[Random().nextInt(transcripts.length)];
-
-    final msgId = DateTime.now().millisecondsSinceEpoch.toString();
-    try {
-      await FirebaseDatabase.instance.ref('voice_messages/driver_${widget.driverBus}/$msgId').set({
-        'sender': 'driver',
-        'senderName': 'Driver ${widget.driverBus}',
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
-        'msg': '[Voice Message - 0:${duration.toString().padLeft(2, '0')}] "$randomTranscript"',
-        'isVoice': true,
-        'voiceDuration': duration,
-        'transcript': randomTranscript,
-      });
-    } catch (e) {
-      debugPrint("Error sending voice message: $e");
+    if (path != null && Firebase.apps.isNotEmpty) {
+      try {
+        Uint8List bytes;
+        if (kIsWeb) {
+          final res = await http.get(Uri.parse(path));
+          bytes = res.bodyBytes;
+        } else {
+          bytes = await File(path).readAsBytes();
+        }
+        final base64Audio = base64Encode(bytes);
+        
+        final String apiUrl = kIsWeb ? 'http://localhost:5000/api/voice' : 'http://10.0.2.2:5000/api/voice';
+        
+        // Upload to MongoDB
+        final response = await http.post(
+          Uri.parse(apiUrl),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'sender': 'driver_${widget.driverBus}',
+            'receiver': 'admin',
+            'audioBase64': base64Audio,
+            'duration': duration,
+          }),
+        );
+        
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          final mongoId = data['id'];
+          
+          final msgId = DateTime.now().millisecondsSinceEpoch.toString();
+          await FirebaseDatabase.instance.ref('voice_messages/driver_${widget.driverBus}/$msgId').set({
+            'sender': 'driver',
+            'senderName': 'Driver ${widget.driverBus}',
+            'timestamp': DateTime.now().millisecondsSinceEpoch,
+            'msg': '[Voice Message - 0:${duration.toString().padLeft(2, '0')}] "$mongoId"',
+            'isVoice': true,
+            'voiceDuration': duration,
+            'mongoId': mongoId,
+          });
+        }
+      } catch (e) {
+        debugPrint("Error sending voice message: $e");
+      }
     }
   }
 
-  void _cancelRecordingVoice() {
+  void _cancelRecordingVoice() async {
     _recordingTimer?.cancel();
+    await _audioRecorder.stop();
     setState(() {
       _isRecordingVoice = false;
       _recordingDurationSecs = 0;
@@ -648,26 +684,39 @@ class _DriverDashboardState extends State<DriverDashboard> {
     _showSnackBar("Recording cancelled.");
   }
 
-  void _playVoiceMessage(String msgId, String text, int durationSecs) {
+  void _playVoiceMessage(String msgId, String text, int durationSecs) async {
     if (_playingMsgId == msgId) {
       _playbackTimer?.cancel();
-      _flutterTts.stop();
+      await _audioPlayer.stop();
       setState(() {
         _playingMsgId = null;
       });
       return;
     }
     _playbackTimer?.cancel();
-    _flutterTts.stop();
+    await _audioPlayer.stop();
 
-    String speakText = text;
+    String mongoId = "";
     if (text.startsWith('[Voice Message')) {
       final index = text.indexOf(']');
       if (index != -1 && index + 1 < text.length) {
-        speakText = text.substring(index + 1).replaceAll('"', '').trim();
+        mongoId = text.substring(index + 1).replaceAll('"', '').trim();
       }
     }
-    _flutterTts.speak(speakText);
+    
+    if (mongoId.isNotEmpty) {
+      try {
+        final String apiUrl = kIsWeb ? 'http://localhost:5000/api/voice/$mongoId' : 'http://10.0.2.2:5000/api/voice/$mongoId';
+        final response = await http.get(Uri.parse(apiUrl));
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          final audioBytes = base64Decode(data['audioBase64']);
+          await _audioPlayer.play(BytesSource(audioBytes));
+        }
+      } catch (e) {
+        debugPrint("Error playing audio: $e");
+      }
+    }
 
     setState(() {
       _playingMsgId = msgId;
@@ -678,19 +727,17 @@ class _DriverDashboardState extends State<DriverDashboard> {
     int currentStep = 0;
     _playbackTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
       currentStep++;
+      if (mounted) {
+        setState(() {
+          _playbackProgress = currentStep / totalSteps;
+        });
+      }
       if (currentStep >= totalSteps) {
         timer.cancel();
-        _flutterTts.stop();
         if (mounted) {
           setState(() {
             _playingMsgId = null;
-            _playbackProgress = 1.0;
-          });
-        }
-      } else {
-        if (mounted) {
-          setState(() {
-            _playbackProgress = currentStep / totalSteps;
+            _playbackProgress = 0.0;
           });
         }
       }
@@ -2016,18 +2063,21 @@ class _DriverDashboardState extends State<DriverDashboard> {
                       ],
                     ),
                     const SizedBox(height: 12),
-                    SwitchListTile(
-                      dense: true,
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text("Simulate Route Mode", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF1E293B))),
-                      subtitle: const Text("Interpolates path and broadcasts movement automatically", style: TextStyle(fontSize: 10, color: Color(0xFF64748B))),
-                      value: _simulateRoute,
-                      activeColor: const Color(0xFF2563EB),
-                      onChanged: _isTracking ? null : (val) {
-                        setState(() {
-                          _simulateRoute = val;
-                        });
-                      },
+                    Material(
+                      color: Colors.transparent,
+                      child: SwitchListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text("Simulate Route Mode", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF1E293B))),
+                        subtitle: const Text("Interpolates path and broadcasts movement automatically", style: TextStyle(fontSize: 10, color: Color(0xFF64748B))),
+                        value: _simulateRoute,
+                        activeColor: const Color(0xFF2563EB),
+                        onChanged: _isTracking ? null : (val) {
+                          setState(() {
+                            _simulateRoute = val;
+                          });
+                        },
+                      ),
                     ),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -2047,31 +2097,37 @@ class _DriverDashboardState extends State<DriverDashboard> {
                           Row(
                             children: [
                               Expanded(
-                                child: CheckboxListTile(
-                                  dense: true,
-                                  contentPadding: EdgeInsets.zero,
-                                  title: const Text("Speaking on Call", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF451A03))),
-                                  value: _onPhoneCall,
-                                  activeColor: const Color(0xFFC2410C),
-                                  onChanged: (val) {
-                                    setState(() {
-                                      _onPhoneCall = val ?? false;
-                                    });
-                                  },
+                                child: Material(
+                                  color: Colors.transparent,
+                                  child: CheckboxListTile(
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                    title: const Text("Speaking on Call", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF451A03))),
+                                    value: _onPhoneCall,
+                                    activeColor: const Color(0xFFC2410C),
+                                    onChanged: (val) {
+                                      setState(() {
+                                        _onPhoneCall = val ?? false;
+                                      });
+                                    },
+                                  ),
                                 ),
                               ),
                               Expanded(
-                                child: CheckboxListTile(
-                                  dense: true,
-                                  contentPadding: EdgeInsets.zero,
-                                  title: const Text("Earpods Connected", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF451A03))),
-                                  value: _connectedToEarpods,
-                                  activeColor: const Color(0xFFC2410C),
-                                  onChanged: (val) {
-                                    setState(() {
-                                      _connectedToEarpods = val ?? false;
-                                    });
-                                  },
+                                child: Material(
+                                  color: Colors.transparent,
+                                  child: CheckboxListTile(
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                    title: const Text("Earpods Connected", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF451A03))),
+                                    value: _connectedToEarpods,
+                                    activeColor: const Color(0xFFC2410C),
+                                    onChanged: (val) {
+                                      setState(() {
+                                        _connectedToEarpods = val ?? false;
+                                      });
+                                    },
+                                  ),
                                 ),
                               ),
                             ],

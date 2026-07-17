@@ -22,6 +22,16 @@ const studentSchema = new mongoose.Schema({
 
 const Student = mongoose.model('Student', studentSchema);
 
+const voiceMessageSchema = new mongoose.Schema({
+  sender: String,
+  receiver: String,
+  audioBase64: { type: String, required: true },
+  timestamp: { type: Date, default: Date.now },
+  duration: Number
+});
+
+const VoiceMessage = mongoose.model('VoiceMessage', voiceMessageSchema);
+
 // GET profile
 app.get('/api/students/:rollNo', async (req, res) => {
   try {
@@ -46,6 +56,37 @@ app.post('/api/students/:rollNo', async (req, res) => {
       { new: true, upsert: true }
     );
     res.json(student);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Root endpoint to verify server is running
+app.get('/', (req, res) => {
+  res.json({ status: '✅ Panimalar Backend is running successfully!' });
+});
+
+// POST voice message
+app.post('/api/voice', async (req, res) => {
+  try {
+    const { sender, receiver, audioBase64, duration } = req.body;
+    const voiceMessage = new VoiceMessage({ sender, receiver, audioBase64, duration });
+    await voiceMessage.save();
+    res.json({ id: voiceMessage._id });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET voice message
+app.get('/api/voice/:id', async (req, res) => {
+  try {
+    const voiceMessage = await VoiceMessage.findById(req.params.id);
+    if (voiceMessage) {
+      res.json({ audioBase64: voiceMessage.audioBase64, duration: voiceMessage.duration });
+    } else {
+      res.status(404).json({ message: 'Voice message not found' });
+    }
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

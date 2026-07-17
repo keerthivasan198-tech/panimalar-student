@@ -18,6 +18,11 @@ import '../../models/bus_sim_state.dart';
 import '../../config/routes_config.dart';
 import '../../config/lang_config.dart';
 import '../../widgets/custom_charts.dart';
+import 'package:record/record.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:path_provider/path_provider.dart';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 
 class AdminDashboard extends StatefulWidget {
   final VoidCallback onSwitchRole;
@@ -59,6 +64,17 @@ class _AdminDashboardState extends State<AdminDashboard> {
   String? _selectedIntercomBus;
   final TextEditingController _intercomSearchCtrl = TextEditingController();
   String _intercomSearchQuery = "";
+  
+  bool _isRecordingVoice = false;
+  int _recordingDurationSecs = 0;
+  Timer? _recordingTimer;
+  List<double> _recordingWaveforms = [];
+  String? _playingMsgId;
+  double _playbackProgress = 0.0;
+  Timer? _playbackTimer;
+  final AudioRecorder _audioRecorder = AudioRecorder();
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  String? _recordPath;
 
   // Live Bus Locations
   Map<String, Map<String, dynamic>> _liveBuses = {};
@@ -371,6 +387,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
                     'senderName': v['senderName'] ?? '',
                     'timestamp': v['timestamp'] ?? 0,
                     'msg': v['msg'] ?? '',
+                    'isVoice': v['isVoice'] ?? false,
+                    'voiceDuration': v['voiceDuration'] ?? 0,
+                    'mongoId': v['mongoId'] ?? '',
                   });
                 }
               });
@@ -394,7 +413,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     if (Firebase.apps.isEmpty) return;
     try {
       final msgId = DateTime.now().millisecondsSinceEpoch.toString();
-      await FirebaseDatabase.instance.ref('voice_messages/$busId/$msgId').set({
+      await FirebaseDatabase.instance.ref('voice_messages/driver_$busId/$msgId').set({
         'sender': 'admin',
         'senderName': 'College Admin',
         'timestamp': DateTime.now().millisecondsSinceEpoch,
@@ -404,6 +423,147 @@ class _AdminDashboardState extends State<AdminDashboard> {
     } catch (e) {
       _showAppSnackBar("Error sending intercom message: $e");
     }
+  }
+
+  void _startRecordingVoice() async {
+    if (await _audioRecorder.hasPermission()) {
+      if (kIsWeb) {
+        await _audioRecorder.start(const RecordConfig(), path: '');
+      } else {
+        final dir = await getApplicationDocumentsDirectory();
+        _recordPath = '${dir.path}/voice_message_admin.m4a';
+        await _audioRecorder.start(const RecordConfig(), path: _recordPath!);
+      }
+      setState(() {
+        _isRecordingVoice = true;
+        _recordingDurationSecs = 0;
+        _recordingWaveforms = [];
+      });
+      _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        if (mounted) {
+          setState(() {
+            _recordingDurationSecs++;
+            _recordingWaveforms.add(5.0 + (DateTime.now().millisecondsSinceEpoch % 30));
+          });
+        }
+      });
+    }
+  }
+
+  void _stopAndSendRecordingVoice() async {
+    _recordingTimer?.cancel();
+    if (!_isRecordingVoice) return;
+    
+    final path = await _audioRecorder.stop();
+    final duration = _recordingDurationSecs == 0 ? 3 : _recordingDurationSecs;
+    setState(() {
+      _isRecordingVoice = false;
+    });
+
+    if (path != null && Firebase.apps.isNotEmpty && _selectedIntercomBus != null) {
+      try {
+        Uint8List bytes;
+        if (kIsWeb) {
+          final res = await http.get(Uri.parse(path));
+          bytes = res.bodyBytes;
+        } else {
+          bytes = await File(path).readAsBytes();
+        }
+        final base64Audio = base64Encode(bytes);
+        
+        final String apiUrl = kIsWeb ? 'http://localhost:5000/api/voice' : 'http://10.0.2.2:5000/api/voice';
+        final response = await http.post(
+          Uri.parse(apiUrl),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'sender': 'admin',
+            'receiver': 'driver_$_selectedIntercomBus',
+            'audioBase64': base64Audio,
+            'duration': duration,
+          }),
+        );
+        
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          final mongoId = data['id'];
+          
+          final msgId = DateTime.now().millisecondsSinceEpoch.toString();
+          await FirebaseDatabase.instance.ref('voice_messages/driver_$_selectedIntercomBus/$msgId').set({
+            'sender': 'admin',
+            'senderName': 'College Admin',
+            'timestamp': DateTime.now().millisecondsSinceEpoch,
+            'msg': '[Voice Message - 0:${duration.toString().padLeft(2, '0')}] "$mongoId"',
+            'isVoice': true,
+            'voiceDuration': duration,
+            'mongoId': mongoId,
+          });
+        }
+      } catch (e) {
+        debugPrint("Error sending voice message: $e");
+      }
+    }
+  }
+
+  void _cancelRecordingVoice() async {
+    _recordingTimer?.cancel();
+    await _audioRecorder.stop();
+    setState(() {
+      _isRecordingVoice = false;
+      _recordingDurationSecs = 0;
+    });
+    _showAppSnackBar("Recording cancelled.");
+  }
+
+  void _playVoiceMessage(String msgId, String mongoId, int durationSecs) async {
+    if (_playingMsgId == msgId) {
+      _playbackTimer?.cancel();
+      await _audioPlayer.stop();
+      setState(() {
+        _playingMsgId = null;
+      });
+      return;
+    }
+    _playbackTimer?.cancel();
+    await _audioPlayer.stop();
+
+    if (mongoId.isNotEmpty) {
+      try {
+        final String apiUrl = kIsWeb ? 'http://localhost:5000/api/voice/$mongoId' : 'http://10.0.2.2:5000/api/voice/$mongoId';
+        final response = await http.get(Uri.parse(apiUrl));
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          final audioBytes = base64Decode(data['audioBase64']);
+          await _audioPlayer.play(BytesSource(audioBytes));
+        }
+      } catch (e) {
+        debugPrint("Error playing audio: $e");
+      }
+    }
+
+    setState(() {
+      _playingMsgId = msgId;
+      _playbackProgress = 0.0;
+    });
+    
+    final int totalSteps = durationSecs * 10;
+    int currentStep = 0;
+    _playbackTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+      currentStep++;
+      if (mounted) {
+        setState(() {
+          _playbackProgress = currentStep / totalSteps;
+        });
+      }
+      if (currentStep >= totalSteps) {
+        timer.cancel();
+        if (mounted) {
+          setState(() {
+            _playingMsgId = null;
+            _playbackProgress = 0.0;
+          });
+        }
+      }
+    });
   }
 
   // ─── FIREBASE LIVE LOCATIONS ──────────────────────────────────────
@@ -1749,7 +1909,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                           separatorBuilder: (ctx, idx) => const Divider(height: 1, indent: 64),
                           itemBuilder: (ctx, idx) {
                             final bus = filteredBusIds[idx];
-                            final msgs = _adminIntercomMessages[bus] ?? [];
+                            final msgs = _adminIntercomMessages['driver_$bus'] ?? [];
                             final lastMsg = msgs.isNotEmpty ? msgs.last['msg'] : '';
                             
                             final isSelected = _selectedIntercomBus == bus;
@@ -1838,15 +1998,17 @@ class _AdminDashboardState extends State<AdminDashboard> {
                           ),
                           child: ListView.builder(
                             padding: const EdgeInsets.all(16),
-                            itemCount: (_adminIntercomMessages[_selectedIntercomBus] ?? []).length,
+                            itemCount: (_adminIntercomMessages['driver_$_selectedIntercomBus'] ?? []).length,
                             itemBuilder: (ctx, idx) {
-                              final m = _adminIntercomMessages[_selectedIntercomBus!]![idx];
+                              final m = _adminIntercomMessages['driver_$_selectedIntercomBus']![idx];
                               final isMe = m['sender'] == 'admin';
+                              final isVoice = m['isVoice'] == true;
                               return Align(
                                 alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
                                 child: Container(
                                   margin: const EdgeInsets.symmetric(vertical: 4),
                                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                  width: isVoice ? 220 : null,
                                   decoration: BoxDecoration(
                                     color: isMe ? const Color(0xFFDCF8C6) : Colors.white,
                                     borderRadius: BorderRadius.circular(12).copyWith(
@@ -1855,7 +2017,32 @@ class _AdminDashboardState extends State<AdminDashboard> {
                                     ),
                                     boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 1, offset: Offset(0, 1))],
                                   ),
-                                  child: Text("${m['msg']}", style: const TextStyle(fontSize: 14, color: Colors.black87)),
+                                  child: isVoice
+                                    ? Row(
+                                        children: [
+                                          InkWell(
+                                            onTap: () {
+                                              _playVoiceMessage(m['id'], m['mongoId'] ?? '', m['voiceDuration'] ?? 3);
+                                            },
+                                            child: Icon(
+                                              _playingMsgId == m['id'] ? Icons.stop_circle : Icons.play_circle_fill,
+                                              color: isMe ? Colors.teal : Colors.blueAccent,
+                                              size: 32,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: LinearProgressIndicator(
+                                              value: _playingMsgId == m['id'] ? _playbackProgress : 0.0,
+                                              backgroundColor: Colors.black12,
+                                              valueColor: AlwaysStoppedAnimation(isMe ? Colors.teal : Colors.blueAccent),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Text("0:${(m['voiceDuration'] ?? 3).toString().padLeft(2, '0')}", style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                                        ],
+                                      )
+                                    : Text("${m['msg']}", style: const TextStyle(fontSize: 14, color: Colors.black87)),
                                 ),
                               );
                             },
@@ -1864,55 +2051,92 @@ class _AdminDashboardState extends State<AdminDashboard> {
                       ),
                       
                       // Chat Input
-                      Container(
-                        color: const Color(0xFFF0F2F5),
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.emoji_emotions_outlined, color: Colors.grey, size: 26),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(24),
+                      if (_isRecordingVoice)
+                        Container(
+                          color: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          child: Row(
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline, color: Colors.red),
+                                onPressed: _cancelRecordingVoice,
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: Text(
+                                  "Recording... 0:${_recordingDurationSecs.toString().padLeft(2, '0')}",
+                                  style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+                                  textAlign: TextAlign.center,
                                 ),
-                                child: TextField(
-                                  controller: _adminChatInputCtrl,
-                                  decoration: const InputDecoration(
-                                    hintText: "Type a message",
-                                    hintStyle: TextStyle(fontSize: 14, color: Colors.grey),
-                                    contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                                    border: InputBorder.none,
+                              ),
+                              const SizedBox(width: 16),
+                              IconButton(
+                                icon: const Icon(Icons.send, color: Colors.green),
+                                onPressed: _stopAndSendRecordingVoice,
+                              ),
+                            ],
+                          ),
+                        )
+                      else
+                        Container(
+                          color: const Color(0xFFF0F2F5),
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.emoji_emotions_outlined, color: Colors.grey, size: 26),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(24),
                                   ),
-                                  style: const TextStyle(fontSize: 14),
-                                  onSubmitted: (val) {
-                                    if (val.trim().isNotEmpty) {
-                                      _sendAdminTextMessage(_selectedIntercomBus!, val.trim());
-                                      _adminChatInputCtrl.clear();
-                                    }
-                                  },
+                                  child: TextField(
+                                    controller: _adminChatInputCtrl,
+                                    decoration: const InputDecoration(
+                                      hintText: "Type a message",
+                                      hintStyle: TextStyle(fontSize: 14, color: Colors.grey),
+                                      contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                      border: InputBorder.none,
+                                    ),
+                                    style: const TextStyle(fontSize: 14),
+                                    onSubmitted: (val) {
+                                      if (val.trim().isNotEmpty && _selectedIntercomBus != null) {
+                                        _sendAdminTextMessage(_selectedIntercomBus!, val.trim());
+                                        _adminChatInputCtrl.clear();
+                                      }
+                                    },
+                                    onChanged: (val) {
+                                      setState(() {});
+                                    },
+                                  ),
                                 ),
                               ),
-                            ),
-                            const SizedBox(width: 12),
-                            InkWell(
-                              onTap: () {
-                                final val = _adminChatInputCtrl.text;
-                                if (val.trim().isNotEmpty && _selectedIntercomBus != null) {
-                                  _sendAdminTextMessage(_selectedIntercomBus!, val.trim());
-                                  _adminChatInputCtrl.clear();
-                                }
-                              },
-                              child: const CircleAvatar(
-                                backgroundColor: Color(0xFF00A884),
-                                radius: 20,
-                                child: Icon(Icons.send, color: Colors.white, size: 20),
+                              const SizedBox(width: 12),
+                              InkWell(
+                                onTap: () {
+                                  final val = _adminChatInputCtrl.text;
+                                  if (val.trim().isNotEmpty && _selectedIntercomBus != null) {
+                                    _sendAdminTextMessage(_selectedIntercomBus!, val.trim());
+                                    _adminChatInputCtrl.clear();
+                                    setState(() {});
+                                  } else {
+                                    _startRecordingVoice();
+                                  }
+                                },
+                                child: CircleAvatar(
+                                  backgroundColor: const Color(0xFF00A884),
+                                  radius: 20,
+                                  child: Icon(
+                                    _adminChatInputCtrl.text.trim().isNotEmpty ? Icons.send : Icons.mic,
+                                    color: Colors.white,
+                                    size: 20,
+                                  ),
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
-                      ),
                     ],
                   ),
           )
