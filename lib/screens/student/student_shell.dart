@@ -295,18 +295,22 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
 
     try {
       if (Firebase.apps.isNotEmpty) {
-        final snap = await FirebaseDatabase.instance
-            .ref('drivers')
-            .orderByChild('bus')
-            .equalTo(bus)
-            .get();
+        final snap = await FirebaseDatabase.instance.ref('drivers').get();
         if (snap.exists) {
-          final data = snap.value as Map<dynamic, dynamic>;
-          final firstDriver = data.values.first as Map<dynamic, dynamic>;
-          final route = firstDriver['route'] as String?;
+          String? foundRoute;
+          for (final child in snap.children) {
+            final val = child.value;
+            if (val is Map) {
+              final b = (val['bus']?.toString() ?? '').trim().toUpperCase();
+              if (b == bus) {
+                foundRoute = val['route'] as String?;
+                break;
+              }
+            }
+          }
           if (mounted) {
             setState(() {
-              _fetchedRouteKey = route;
+              _fetchedRouteKey = foundRoute;
               _isFetchingRoute = false;
             });
           }
@@ -518,76 +522,13 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
         dest.coords.latitude, dest.coords.longitude);
     int walkMin = max(1, (distM / 70).ceil());
 
-    try {
-      // OSRM public foot-profile — runs on device, reaches internet fine
-      final url = Uri.parse(
-        'https://router.project-osrm.org/route/v1/foot/'
-        '${_studentLng!},${_studentLat!};'
-        '${dest.coords.longitude},${dest.coords.latitude}'
-        '?overview=full&geometries=geojson&steps=false',
-      );
-
-      final response = await http
-          .get(url, headers: {'Accept': 'application/json'})
-          .timeout(const Duration(seconds: 12));
-
-      if (!mounted) return;
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body) as Map<String, dynamic>;
-        if (data['code'] == 'Ok') {
-          final routes = data['routes'] as List?;
-          if (routes != null && routes.isNotEmpty) {
-            final route = routes[0] as Map<String, dynamic>;
-            final allCoords = (route['geometry']['coordinates'] as List)
-                .map((c) => LatLng(
-                      (c[1] as num).toDouble(),
-                      (c[0] as num).toDouble(),
-                    ))
-                .toList();
-
-            // ── Keep only waypoints inside the campus boundary ─────────────
-            // Campus bounding box (with small margin):
-            // lat: 13.0468 – 13.0552, lng: 80.0722 – 80.0772
-            const minLat = 13.0468, maxLat = 13.0552;
-            const minLng = 80.0722, maxLng = 80.0772;
-
-            bool inCampus(LatLng p) =>
-                p.latitude  >= minLat && p.latitude  <= maxLat &&
-                p.longitude >= minLng && p.longitude <= maxLng;
-
-            // Find the longest contiguous sub-sequence inside campus
-            // that connects origin side to destination side.
-            final inside = allCoords.where(inCampus).toList();
-
-            // Always include real origin and destination endpoints
-            final clipped = <LatLng>[LatLng(_studentLat!, _studentLng!)];
-            clipped.addAll(inside);
-            clipped.add(dest.coords);
-
-            if (clipped.length >= 2) {
-              points  = clipped;
-              // Recompute distance along clipped path
-              distM = 0;
-              for (int i = 0; i < clipped.length - 1; i++) {
-                distM += _haversineM(clipped[i].latitude, clipped[i].longitude,
-                    clipped[i+1].latitude, clipped[i+1].longitude);
-              }
-              final dur = ((route['duration'] as num?)?.toDouble()) ?? 0;
-              walkMin = dur > 0 ? max(1, (dur / 60).ceil())
-                                : max(1, (distM / 70).ceil());
-            }
-          }
-        }
-      }
-    } catch (_) {
-      // Network unavailable — fall back to local graph
-      final origin = LatLng(_studentLat!, _studentLng!);
-      points = campusPathGraph.shortestPath(origin, dest.coords, destName: dest.name);
-      distM  = campusPathGraph.pathDistanceM(points);
-      walkMin = max(1, (distM / 70).ceil());
-      setState(() => _routeError = 'Offline — using campus road estimate');
-    }
+    // Use the custom local graph for strictly internal campus paths
+    final origin = LatLng(_studentLat!, _studentLng!);
+    final graph = CampusPathGraph(); // Instantiate fresh for hot-reload safety
+    points = graph.shortestPath(origin, dest.coords, destName: dest.name);
+    distM  = graph.pathDistanceM(points);
+    walkMin = max(1, (distM / 70).ceil());
+    setState(() => _routeError = '');
 
     _cachedRouteDestName = _selectedNavPointName;
     _cachedFromLat = _studentLat;
@@ -1279,13 +1220,22 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
         } else {
           // If for some reason it's not fetched but we save, just fallback to query
           if (Firebase.apps.isNotEmpty) {
-            FirebaseDatabase.instance.ref('drivers').orderByChild('bus').equalTo(busNo.trim().toUpperCase()).get().then((snap) {
+            FirebaseDatabase.instance.ref('drivers').get().then((snap) {
                if (snap.exists) {
-                  final data = snap.value as Map<dynamic, dynamic>;
-                  final route = data.values.first['route'] as String?;
-                  if (route != null && mounted) {
+                  String? foundRoute;
+                  for (final child in snap.children) {
+                    final val = child.value;
+                    if (val is Map) {
+                      final b = (val['bus']?.toString() ?? '').trim().toUpperCase();
+                      if (b == busNo.trim().toUpperCase()) {
+                        foundRoute = val['route'] as String?;
+                        break;
+                      }
+                    }
+                  }
+                  if (foundRoute != null && mounted) {
                      setState(() {
-                        _selectedRoute = route;
+                        _selectedRoute = foundRoute!;
                         _updateRouteDetails(_selectedRoute, startListener: true);
                      });
                   }

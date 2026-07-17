@@ -41,6 +41,7 @@ final _nodes = <_Node>[
 
   // ── AIDS / east side ──────────────────────────────────────────────────────
   _Node('aids_jct',     const LatLng(13.04980, 80.07646)), // AIDS building
+  _Node('east_lane_mid',const LatLng(13.05075, 80.07648)), // Eastern Caneldea Lane
 
   // ── Perimeter / central spine road (N-S) ─────────────────────────────────
   _Node('spine_a',      const LatLng(13.05020, 80.07510)),
@@ -129,6 +130,10 @@ final _edges = [
   // Cross-connects
   ['csbs_e',    'mid_n2'],   // east side cross road
   ['mba_jct',   'it_road_s'],
+  
+  // Eastern lane (N-S)
+  ['aids_jct',  'east_lane_mid'],
+  ['east_lane_mid', 'csbs_e'],
 ];
 
 // ── Building snap: each CampusPoint name → nearest road node ─────────────────

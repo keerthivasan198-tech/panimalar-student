@@ -1856,296 +1856,337 @@ class _AdminDashboardState extends State<AdminDashboard> {
   }
 
   Widget _buildSTTIntercomTab() {
-    // Get list of all registered bus routes from the driver registry
+    if (_selectedIntercomBus == null) {
+      return _buildChatList();
+    } else {
+      return _buildChatScreen();
+    }
+  }
+
+  Widget _buildChatList() {
     final List<String> activeBusIds = _drivers.map((d) => d.bus).toList();
-    
-    // Filter by search query
     final query = _intercomSearchQuery.toLowerCase();
     final filteredBusIds = activeBusIds.where((bus) => bus.toLowerCase().contains(query)).toList();
 
     return Container(
-      color: const Color(0xFFF0F2F5), // WhatsApp web background color
-      child: Row(
+      color: Colors.white,
+      child: Column(
         children: [
-          // Left Column - Chat List
+          // Header & Search
           Container(
-            width: 300,
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              border: Border(right: BorderSide(color: Color(0xFFE2E8F0))),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // Header & Search
-                Container(
-                  color: const Color(0xFFF0F2F5),
-                  padding: const EdgeInsets.all(12),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: TextField(
-                      controller: _intercomSearchCtrl,
-                      onChanged: (val) => setState(() => _intercomSearchQuery = val),
-                      decoration: const InputDecoration(
-                        hintText: "Search or start new chat",
-                        hintStyle: TextStyle(fontSize: 13, color: Colors.grey),
-                        prefixIcon: Icon(Icons.search, size: 20, color: Colors.grey),
-                        border: InputBorder.none,
-                        contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      ),
-                      style: const TextStyle(fontSize: 14),
-                    ),
-                  ),
+            color: const Color(0xFFF0F2F5), // WhatsApp light grey top
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(24),
+              ),
+              child: TextField(
+                controller: _intercomSearchCtrl,
+                onChanged: (val) => setState(() => _intercomSearchQuery = val),
+                decoration: const InputDecoration(
+                  hintText: "Search messages",
+                  hintStyle: TextStyle(fontSize: 14, color: Colors.grey),
+                  prefixIcon: Icon(Icons.search, size: 20, color: Colors.grey),
+                  border: InputBorder.none,
+                  contentPadding: EdgeInsets.symmetric(vertical: 14),
                 ),
-                const Divider(height: 1),
-                
-                // Chat List
-                Expanded(
-                  child: activeBusIds.isEmpty
-                      ? const Center(child: Padding(padding: EdgeInsets.all(16.0), child: Text("No active drivers found.", style: TextStyle(fontSize: 13, color: Colors.grey))))
-                      : ListView.separated(
-                          itemCount: filteredBusIds.length,
-                          separatorBuilder: (ctx, idx) => const Divider(height: 1, indent: 64),
-                          itemBuilder: (ctx, idx) {
-                            final bus = filteredBusIds[idx];
-                            final msgs = _adminIntercomMessages['driver_$bus'] ?? [];
-                            final lastMsg = msgs.isNotEmpty ? msgs.last['msg'] : '';
-                            
-                            final isSelected = _selectedIntercomBus == bus;
-                            
-                            return ListTile(
-                              tileColor: isSelected ? const Color(0xFFF0F2F5) : Colors.white,
-                              leading: const CircleAvatar(
-                                backgroundColor: Color(0xFFDFE5E7),
-                                child: Icon(Icons.person, color: Colors.white),
-                              ),
-                              title: Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Text("Route $bus", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.black87)),
-                                  const Icon(Icons.circle, size: 10, color: Color(0xFF25D366)),
-                                ],
-                              ),
-                              subtitle: Text(
-                                lastMsg,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontSize: 13, color: Colors.grey),
-                              ),
-                              onTap: () {
-                                setState(() {
-                                  _selectedIntercomBus = bus;
-                                });
-                              },
-                            );
-                          },
-                        ),
-                )
-              ],
+                style: const TextStyle(fontSize: 14),
+              ),
             ),
           ),
-
-          // Right Column - Chat Window
+          const Divider(height: 1, thickness: 1, color: Color(0xFFE0E0E0)),
+          
+          // Chat List
           Expanded(
-            child: _selectedIntercomBus == null
-                ? Container(
-                    color: const Color(0xFFF0F2F5),
-                    child: Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: const [
-                          Icon(Icons.chat_bubble_outline, size: 64, color: Colors.black26),
-                          SizedBox(height: 16),
-                          Text("Select a driver to start messaging", style: TextStyle(fontSize: 16, color: Colors.black54)),
-                        ],
-                      ),
-                    ),
-                  )
-                : Column(
-                    children: [
-                      // Chat Header
-                      Container(
-                        color: const Color(0xFFF0F2F5),
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                        child: Row(
+            child: activeBusIds.isEmpty
+                ? const Center(child: Padding(padding: EdgeInsets.all(16.0), child: Text("No active drivers found.", style: TextStyle(fontSize: 13, color: Colors.grey))))
+                : ListView.separated(
+                    itemCount: filteredBusIds.length,
+                    separatorBuilder: (ctx, idx) => const Divider(height: 1, indent: 80, color: Color(0xFFF0F0F0)),
+                    itemBuilder: (ctx, idx) {
+                      final bus = filteredBusIds[idx];
+                      final msgs = _adminIntercomMessages['driver_$bus'] ?? [];
+                      
+                      String lastMsg = "";
+                      String timeStr = "";
+                      if (msgs.isNotEmpty) {
+                        final last = msgs.last;
+                        lastMsg = (last['isVoice'] == true) 
+                            ? "🎤 Voice message" 
+                            : (last['msg'] ?? '');
+                        
+                        final ts = last['timestamp'] as int?;
+                        if (ts != null) {
+                          final dt = DateTime.fromMillisecondsSinceEpoch(ts);
+                          timeStr = "${dt.hour > 12 ? dt.hour - 12 : dt.hour}:${dt.minute.toString().padLeft(2, '0')} ${dt.hour >= 12 ? 'pm' : 'am'}";
+                        }
+                      }
+                      
+                      return ListTile(
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                        tileColor: Colors.white,
+                        leading: CircleAvatar(
+                          radius: 26,
+                          backgroundColor: Colors.blueGrey[100],
+                          backgroundImage: const NetworkImage("https://ui-avatars.com/api/?name=Bus&background=random&color=fff"),
+                          child: const Icon(Icons.directions_bus, color: Colors.white, size: 24),
+                        ),
+                        title: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            const CircleAvatar(
-                              backgroundColor: Color(0xFFDFE5E7),
-                              child: Icon(Icons.person, color: Colors.white),
-                            ),
-                            const SizedBox(width: 12),
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text("Route $_selectedIntercomBus", style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                                Text(t('admin_online'), style: TextStyle(fontSize: 12, color: Colors.grey)),
-                              ],
-                            ),
+                            Text("Route $bus", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.black87)),
+                            Text(timeStr, style: const TextStyle(fontSize: 12, color: Colors.grey)),
                           ],
                         ),
-                      ),
-                      
-                      // Chat Messages
-                      Expanded(
-                        child: Container(
-                          decoration: const BoxDecoration(
-                            image: DecorationImage(
-                              image: NetworkImage("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png"),
-                              fit: BoxFit.cover,
-                              opacity: 0.5,
-                            ),
-                          ),
-                          child: ListView.builder(
-                            padding: const EdgeInsets.all(16),
-                            itemCount: (_adminIntercomMessages['driver_$_selectedIntercomBus'] ?? []).length,
-                            itemBuilder: (ctx, idx) {
-                              final m = _adminIntercomMessages['driver_$_selectedIntercomBus']![idx];
-                              final isMe = m['sender'] == 'admin';
-                              final isVoice = m['isVoice'] == true;
-                              return Align(
-                                alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-                                child: Container(
-                                  margin: const EdgeInsets.symmetric(vertical: 4),
-                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                                  width: isVoice ? 220 : null,
-                                  decoration: BoxDecoration(
-                                    color: isMe ? const Color(0xFFDCF8C6) : Colors.white,
-                                    borderRadius: BorderRadius.circular(12).copyWith(
-                                      topRight: isMe ? const Radius.circular(0) : const Radius.circular(12),
-                                      topLeft: isMe ? const Radius.circular(12) : const Radius.circular(0),
-                                    ),
-                                    boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 1, offset: Offset(0, 1))],
-                                  ),
-                                  child: isVoice
-                                    ? Row(
-                                        children: [
-                                          InkWell(
-                                            onTap: () {
-                                              _playVoiceMessage(m['id'], m['mongoId'] ?? '', m['voiceDuration'] ?? 3);
-                                            },
-                                            child: Icon(
-                                              _playingMsgId == m['id'] ? Icons.stop_circle : Icons.play_circle_fill,
-                                              color: isMe ? Colors.teal : Colors.blueAccent,
-                                              size: 32,
-                                            ),
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Expanded(
-                                            child: LinearProgressIndicator(
-                                              value: _playingMsgId == m['id'] ? _playbackProgress : 0.0,
-                                              backgroundColor: Colors.black12,
-                                              valueColor: AlwaysStoppedAnimation(isMe ? Colors.teal : Colors.blueAccent),
-                                            ),
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Text("0:${(m['voiceDuration'] ?? 3).toString().padLeft(2, '0')}", style: const TextStyle(fontSize: 12, color: Colors.black54)),
-                                        ],
-                                      )
-                                    : Text("${m['msg']}", style: const TextStyle(fontSize: 14, color: Colors.black87)),
-                                ),
-                              );
-                            },
+                        subtitle: Padding(
+                          padding: const EdgeInsets.only(top: 4.0),
+                          child: Text(
+                            lastMsg.isEmpty ? "Tap to start messaging" : lastMsg,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 14, color: Colors.black54),
                           ),
                         ),
-                      ),
-                      
-                      // Chat Input
-                      if (_isRecordingVoice)
-                        Container(
-                          color: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                          child: Row(
-                            children: [
-                              IconButton(
-                                icon: const Icon(Icons.delete_outline, color: Colors.red),
-                                onPressed: _cancelRecordingVoice,
-                              ),
-                              const SizedBox(width: 16),
-                              Expanded(
-                                child: Text(
-                                  "Recording... 0:${_recordingDurationSecs.toString().padLeft(2, '0')}",
-                                  style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
-                                  textAlign: TextAlign.center,
-                                ),
-                              ),
-                              const SizedBox(width: 16),
-                              IconButton(
-                                icon: const Icon(Icons.send, color: Colors.green),
-                                onPressed: _stopAndSendRecordingVoice,
-                              ),
-                            ],
-                          ),
-                        )
-                      else
-                        Container(
-                          color: const Color(0xFFF0F2F5),
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.emoji_emotions_outlined, color: Colors.grey, size: 26),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Container(
-                                  decoration: BoxDecoration(
-                                    color: Colors.white,
-                                    borderRadius: BorderRadius.circular(24),
-                                  ),
-                                  child: TextField(
-                                    controller: _adminChatInputCtrl,
-                                    decoration: const InputDecoration(
-                                      hintText: "Type a message",
-                                      hintStyle: TextStyle(fontSize: 14, color: Colors.grey),
-                                      contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                                      border: InputBorder.none,
-                                    ),
-                                    style: const TextStyle(fontSize: 14),
-                                    onSubmitted: (val) {
-                                      if (val.trim().isNotEmpty && _selectedIntercomBus != null) {
-                                        _sendAdminTextMessage(_selectedIntercomBus!, val.trim());
-                                        _adminChatInputCtrl.clear();
-                                      }
-                                    },
-                                    onChanged: (val) {
-                                      setState(() {});
-                                    },
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              InkWell(
-                                onTap: () {
-                                  final val = _adminChatInputCtrl.text;
-                                  if (val.trim().isNotEmpty && _selectedIntercomBus != null) {
-                                    _sendAdminTextMessage(_selectedIntercomBus!, val.trim());
-                                    _adminChatInputCtrl.clear();
-                                    setState(() {});
-                                  } else {
-                                    _startRecordingVoice();
-                                  }
-                                },
-                                child: CircleAvatar(
-                                  backgroundColor: const Color(0xFF00A884),
-                                  radius: 20,
-                                  child: Icon(
-                                    _adminChatInputCtrl.text.trim().isNotEmpty ? Icons.send : Icons.mic,
-                                    color: Colors.white,
-                                    size: 20,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                    ],
+                        onTap: () {
+                          setState(() {
+                            _selectedIntercomBus = bus;
+                          });
+                        },
+                      );
+                    },
                   ),
           )
         ],
       ),
     );
   }
+
+  Widget _buildChatScreen() {
+    return Column(
+      children: [
+        // Chat Header
+        Container(
+          color: const Color(0xFFF0F2F5),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+          child: Row(
+            children: [
+              IconButton(
+                icon: const Icon(Icons.arrow_back, color: Colors.black54),
+                onPressed: () {
+                  setState(() {
+                    _selectedIntercomBus = null;
+                  });
+                },
+              ),
+              CircleAvatar(
+                backgroundColor: Colors.blueGrey[100],
+                backgroundImage: const NetworkImage("https://ui-avatars.com/api/?name=Bus&background=random&color=fff"),
+                child: const Icon(Icons.directions_bus, color: Colors.white, size: 20),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text("Route $_selectedIntercomBus", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87)),
+                    Text(t('admin_online'), style: const TextStyle(fontSize: 13, color: Colors.black54)),
+                  ],
+                ),
+              ),
+              IconButton(icon: const Icon(Icons.search, color: Colors.black54), onPressed: () {}),
+              IconButton(icon: const Icon(Icons.more_vert, color: Colors.black54), onPressed: () {}),
+            ],
+          ),
+        ),
+        
+        // Chat Messages
+        Expanded(
+          child: Container(
+            decoration: const BoxDecoration(
+              color: Color(0xFFE5DDD5),
+              image: DecorationImage(
+                image: NetworkImage("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png"),
+                fit: BoxFit.cover,
+                opacity: 0.3,
+              ),
+            ),
+            child: ListView.builder(
+              padding: const EdgeInsets.all(16),
+              itemCount: (_adminIntercomMessages['driver_$_selectedIntercomBus'] ?? []).length,
+              itemBuilder: (ctx, idx) {
+                final m = _adminIntercomMessages['driver_$_selectedIntercomBus']![idx];
+                final isMe = m['sender'] == 'admin';
+                final isVoice = m['isVoice'] == true;
+                
+                String msgTime = "";
+                final ts = m['timestamp'] as int?;
+                if (ts != null) {
+                   final dt = DateTime.fromMillisecondsSinceEpoch(ts);
+                   msgTime = "${dt.hour > 12 ? dt.hour - 12 : dt.hour}:${dt.minute.toString().padLeft(2, '0')} ${dt.hour >= 12 ? 'pm' : 'am'}";
+                }
+                
+                return Align(
+                  alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                  child: Container(
+                    margin: const EdgeInsets.only(bottom: 6),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    width: isVoice ? 240 : null,
+                    constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+                    decoration: BoxDecoration(
+                      color: isMe ? const Color(0xFFD9FDD3) : Colors.white,
+                      borderRadius: BorderRadius.circular(12).copyWith(
+                        topRight: isMe ? const Radius.circular(0) : const Radius.circular(12),
+                        topLeft: isMe ? const Radius.circular(12) : const Radius.circular(0),
+                      ),
+                      boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 1, offset: Offset(0, 1))],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        if (isVoice)
+                          Row(
+                            children: [
+                              InkWell(
+                                onTap: () {
+                                  _playVoiceMessage(m['id'], m['mongoId'] ?? '', m['voiceDuration'] ?? 3);
+                                },
+                                child: Icon(
+                                  _playingMsgId == m['id'] ? Icons.stop_circle : Icons.play_arrow,
+                                  color: Colors.grey[700],
+                                  size: 32,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: LinearProgressIndicator(
+                                  value: _playingMsgId == m['id'] ? _playbackProgress : 0.0,
+                                  backgroundColor: Colors.black12,
+                                  valueColor: AlwaysStoppedAnimation(Colors.grey[700]),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text("0:${(m['voiceDuration'] ?? 3).toString().padLeft(2, '0')}", style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                            ],
+                          )
+                        else
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text("${m['msg']}", style: const TextStyle(fontSize: 15, color: Colors.black87)),
+                          ),
+                        const SizedBox(height: 2),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(msgTime, style: const TextStyle(fontSize: 10, color: Colors.black54)),
+                            if (isMe) ...[
+                               const SizedBox(width: 4),
+                               const Icon(Icons.done_all, size: 14, color: Colors.blue),
+                            ]
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+        
+        // Chat Input
+        if (_isRecordingVoice)
+          Container(
+            color: const Color(0xFFF0F2F5),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Row(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.delete, color: Colors.red, size: 28),
+                  onPressed: _cancelRecordingVoice,
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Text(
+                    "Recording... 0:${_recordingDurationSecs.toString().padLeft(2, '0')}",
+                    style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 16),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                IconButton(
+                  icon: const Icon(Icons.send, color: Color(0xFF00A884), size: 28),
+                  onPressed: _stopAndSendRecordingVoice,
+                ),
+              ],
+            ),
+          )
+        else
+          Container(
+            color: const Color(0xFFF0F2F5),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+            child: Row(
+              children: [
+                const Icon(Icons.emoji_emotions_outlined, color: Colors.black54, size: 28),
+                const SizedBox(width: 10),
+                const Icon(Icons.attach_file, color: Colors.black54, size: 28),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                    child: TextField(
+                      controller: _adminChatInputCtrl,
+                      decoration: const InputDecoration(
+                        hintText: "Type a message",
+                        hintStyle: TextStyle(fontSize: 15, color: Colors.black54),
+                        contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        border: InputBorder.none,
+                      ),
+                      style: const TextStyle(fontSize: 15),
+                      onSubmitted: (val) {
+                        if (val.trim().isNotEmpty && _selectedIntercomBus != null) {
+                          _sendAdminTextMessage(_selectedIntercomBus!, val.trim());
+                          _adminChatInputCtrl.clear();
+                        }
+                      },
+                      onChanged: (val) {
+                        setState(() {});
+                      },
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                InkWell(
+                  onTap: () {
+                    final val = _adminChatInputCtrl.text;
+                    if (val.trim().isNotEmpty && _selectedIntercomBus != null) {
+                      _sendAdminTextMessage(_selectedIntercomBus!, val.trim());
+                      _adminChatInputCtrl.clear();
+                      setState(() {});
+                    } else {
+                      _startRecordingVoice();
+                    }
+                  },
+                  child: CircleAvatar(
+                    backgroundColor: const Color(0xFF00A884),
+                    radius: 24,
+                    child: Icon(
+                      _adminChatInputCtrl.text.trim().isNotEmpty ? Icons.send : Icons.mic,
+                      color: Colors.white,
+                      size: 24,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
 
   Widget _buildRequestsTab() {
     return _isLoadingRequests
