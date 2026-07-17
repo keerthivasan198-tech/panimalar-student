@@ -1,22 +1,18 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:flutter/foundation.dart';
 import 'dart:math';
-import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_tts/flutter_tts.dart';
-import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
-import 'dart:io';
 import '../../config/routes_config.dart';
 import '../../config/lang_config.dart';
 import 'package:record/record.dart';
@@ -937,7 +933,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
     }
   }
 
-  Future<void> _fbSetOffline() async {
+  Future<void> _fbSetOffline({String statusToSet = 'completed'}) async {
     if (Firebase.apps.isEmpty) return;
     setState(() {
       _isSyncing = true;
@@ -947,7 +943,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
       'lat': _currentPosition?.latitude ?? 13.0486,
       'lng': _currentPosition?.longitude ?? 80.0753,
       'acc': _currentPosition?.accuracy ?? 10.0,
-      'status': 'offline',
+      'status': statusToSet,
       'updatedAt': DateTime.now().toIso8601String()
     };
 
@@ -990,9 +986,28 @@ class _DriverDashboardState extends State<DriverDashboard> {
       _syncStatusText = "Starting GPS stream...";
     });
 
+    // IMMEDIATELY push the 'tracking' status to Firebase so students see "Bus is online" 
+    // instantly, without waiting for the first GPS lock (which can take 10-30 seconds).
+    _fbUpdateLocationRaw(_latitude, _longitude, _accuracy);
+
     _showBusReadyNotification();
     _startSpeechMonitor();
     _startSafetyTimer();
+    // Persist tracking state so system knows we are active
+    final prefs = await SharedPreferences.getInstance();
+    prefs.setBool('driver_is_tracking_${widget.driverBus}', true);
+
+    // Push "Trip Started" to the global notifications node so students see it in their notification center
+    if (Firebase.apps.isNotEmpty) {
+      final notifRef = FirebaseDatabase.instance.ref('notifications').push();
+      notifRef.set({
+        'title': '🚌 Trip Started',
+        'body': 'Bus ${widget.driverBus} has started its route. Live GPS tracking is active.',
+        'type': 'alert',
+        'target_bus': widget.driverBus,
+        'timestamp': DateTime.now().toIso8601String(),
+      });
+    }
 
     if (_simulateRoute) {
       _simulatedPath = _interpolatePoints(_routeStops);
@@ -1108,14 +1123,26 @@ class _DriverDashboardState extends State<DriverDashboard> {
 
     setState(() {
       _isTracking = false;
-      _appStatus = "Offline";
+      _appStatus = "Completed";
       _gpsStatus = "Offline";
     });
 
-    await _fbSetOffline();
+    await _fbSetOffline(statusToSet: 'completed');
     _stopSpeechMonitor();
     final prefs = await SharedPreferences.getInstance();
     prefs.setBool('driver_is_tracking_${widget.driverBus}', false);
+
+    // Push "Trip Completed" to the global notifications node so students see it in their notification center
+    if (Firebase.apps.isNotEmpty) {
+      final notifRef = FirebaseDatabase.instance.ref('notifications').push();
+      notifRef.set({
+        'title': '🏁 Trip Completed',
+        'body': 'Bus ${widget.driverBus} has completed its trip. Thank you for riding with us!',
+        'type': 'alert',
+        'target_bus': widget.driverBus,
+        'timestamp': DateTime.now().toIso8601String(),
+      });
+    }
   }
 
   void _checkGeofences(Position pos) {
@@ -1702,44 +1729,12 @@ class _DriverDashboardState extends State<DriverDashboard> {
               ),
               children: [
                 TileLayer(
-                  urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-                  subdomains: const ['a', 'b', 'c', 'd'],
+                  urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
                 ),
-                if (routePoints.length >= 2)
-                  PolylineLayer(
-                    polylines: [
-                      Polyline(
-                        points: routePoints,
-                        color: routeColor,
-                        strokeWidth: 4.5,
-                        borderColor: Colors.white,
-                        borderStrokeWidth: 1.5,
-                      ),
-                    ],
-                  ),
                 // Route stop markers
                 if (_routeStops.isNotEmpty)
                   MarkerLayer(
                     markers: [
-                      // First stop (start)
-                      Marker(
-                        point: LatLng(
-                          _routeStops.first['lat'] as double,
-                          _routeStops.first['lng'] as double,
-                        ),
-                        width: 28,
-                        height: 28,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: routeColor,
-                            shape: BoxShape.circle,
-                            border: Border.all(color: Colors.white, width: 2),
-                          ),
-                          child: const Center(
-                            child: Text("A", style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white)),
-                          ),
-                        ),
-                      ),
                       // Last stop (college)
                       Marker(
                         point: LatLng(
@@ -1756,21 +1751,6 @@ class _DriverDashboardState extends State<DriverDashboard> {
                           ),
                           child: const Center(
                             child: Text("🏫", style: TextStyle(fontSize: 12)),
-                          ),
-                        ),
-                      ),
-                      // Intermediate stops
-                      ..._routeStops.skip(1).take(_routeStops.length - 2).map((stop) =>
-                        Marker(
-                          point: LatLng(stop['lat'] as double, stop['lng'] as double),
-                          width: 10,
-                          height: 10,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: routeColor.withValues(alpha: 0.7),
-                              shape: BoxShape.circle,
-                              border: Border.all(color: Colors.white, width: 1),
-                            ),
                           ),
                         ),
                       ),
@@ -1792,28 +1772,6 @@ class _DriverDashboardState extends State<DriverDashboard> {
                             child: const Center(child: Text("🚌", style: TextStyle(fontSize: 22))),
                           ),
                         ),
-                      // Nearby buses on same route
-                      ..._sameRouteBuses.values.map((b) =>
-                        Marker(
-                          point: LatLng(b['lat'] as double, b['lng'] as double),
-                          width: 32,
-                          height: 32,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: b['status'] == 'broken' ? const Color(0xFFEF4444) : const Color(0xFFF59E0B),
-                              shape: BoxShape.circle,
-                              border: Border.all(color: Colors.white, width: 2),
-                              boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)],
-                            ),
-                            child: Center(
-                              child: Text(
-                                b['busId'].toString().replaceAll(RegExp(r'[^0-9]'), ''),
-                                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
                     ],
                   ),
               ],
@@ -2079,62 +2037,6 @@ class _DriverDashboardState extends State<DriverDashboard> {
                         },
                       ),
                     ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                      margin: const EdgeInsets.only(top: 8, bottom: 8),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFFF7ED),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: const Color(0xFFFFEDD5)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            "🚨 DRIVER SAFETY SIMULATOR CONSOLE",
-                            style: TextStyle(fontSize: 8.5, fontWeight: FontWeight.w900, color: Color(0xFFC2410C), letterSpacing: 0.5),
-                          ),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Material(
-                                  color: Colors.transparent,
-                                  child: CheckboxListTile(
-                                    dense: true,
-                                    contentPadding: EdgeInsets.zero,
-                                    title: const Text("Speaking on Call", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF451A03))),
-                                    value: _onPhoneCall,
-                                    activeColor: const Color(0xFFC2410C),
-                                    onChanged: (val) {
-                                      setState(() {
-                                        _onPhoneCall = val ?? false;
-                                      });
-                                    },
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Material(
-                                  color: Colors.transparent,
-                                  child: CheckboxListTile(
-                                    dense: true,
-                                    contentPadding: EdgeInsets.zero,
-                                    title: const Text("Earpods Connected", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF451A03))),
-                                    value: _connectedToEarpods,
-                                    activeColor: const Color(0xFFC2410C),
-                                    onChanged: (val) {
-                                      setState(() {
-                                        _connectedToEarpods = val ?? false;
-                                      });
-                                    },
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
                     const SizedBox(height: 12),
                     Container(
                       padding: const EdgeInsets.all(12),
@@ -2238,316 +2140,6 @@ class _DriverDashboardState extends State<DriverDashboard> {
               ),
               const SizedBox(height: 16),
 
-              // Speech Monitor Card
-              Container(
-                padding: const EdgeInsets.all(18),
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [Color(0xFFFFFDF5), Color(0xFFFEF3C7)],
-                  ),
-                  borderRadius: BorderRadius.circular(28),
-                  border: Border.all(color: const Color(0xFFFCD34D).withValues(alpha: 0.5), width: 1.5),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Row(
-                      children: [
-                        Container(
-                          width: 36,
-                          height: 36,
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFFDE68A),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          alignment: Alignment.center,
-                          child: const Text("🎙️", style: TextStyle(fontSize: 18)),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                t('speechTitle'),
-                                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w900, color: Color(0xFF92400E)),
-                              ),
-                              Text(
-                                _smActive ? t('speechActive') : t('speechWaiting'),
-                                style: const TextStyle(fontSize: 10, color: Color(0xFFB45309), fontWeight: FontWeight.bold),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: _smActive ? const Color(0xFFDCFCE7) : const Color(0xFFE5E7EB),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Row(
-                            children: [
-                              Container(
-                                width: 6,
-                                height: 6,
-                                decoration: BoxDecoration(
-                                  color: _smActive ? (_isSpeaking ? Colors.red : Colors.green) : Colors.grey,
-                                  shape: BoxShape.circle,
-                                ),
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                _smActive ? (_isSpeaking ? "SPEAKING" : "LIVE") : "OFF",
-                                style: TextStyle(
-                                  fontSize: 9,
-                                  fontWeight: FontWeight.w900,
-                                  color: _smActive ? (_isSpeaking ? Colors.red : const Color(0xFF166534)) : Colors.grey,
-                                ),
-                              )
-                            ],
-                          ),
-                        )
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-
-                    if (!_smActive)
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.5),
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.2), width: 1),
-                        ),
-                        alignment: Alignment.center,
-                        child: const Text(
-                          "🔒 Monitoring activates automatically when tracking starts.",
-                          textAlign: TextAlign.center,
-                          style: TextStyle(fontSize: 11, color: Color(0xFFB45309), fontWeight: FontWeight.bold),
-                        ),
-                      ),
-
-                    if (_smActive) ...[
-                      Center(
-                        child: SizedBox(
-                          height: 36,
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            crossAxisAlignment: CrossAxisAlignment.center,
-                            children: _waveValues.map((h) {
-                              return AnimatedContainer(
-                                duration: const Duration(milliseconds: 150),
-                                width: 3.5,
-                                height: h,
-                                margin: const EdgeInsets.symmetric(horizontal: 1.5),
-                                decoration: BoxDecoration(
-                                  color: _isSpeaking ? const Color(0xFFEFF6FF) : const Color(0xFFD97706),
-                                  borderRadius: BorderRadius.circular(999),
-                                ),
-                              );
-                            }).toList(),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-
-                      GridView.count(
-                        crossAxisCount: 2,
-                        shrinkWrap: true,
-                        crossAxisSpacing: 8,
-                        mainAxisSpacing: 8,
-                        childAspectRatio: 2.1,
-                        physics: const NeverScrollableScrollPhysics(),
-                        children: [
-                          _buildSmTile(t('speakingTime'), _formatDuration(_totalSpeakingSeconds)),
-                          _buildSmTile(t('sessions'), _sessionsCount.toString()),
-                          _buildSmTile(t('longest'), _formatDuration(_longestSessionSeconds)),
-                          _buildSmTile(t('pctDrive'), "${_speechUsagePercentage.toStringAsFixed(0)}%"),
-                        ],
-                      ),
-                      const SizedBox(height: 14),
-
-                      Column(
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(t('speechUsage'), style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF92400E))),
-                              Text("${_speechUsagePercentage.toStringAsFixed(0)}% / 20%", style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF92400E))),
-                            ],
-                          ),
-                          const SizedBox(height: 6),
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
-                            child: LinearProgressIndicator(
-                              value: (_speechUsagePercentage / 100).clamp(0.0, 1.0),
-                              backgroundColor: const Color(0xFFFDE68A),
-                              color: _speechUsagePercentage > _warnThresholdPct ? const Color(0xFFEF4444) : const Color(0xFFF59E0B),
-                              minHeight: 8,
-                            ),
-                          ),
-                        ],
-                      ),
-
-                      if (_showSpeechAlert) ...[
-                        const SizedBox(height: 12),
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFFEE2E2),
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(color: const Color(0xFFFCA5A5), width: 1.2),
-                          ),
-                          child: Row(
-                            children: [
-                              const Text("⚠️", style: TextStyle(fontSize: 18)),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  t('speechTooMuch'),
-                                  style: const TextStyle(fontSize: 11, color: Color(0xFF991B1B), fontWeight: FontWeight.w900),
-                                ),
-                              )
-                            ],
-                          ),
-                        ),
-                      ],
-
-                      if (_speechLog.isNotEmpty) ...[
-                        const SizedBox(height: 14),
-                        Text(t('sessionLog'), style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF92400E))),
-                        const SizedBox(height: 6),
-                        Container(
-                          constraints: const BoxConstraints(maxHeight: 90),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.5),
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          child: ListView.builder(
-                            shrinkWrap: true,
-                            padding: const EdgeInsets.all(8),
-                            itemCount: _speechLog.length > 5 ? 5 : _speechLog.length,
-                            itemBuilder: (context, idx) {
-                              final item = _speechLog[idx];
-                              final isWarn = item['isWarn'] == "true";
-                              return Container(
-                                margin: const EdgeInsets.only(bottom: 4),
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                decoration: BoxDecoration(
-                                  border: Border(left: BorderSide(color: isWarn ? Colors.red : const Color(0xFFF59E0B), width: 3)),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Text(
-                                      item['time'] ?? "",
-                                      style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Color(0xFFB45309)),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: Text(
-                                        item['text'] ?? "",
-                                        style: TextStyle(
-                                          fontSize: 10,
-                                          color: isWarn ? Colors.red : const Color(0xFF78350F),
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                    )
-                                  ],
-                                ),
-                              );
-                            },
-                          ),
-                        )
-                      ]
-                    ]
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              // Live Fleet Dashboard (ETA, Health, Boarding count)
-              Container(
-                padding: const EdgeInsets.all(18),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(24),
-                  border: Border.all(color: const Color(0xFFDBE2F8), width: 1.2),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(t('fleetLabel'), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Color(0xFF334155))),
-                    const SizedBox(height: 14),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFF8FBFF),
-                              borderRadius: BorderRadius.circular(18),
-                              border: Border.all(color: const Color(0xFFDBE2F8)),
-                            ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFFEFF6FF),
-                                    borderRadius: BorderRadius.circular(20),
-                                  ),
-                                  child: const Text("On route", style: TextStyle(fontSize: 9, fontWeight: FontWeight.w900, color: Color(0xFF2563EB))),
-                                ),
-                                const SizedBox(height: 8),
-                                Text(t('etaTitle'), style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1E3A8A))),
-                                const SizedBox(height: 2),
-                                Text("${t('nextStopLabel')} $_nextStop", style: const TextStyle(fontSize: 9, color: Color(0xFF64748B), fontWeight: FontWeight.bold)),
-                                const SizedBox(height: 6),
-                                Text(_eta, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: Color(0xFF2563EB))),
-                              ],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFF8FBFF),
-                              borderRadius: BorderRadius.circular(18),
-                              border: Border.all(color: const Color(0xFFDBE2F8)),
-                            ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFFFEF3C7),
-                                    borderRadius: BorderRadius.circular(20),
-                                  ),
-                                  child: const Text("Maintenance", style: TextStyle(fontSize: 9, fontWeight: FontWeight.w900, color: Color(0xFFD97706))),
-                                ),
-                                const SizedBox(height: 8),
-                                Text(t('healthTitle'), style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1E3A8A))),
-                                const SizedBox(height: 6),
-                                const Text("Next service in 4 days", style: TextStyle(fontSize: 11, color: Color(0xFF64748B), fontWeight: FontWeight.w600, height: 1.4)),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-
               _buildAuthorizedPickupsCard(),
               const SizedBox(height: 16),
 
@@ -2578,25 +2170,6 @@ class _DriverDashboardState extends State<DriverDashboard> {
                       ),
                       style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
                     ),
-                    if (_sameRouteBuses.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      const Text("Nearby buses on same route:", style: TextStyle(fontSize: 10, color: Color(0xFF64748B), fontWeight: FontWeight.bold)),
-                      const SizedBox(height: 4),
-                      Wrap(
-                        spacing: 8,
-                        children: _sameRouteBuses.values.map((b) => 
-                          ActionChip(
-                            label: Text(b['busId'].toString(), style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                            backgroundColor: const Color(0xFFF1F5F9),
-                            onPressed: () {
-                              setState(() {
-                                _replacementController.text = b['busId'].toString();
-                              });
-                            },
-                          )
-                        ).toList(),
-                      ),
-                    ],
                     const SizedBox(height: 10),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -2626,75 +2199,6 @@ class _DriverDashboardState extends State<DriverDashboard> {
               const SizedBox(height: 16),
 
               Container(
-                padding: const EdgeInsets.all(18),
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFFFEF2F2), Color(0xFFFEE2E2)],
-                  ),
-                  borderRadius: BorderRadius.circular(28),
-                  border: Border.all(color: const Color(0xFFFCA5A5).withValues(alpha: 0.5), width: 1.5),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Row(
-                      children: [
-                        const Text("🚌", style: TextStyle(fontSize: 20)),
-                        const SizedBox(width: 10),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(t('notifyRoute'), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w900, color: Color(0xFF991B1B))),
-                            Text(t('autoAlertNearby'), style: const TextStyle(fontSize: 9, color: Color(0xFFB45309), fontWeight: FontWeight.bold)),
-                          ],
-                        )
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      t('notifyExpl'),
-                      style: const TextStyle(fontSize: 11, color: Color(0xFF78350F), height: 1.4, fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 14),
-                    Column(
-                      children: [
-                        _buildRouteBusItem("B202", "Route 52 · Behind you ~2.4 km"),
-                        _buildRouteBusItem("B303", "Route 137 · Ahead ~1.1 km"),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFDC2626),
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                        elevation: 0,
-                      ),
-                      onPressed: _selectedNotifyBuses.containsValue(true) ? _sendBreakdownToRouteBuses : null,
-                      child: Text(t('sendBreakdownBuses'), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
-                    ),
-                    if (_routeNotifyStatus.isNotEmpty) ...[
-                      const SizedBox(height: 10),
-                      Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.6),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Text(
-                          _routeNotifyStatus,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF166534)),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                   color: Colors.white,
@@ -2702,30 +2206,8 @@ class _DriverDashboardState extends State<DriverDashboard> {
                   border: Border.all(color: const Color(0xFFDBE2F8)),
                 ),
                 child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  mainAxisAlignment: MainAxisAlignment.end,
                   children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(t('langLabelDash'), style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFF334155))),
-                        const SizedBox(height: 6),
-                        DropdownButton<String>(
-                          value: widget.currentLang,
-                          underline: const SizedBox(),
-                          style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF2563EB), fontSize: 13),
-                          items: const [
-                            DropdownMenuItem(value: 'en', child: Text('English')),
-                            DropdownMenuItem(value: 'ta', child: Text('தமிழ்')),
-                            DropdownMenuItem(value: 'te', child: Text('తెలుగు')),
-                          ],
-                          onChanged: (val) {
-                            if (val != null) {
-                              widget.onLanguageChanged(val);
-                            }
-                          },
-                        )
-                      ],
-                    ),
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFFF1F5F9),

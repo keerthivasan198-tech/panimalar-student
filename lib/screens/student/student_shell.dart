@@ -97,9 +97,29 @@ class _MainShellState extends State<MainShell> {
 
   @override
   Widget build(BuildContext context) {
-    // Always go directly to student dashboard without requiring login
+    if (!_isLoggedIn && !_showCreateProfile) {
+      return StudentLoginScreen(
+        onLogin: _login,
+        currentLang: widget.currentLang,
+        onLanguageChanged: widget.onLanguageChanged,
+        onSwitchRole: widget.onSwitchRole,
+        onCreateProfile: () {
+          setState(() {
+            _showCreateProfile = true;
+          });
+        },
+      );
+    }
+
     return StudentDashboard(
       studentRollNo: _studentRollNo,
+      isFirstTimeSignup: _showCreateProfile,
+      onFirstTimeSave: (savedRollNo) {
+        _login(savedRollNo);
+        setState(() {
+          _showCreateProfile = false;
+        });
+      },
       onLogout: _logout,
       currentLang: widget.currentLang,
       onLanguageChanged: widget.onLanguageChanged,
@@ -139,6 +159,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   int _currentIndex = 0;
   bool _isEditingProfile = false;
   String _profilePicUrl = "";
+  MemoryImage? _cachedProfileImage; // cached to prevent blinking
 
   bool _busIsOnline = false;
   double? _busLat;
@@ -152,7 +173,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   Timer? _lerpTimer;
 
   String _savedStop = "";
-  String _studentName = "Student Name";
+  String _studentName = "";
   String _studentYear = "3rd Year";
   String _studentDept = "Computer Science (CSE)";
   String _studentId = "";
@@ -313,6 +334,19 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     return List<String>.from(routeStopsConfig[key] ?? []);
   }
   List<Map<String, dynamic>> _adminNotifications = [];
+  
+  List<Map<String, dynamic>> get _filteredNotifications {
+    return _adminNotifications.where((n) {
+      final target = n['bus']?.toString().toLowerCase() ?? 'all';
+      if (target == 'all') return true;
+      final busName = 'bus $_busFirebaseId'.toLowerCase();
+      final targetStr = target.toLowerCase();
+      return targetStr == _busFirebaseId || 
+             targetStr == _studentBusNo || 
+             targetStr == busName || 
+             targetStr.contains(_busFirebaseId);
+    }).toList();
+  }
   int _unreadNotifCount = 0;
   StreamSubscription? _notifSub;
 
@@ -584,7 +618,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
         if (!mounted) return;
         setState(() {
           _adminNotifications = loaded;
-          _unreadNotifCount = loaded.where((n) => n['read'] != true).length;
+          _unreadNotifCount = _filteredNotifications.where((n) => n['read'] != true).length;
         });
       });
     } catch (e) {
@@ -594,7 +628,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
 
   void _markAllNotificationsRead() {
     if (Firebase.apps.isEmpty) return;
-    for (final n in _adminNotifications) {
+    for (final n in _filteredNotifications) {
       if (n['read'] != true) {
         FirebaseDatabase.instance
             .ref('student_notifications/${n['id']}/read')
@@ -602,7 +636,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       }
     }
     setState(() {
-      for (final n in _adminNotifications) {
+      for (final n in _filteredNotifications) {
         n['read'] = true;
       }
       _unreadNotifCount = 0;
@@ -655,7 +689,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                         ),
                       ),
                     ),
-                    if (_adminNotifications.isNotEmpty)
+                    if (_filteredNotifications.isNotEmpty)
                       TextButton(
                         onPressed: () => Navigator.pop(ctx),
                         child: const Text("Close",
@@ -681,7 +715,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
               const Divider(height: 1),
               // Notifications list
                Expanded(
-                child: (!_breakdownActive && _adminNotifications.isEmpty)
+                child: (!_breakdownActive && _filteredNotifications.isEmpty)
                     ? const Center(
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
@@ -712,7 +746,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                             _buildStudentBreakdownNotifTile(ctx),
                             const SizedBox(height: 8),
                           ],
-                          ..._adminNotifications.map((n) => Column(
+                          ..._filteredNotifications.map((n) => Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
                               _buildNotifTile(n),
@@ -973,16 +1007,23 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
 
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _studentName = prefs.getString('studentName') ?? "Student Name";
+      _studentName = prefs.getString('studentName') ?? "";
       _studentYear = prefs.getString('studentYear') ?? "3rd Year";
       _studentDept = prefs.getString('studentDept') ?? "Computer Science (CSE)";
       _profilePicUrl = prefs.getString('profilePicUrl') ?? "";
       _studentBusNo = prefs.getString('studentBusNo') ?? "";
       _savedStop = prefs.getString('studentSavedStop') ?? "";
       _studentId = widget.studentRollNo;
+      // Pre-fill all edit controllers with existing values
+      _profileRollNoCtrl.text = widget.studentRollNo;
       _profileNameCtrl.text = _studentName;
       _profileTempYear = _studentYear;
       _profileBusCtrl.text = _studentBusNo;
+      if (_profilePicUrl.startsWith('base64:')) {
+        try {
+          _cachedProfileImage = MemoryImage(base64Decode(_profilePicUrl.substring(7)));
+        } catch (_) { _cachedProfileImage = null; }
+      }
     });
 
     try {
@@ -997,8 +1038,16 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
             _profileBusCtrl.text = data['busNo'] ?? _profileBusCtrl.text;
             _studentBusNo = data['busNo'] ?? _studentBusNo;
             _savedStop = data['boardingStop'] ?? _savedStop;
+            // Keep edit controllers in sync with latest fetched values
+            _profileNameCtrl.text = _studentName;
+            _profileTempYear = _studentYear;
             if (data['profilePicBase64'] != null && data['profilePicBase64'].isNotEmpty) {
               _profilePicUrl = data['profilePicBase64'];
+              if (_profilePicUrl.startsWith('base64:')) {
+                try {
+                  _cachedProfileImage = MemoryImage(base64Decode(_profilePicUrl.substring(7)));
+                } catch (_) { _cachedProfileImage = null; }
+              }
             }
           });
         }
@@ -1009,9 +1058,41 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       debugPrint("Failed to fetch profile from MongoDB: $e");
     }
 
-    _updateRouteDetails(_selectedRoute, startListener: false);
+    // Attempt to dynamically load the route for the student's saved bus
+    if (_studentBusNo.isNotEmpty && Firebase.apps.isNotEmpty) {
+      final initialRoute = _selectedRoute;
+      FirebaseDatabase.instance.ref('drivers').get().then((snap) {
+         if (snap.exists) {
+            String? foundRoute;
+            for (final child in snap.children) {
+              final val = child.value;
+              if (val is Map) {
+                final b = (val['bus']?.toString() ?? '').trim().toUpperCase();
+                if (b == _studentBusNo.trim().toUpperCase()) {
+                  foundRoute = val['route'] as String?;
+                  break;
+                }
+              }
+            }
+            if (foundRoute != null && mounted) {
+               // Only apply if the user hasn't manually selected another route while loading
+               if (_selectedRoute == initialRoute) {
+                 setState(() {
+                    _selectedRoute = foundRoute!;
+                 });
+                 _updateRouteDetails(_selectedRoute, startListener: true);
+                 return;
+               }
+            }
+         }
+         _updateRouteDetails(_selectedRoute, startListener: true);
+      }).catchError((_) {
+         _updateRouteDetails(_selectedRoute, startListener: true);
+      });
+    } else {
+      _updateRouteDetails(_selectedRoute, startListener: true);
+    }
     _startPickupRequestListener();
-    _startFirebaseListener();
     _listenForStudentIntercomMessages();
   }
 
@@ -1104,7 +1185,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
 
     if (mounted) {
       setState(() {
-        _busRoutePoints = _routeStops.map((s) => _coords[s]).whereType<LatLng>().toList();
+        _busRoutePoints = []; // Fallback to no line instead of straight imperfect lines
         _busRouteLoading = false;
       });
     }
@@ -1157,6 +1238,8 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     await prefs.setString('profilePicUrl', _profilePicUrl);
     await prefs.setString('studentBusNo', busNo);
     await prefs.setString('studentSavedStop', boardingStop);
+    // Always persist the roll number — covers first-time signup AND edits
+    await prefs.setString('studentRollNo', actualRollNo);
     
     try {
       final response = await http.post(
@@ -1184,16 +1267,14 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       _studentDept = dept;
       _studentBusNo = busNo;
       _savedStop = boardingStop;
-      
+      // Update the local student ID so sub-heading shows new roll no immediately
+      _studentId = actualRollNo;
       
       if (busNo.isNotEmpty) {
-        // Fetch the route async and update later if needed, but since we are saving,
-        // _fetchedRouteKey should have been fetched already.
         if (_fetchedRouteKey != null) {
           _selectedRoute = _fetchedRouteKey!;
           _updateRouteDetails(_selectedRoute, startListener: true);
         } else {
-          // If for some reason it's not fetched but we save, just fallback to query
           if (Firebase.apps.isNotEmpty) {
             FirebaseDatabase.instance.ref('drivers').get().then((snap) {
                if (snap.exists) {
@@ -1226,7 +1307,8 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       _isEditingProfile = false;
     });
     
-    if (widget.isFirstTimeSignup && widget.onFirstTimeSave != null) {
+    // Notify parent shell of the (possibly new) roll number so auto-login is always in sync
+    if (widget.onFirstTimeSave != null) {
       widget.onFirstTimeSave!(actualRollNo);
     }
     
@@ -1250,6 +1332,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
             final base64String = base64Encode(imageBytes);
             setState(() {
               _profilePicUrl = 'base64:' + base64String;
+              try {
+                _cachedProfileImage = MemoryImage(imageBytes!);
+              } catch (_) { _cachedProfileImage = null; }
             });
             _showSnackBar("Profile photo attached! Don't forget to save!");
           }
@@ -1528,7 +1613,13 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       _locationSub?.cancel();
       _locationSub = FirebaseDatabase.instance.ref('liveLocations/$targetBusId').onValue.listen((event) {
         final data = event.snapshot.value as Map?;
-        if (data == null || data['status'] == 'offline') {
+        final status = data?['status'] as String? ?? 'offline';
+
+        // Only mark online when driver has explicitly started tracking
+        final bool isLive = status == 'tracking' || status == 'broken';
+        final bool isCompleted = status == 'completed';
+
+        if (data == null || (!isLive && !isCompleted)) {
           setState(() {
             _wasBusOnline = false;
             _busIsOnline = false;
@@ -1538,15 +1629,16 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
           return;
         }
 
-        final bool justCameOnline = !_wasBusOnline;
+        final bool justCameOnline = !_wasBusOnline && isLive;
+        final bool justCompleted = _wasBusOnline && isCompleted;
 
         setState(() {
-          _busIsOnline = true;
-          _wasBusOnline = true;
+          _busIsOnline = isLive;
+          _wasBusOnline = isLive || isCompleted; // keep it true if completed so we don't re-trigger
           _busLat = (data['lat'] as num).toDouble();
           _busLng = (data['lng'] as num).toDouble();
           _busAccuracy = (data['acc'] as num?)?.toDouble() ?? (data['accuracy'] as num?)?.toDouble() ?? 10.0;
-          _busStatus = data['status'] as String? ?? "tracking";
+          _busStatus = status;
           _busDirection = data['direction'] as String? ?? "To College";
 
           final rawUpdatedAt = data['updatedAt'] as String?;
@@ -1569,9 +1661,24 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
 
         if (justCameOnline) {
           _showInAppNotification(
-            "🚌 Bus $targetBusId is Ready!",
-            "The bus has started its route. Live GPS tracking is now active. Get ready to board!",
+            "🚌 Trip has started",
+            "Bus $targetBusId has started its route. Live GPS tracking is now active. Get ready to board!",
             "✅",
+            durationMs: 10000,
+          );
+          // Auto-pan to bus location when it comes online
+          if (_busLat != null && _busLng != null) {
+            Future.delayed(const Duration(milliseconds: 300), () {
+              if (mounted) {
+                _mapController.move(LatLng(_busLat!, _busLng!), 14.0);
+              }
+            });
+          }
+        } else if (justCompleted) {
+          _showInAppNotification(
+            "🏁 Trip is completed",
+            "Bus $targetBusId has successfully completed its trip.",
+            "🏁",
             durationMs: 10000,
           );
         }
@@ -2071,7 +2178,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                   child: Container(
                     padding: const EdgeInsets.all(2),
                     decoration: BoxDecoration(
-                      color: Colors.red,
+                      color: Colors.blue, // Updated to blue
                       borderRadius: BorderRadius.circular(6),
                     ),
                     constraints: const BoxConstraints(
@@ -2144,6 +2251,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (_breakdownActive) _buildBreakdownBanner(),
           _buildHeroBanner(),
 
           Padding(
@@ -2218,7 +2326,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                             ),
                             const SizedBox(height: 3),
                             Text(
-                              _busIsOnline ? "Active • Updated $_busUpdatedAt" : "Driver not broadcasting live location",
+                              _busIsOnline 
+                                ? "Active • Updated $_busUpdatedAt" 
+                                : (_busStatus == 'completed' ? "Trip is completed" : "Trip not started"),
                               style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8), fontWeight: FontWeight.bold),
                             ),
                           ],
@@ -2667,6 +2777,38 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     );
   }
 
+  Widget _buildBreakdownBanner() {
+    final breakdownBusId = _busFirebaseId;
+    final text = _replacementBus.isEmpty || _replacementBus == 'Unknown'
+        ? "⚠️ Bus $breakdownBusId breakdown. Replacement Bus dispatch is pending. Stay at your stop."
+        : "⚠️ Bus $breakdownBusId breakdown. Replacement Bus $_replacementBus dispatched. Stay at your stop.";
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFEF2F2),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFFECACA)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                color: Color(0xFF991B1B),
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildHeroBanner() {
     return Container(
       width: double.infinity,
@@ -2851,59 +2993,72 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
 
     final List<Marker> markers = [];
 
-    // Add user marker if we had one
-    // Add bus marker
-    // Draw all route stops as dots instead of lines
+    // --- All Route Stop Markers (always visible) ---
     for (var stopName in _routeStops) {
       final coord = _coords[stopName];
-      if (coord != null && stopName != "COLLEGE" && stopName != "Panimalar Engineering College") {
-        markers.add(
-          Marker(
-            point: coord,
-            width: 24,
-            height: 24,
-            alignment: Alignment.center,
-            child: Container(
-              decoration: BoxDecoration(
-                color: _routeColor.withValues(alpha: 0.8),
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.white, width: 1.5),
-              ),
-              child: const Icon(Icons.location_on, color: Colors.white, size: 14),
-            ),
-          ),
-        );
-      }
-    }
+      if (coord == null) continue;
 
-    if (_busLat != null && _busLng != null) {
+      final isCollege = stopName == "COLLEGE" || stopName == "Panimalar Engineering College";
       markers.add(
         Marker(
-          point: LatLng(_busLat!, _busLng!),
-          width: 80,
-          height: 80,
+          point: coord,
+          width: isCollege ? 40 : 30,
+          height: isCollege ? 40 : 30,
           alignment: Alignment.center,
+          child: Tooltip(
+            message: stopName,
+            child: Container(
+              decoration: BoxDecoration(
+                color: isCollege ? const Color(0xFF1B5E20) : _routeColor,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 2),
+                boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))],
+              ),
+              child: Center(
+                child: isCollege
+                    ? const Text("🏫", style: TextStyle(fontSize: 16))
+                    : const Icon(Icons.location_pin, color: Colors.white, size: 16),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    // --- Live Bus Icon (only when bus is online and has location) ---
+    if (_busLat != null && _busLng != null) {
+      final currentLat = _renderLat ?? _busLat!;
+      final currentLng = _renderLng ?? _busLng!;
+      markers.add(
+        Marker(
+          point: LatLng(currentLat, currentLng),
+          width: 80,
+          height: 75,
+          alignment: Alignment.bottomCenter,
           child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1B5E20),
+                  color: const Color(0xFF15803D),
                   borderRadius: BorderRadius.circular(20),
-                  boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))],
+                  boxShadow: const [BoxShadow(color: Colors.black38, blurRadius: 6, offset: Offset(0, 2))],
                 ),
                 child: Text(
                   "Bus $_displayBusId",
-                  style: const TextStyle(fontSize: 8, fontWeight: FontWeight.w900, color: Colors.white),
+                  style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w900, color: Colors.white, letterSpacing: 0.3),
                 ),
               ),
-              const Text("🚌", style: TextStyle(fontSize: 26)),
+              const SizedBox(height: 2),
+              const Text("🚌", style: TextStyle(fontSize: 30)),
             ],
           ),
         ),
       );
     }
 
+    // --- Nearest Stop Label (when bus is live) ---
     if (_busIsOnline && _routeStops.isNotEmpty) {
       final nearStop = _routeStops[nearestIdx];
       final nearCoord = _coords[nearStop];
@@ -2911,23 +3066,22 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
         markers.add(
           Marker(
             point: nearCoord,
-            width: 80,
-            height: 30,
-            child: Align(
-              alignment: Alignment.topCenter,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1B5E20),
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))],
-                ),
-                child: Text(
-                  nearStop,
-                  style: const TextStyle(fontSize: 8, fontWeight: FontWeight.w900, color: Colors.white),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
+            width: 120,
+            height: 22,
+            alignment: Alignment.topCenter,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1D4ED8),
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))],
+              ),
+              child: Text(
+                "Next: $nearStop",
+                style: const TextStyle(fontSize: 8, fontWeight: FontWeight.w900, color: Colors.white),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
               ),
             ),
           ),
@@ -2941,40 +3095,34 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       children: [
         FlutterMap(
           mapController: _mapController,
-          options: const MapOptions(
-            initialCenter: LatLng(13.047, 80.11),
-            initialZoom: 13.0,
+          options: MapOptions(
+            initialCenter: _coords.isNotEmpty
+                ? _coords.values.first
+                : const LatLng(13.047, 80.11),
+            initialZoom: 12.0,
           ),
           children: [
+            // Map tiles
             TileLayer(
-              urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-              subdomains: const ['a', 'b', 'c', 'd'],
+              urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
             ),
-            
-            if (_busRoutePoints.isNotEmpty)
-              PolylineLayer(
-                polylines: <Polyline<Object>>[
-                  Polyline<Object>(
-                    points: _busRoutePoints,
-                    strokeWidth: 4.0,
-                    color: _routeColor.withValues(alpha: 0.7),
-                  ),
-                ],
-              ),
 
+            // GPS accuracy circle around bus when live
             if (_busIsOnline && _renderLat != null && _renderLng != null && _busAccuracy != null)
               CircleLayer(
                 circles: [
                   CircleMarker(
                     point: LatLng(_renderLat!, _renderLng!),
-                    color: const Color(0xFF22C55E).withValues(alpha: 0.15),
+                    color: const Color(0xFF22C55E).withValues(alpha: 0.12),
                     borderColor: const Color(0xFF22C55E),
-                    borderStrokeWidth: 1.2,
+                    borderStrokeWidth: 1.5,
                     useRadiusInMeter: true,
-                    radius: _busAccuracy!,
+                    radius: (_busAccuracy! < 50 ? _busAccuracy! : 50),
                   ),
                 ],
               ),
+
+            // All markers: stops + live bus icon
             MarkerLayer(markers: markers),
           ],
         ),
@@ -3297,8 +3445,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
           ),
           children: [
             TileLayer(
-              urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-              subdomains: const ['a', 'b', 'c', 'd'],
+              urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
             ),
             if (_campusRoute != null)
               PolylineLayer(
@@ -3807,10 +3954,8 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                     CircleAvatar(
                       radius: 50,
                       backgroundColor: const Color(0xFFE2E8F0),
-                      backgroundImage: _profilePicUrl.startsWith('base64:')
-                          ? MemoryImage(base64Decode(_profilePicUrl.substring(7)))
-                          : null,
-                      child: _profilePicUrl.isEmpty
+                      backgroundImage: _cachedProfileImage,
+                      child: _cachedProfileImage == null
                           ? const Text("🎓", style: TextStyle(fontSize: 54))
                           : null,
                     ),
@@ -3831,18 +3976,18 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  _studentName.isEmpty || _studentName == "Student Name" ? "Your Name" : _studentName,
+                  _studentName.isEmpty ? "Student Name" : _studentName,
                   style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w800,
-                    color: _studentName.isEmpty || _studentName == "Student Name"
+                    color: _studentName.isEmpty
                         ? const Color(0xFFCBD5E1)
                         : const Color(0xFF0F172A),
                   ),
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  widget.studentRollNo.isEmpty ? "Panimalar Smart Transit Account" : widget.studentRollNo,
+                  _studentId.isEmpty ? "Panimalar Smart Transit Account" : _studentId,
                   style: const TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
@@ -3890,7 +4035,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                     TextField(
                       controller: _profileRollNoCtrl,
                       decoration: InputDecoration(
-                        hintText: "Enter your Roll No (e.g. 2024PECAI424)",
+                        hintText: "Enter your Roll No",
                         hintStyle: const TextStyle(
                           color: Color(0xFFCBD5E1),
                           fontSize: 13,
