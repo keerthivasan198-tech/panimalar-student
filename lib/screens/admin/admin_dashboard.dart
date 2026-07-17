@@ -471,7 +471,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
         }
         final base64Audio = base64Encode(bytes);
         
-        final String apiUrl = kIsWeb ? 'http://localhost:5000/api/voice' : 'http://10.0.2.2:5000/api/voice';
+        final String apiUrl = kIsWeb
+      ? 'https://panimalr-bus.onrender.com/api/voice'
+      : 'https://panimalr-bus.onrender.com/api/voice';
         final response = await http.post(
           Uri.parse(apiUrl),
           headers: {'Content-Type': 'application/json'},
@@ -528,7 +530,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
 
     if (mongoId.isNotEmpty) {
       try {
-        final String apiUrl = kIsWeb ? 'http://localhost:5000/api/voice/$mongoId' : 'http://10.0.2.2:5000/api/voice/$mongoId';
+        final String apiUrl = kIsWeb ? 'https://panimalr-bus.onrender.com/api/voice/$mongoId' : 'https://panimalr-bus.onrender.com/api/voice/$mongoId';
         final response = await http.get(Uri.parse(apiUrl));
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body);

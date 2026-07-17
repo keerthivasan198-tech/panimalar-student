@@ -34,7 +34,7 @@ class _StudentLoginScreenState extends State<StudentLoginScreen> {
     }
     
     try {
-      final response = await http.get(Uri.parse('http://localhost:5000/api/students/$rollNo'));
+      final response = await http.get(Uri.parse('https://panimalr-bus.onrender.com/api/students/$rollNo'));
       if (response.statusCode == 200) {
         widget.onLogin(rollNo);
       } else {

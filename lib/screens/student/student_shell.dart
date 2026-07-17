@@ -273,17 +273,63 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   late final TextEditingController _profileBusCtrl;   // bus number input
   String _profileTempYear = '';   // tracks dropdown selection before saving
 
-  /// Maps bus number (uppercase) → route key.
-  /// B101 → route_15, B202 → route_52, B303 → route_137
-  static const Map<String, String> _busToRouteKey = {
-    'B101': 'route_15',
-    'B202': 'route_52',
-    'B303': 'route_137',
-  };
+  // --- Dynamic Route Fetching State ---
+  String? _fetchedRouteKey;
+  bool _isFetchingRoute = false;
+  Timer? _debounceTimer;
+
+  void _fetchRouteForBus(String busNumber) async {
+    final bus = busNumber.trim().toUpperCase();
+    if (bus.isEmpty) {
+      setState(() {
+        _fetchedRouteKey = null;
+        _isFetchingRoute = false;
+      });
+      return;
+    }
+
+    setState(() {
+      _isFetchingRoute = true;
+      _fetchedRouteKey = null;
+    });
+
+    try {
+      if (Firebase.apps.isNotEmpty) {
+        final snap = await FirebaseDatabase.instance
+            .ref('drivers')
+            .orderByChild('bus')
+            .equalTo(bus)
+            .get();
+        if (snap.exists) {
+          final data = snap.value as Map<dynamic, dynamic>;
+          final firstDriver = data.values.first as Map<dynamic, dynamic>;
+          final route = firstDriver['route'] as String?;
+          if (mounted) {
+            setState(() {
+              _fetchedRouteKey = route;
+              _isFetchingRoute = false;
+            });
+          }
+        } else {
+          if (mounted) {
+            setState(() {
+              _fetchedRouteKey = null;
+              _isFetchingRoute = false;
+            });
+          }
+        }
+      } else {
+        if (mounted) setState(() => _isFetchingRoute = false);
+      }
+    } catch (e) {
+      debugPrint("Error fetching route for bus $bus: $e");
+      if (mounted) setState(() => _isFetchingRoute = false);
+    }
+  }
 
   /// Returns the stops list for the bus number the student typed, or empty.
   List<String> get _profileBusStops {
-    final key = _busToRouteKey[_profileBusCtrl.text.trim().toUpperCase()];
+    final key = _fetchedRouteKey;
     if (key == null) return [];
     return List<String>.from(routeStopsConfig[key] ?? []);
   }
@@ -1024,7 +1070,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     });
 
     try {
-      final response = await http.get(Uri.parse('http://localhost:5000/api/students/${widget.studentRollNo}'));
+      final response = await http.get(Uri.parse('https://panimalr-bus.onrender.com/api/students/${widget.studentRollNo}'));
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         if (mounted) {
@@ -1198,7 +1244,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     
     try {
       final response = await http.post(
-        Uri.parse('http://localhost:5000/api/students/${actualRollNo}'),
+        Uri.parse('https://panimalr-bus.onrender.com/api/students/${actualRollNo}'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
           'name': name,
@@ -1223,9 +1269,30 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       _studentBusNo = busNo;
       _savedStop = boardingStop;
       
-      if (busNo.isNotEmpty && _busToRouteKey.containsKey(busNo)) {
-         _selectedRoute = _busToRouteKey[busNo]!;
-         _updateRouteDetails(_selectedRoute, startListener: true);
+      
+      if (busNo.isNotEmpty) {
+        // Fetch the route async and update later if needed, but since we are saving,
+        // _fetchedRouteKey should have been fetched already.
+        if (_fetchedRouteKey != null) {
+          _selectedRoute = _fetchedRouteKey!;
+          _updateRouteDetails(_selectedRoute, startListener: true);
+        } else {
+          // If for some reason it's not fetched but we save, just fallback to query
+          if (Firebase.apps.isNotEmpty) {
+            FirebaseDatabase.instance.ref('drivers').orderByChild('bus').equalTo(busNo.trim().toUpperCase()).get().then((snap) {
+               if (snap.exists) {
+                  final data = snap.value as Map<dynamic, dynamic>;
+                  final route = data.values.first['route'] as String?;
+                  if (route != null && mounted) {
+                     setState(() {
+                        _selectedRoute = route;
+                        _updateRouteDetails(_selectedRoute, startListener: true);
+                     });
+                  }
+               }
+            });
+          }
+        }
       }
       
       if (widget.isFirstTimeSignup) {
@@ -1365,7 +1432,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
         }
         final base64Audio = base64Encode(bytes);
         
-        final String apiUrl = kIsWeb ? 'http://localhost:5000/api/voice' : 'http://10.0.2.2:5000/api/voice';
+        final String apiUrl = kIsWeb ? 'https://panimalr-bus.onrender.com/api/voice' : 'https://panimalr-bus.onrender.com/api/voice';
         
         final response = await http.post(
           Uri.parse(apiUrl),
@@ -1431,7 +1498,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     
     if (mongoId.isNotEmpty) {
       try {
-        final String apiUrl = kIsWeb ? 'http://localhost:5000/api/voice/$mongoId' : 'http://10.0.2.2:5000/api/voice/$mongoId';
+        final String apiUrl = kIsWeb ? 'https://panimalr-bus.onrender.com/api/voice/$mongoId' : 'https://panimalr-bus.onrender.com/api/voice/$mongoId';
         final response = await http.get(Uri.parse(apiUrl));
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body);
@@ -4019,9 +4086,15 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                   TextField(
                     controller: _profileBusCtrl,
                     textCapitalization: TextCapitalization.characters,
-                    onChanged: (_) => setState(() {}), // rebuild for route dropdown
+                    onChanged: (val) {
+                      setState(() {});
+                      if (_debounceTimer?.isActive ?? false) _debounceTimer!.cancel();
+                      _debounceTimer = Timer(const Duration(milliseconds: 500), () {
+                        _fetchRouteForBus(val);
+                      });
+                    },
                     decoration: InputDecoration(
-                      hintText: "e.g. B101, B202, B303",
+                      hintText: "e.g. 1, 3, 6, 23, 65",
                       hintStyle: const TextStyle(
                         color: Color(0xFFCBD5E1),
                         fontSize: 13,
@@ -4029,6 +4102,19 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                       ),
                       prefixIcon: const Icon(Icons.directions_bus_rounded,
                           color: Color(0xFF2563EB), size: 18),
+                      suffixIcon: _isFetchingRoute
+                          ? const Padding(
+                              padding: EdgeInsets.all(12.0),
+                              child: SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF2563EB)),
+                                ),
+                              ),
+                            )
+                          : null,
                       contentPadding: const EdgeInsets.symmetric(
                           horizontal: 16, vertical: 12),
                       border: OutlineInputBorder(
@@ -4044,21 +4130,19 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                       ),
                       // Show route label as helper text when bus is recognised
                       helperText: () {
-                        final key = _busToRouteKey[
-                            _profileBusCtrl.text.trim().toUpperCase()];
+                        if (_isFetchingRoute) return 'Checking bus number...';
+                        final key = _fetchedRouteKey;
                         if (key == null) return null;
                         return '✓  ' + (routeLabelsConfig[key] ?? '');
                       }(),
-                      helperStyle: const TextStyle(
-                        color: Color(0xFF16A34A),
+                      helperStyle: TextStyle(
+                        color: _isFetchingRoute ? const Color(0xFF64748B) : const Color(0xFF16A34A),
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
                       ),
                       errorText: _profileBusCtrl.text.trim().isNotEmpty &&
-                              _busToRouteKey[_profileBusCtrl.text
-                                      .trim()
-                                      .toUpperCase()] ==
-                                  null
+                              !_isFetchingRoute &&
+                              _fetchedRouteKey == null
                           ? 'Unknown bus number'
                           : null,
                     ),
