@@ -5,10 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
-import 'screens/role_selection_screen.dart';
 import 'screens/student/student_shell.dart';
-import 'screens/driver/driver_shell.dart';
-import 'screens/admin/admin_shell.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -40,7 +37,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Panimalar Smart Transit',
+      title: 'Panimalar Smart Transit - Student',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
@@ -66,8 +63,8 @@ class RootShell extends StatefulWidget {
 }
 
 class _RootShellState extends State<RootShell> {
-  String _role = "loading";
   String _currentLang = "en";
+  bool _isLoading = true;
 
   @override
   void initState() {
@@ -77,19 +74,10 @@ class _RootShellState extends State<RootShell> {
 
   Future<void> _loadState() async {
     final prefs = await SharedPreferences.getInstance();
-    final savedRole = prefs.getString("user_role") ?? "none";
     final savedLang = prefs.getString("user_lang") ?? "en";
     setState(() {
-      _role = savedRole;
       _currentLang = savedLang;
-    });
-  }
-
-  void _updateRole(String role) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString("user_role", role);
-    setState(() {
-      _role = role;
+      _isLoading = false;
     });
   }
 
@@ -103,26 +91,17 @@ class _RootShellState extends State<RootShell> {
 
   @override
   Widget build(BuildContext context) {
-    if (_role == "loading") {
+    if (_isLoading) {
       return const Scaffold(
         body: Center(
           child: CircularProgressIndicator(),
         ),
       );
-    } else if (_role == "driver") {
-      return DriverShell(onSwitchRole: () => _updateRole("none"), currentLang: _currentLang, onLanguageChanged: _updateLang);
-    } else if (_role == "admin") {
-      return AdminShell(onSwitchRole: () => _updateRole("none"), currentLang: _currentLang, onLanguageChanged: _updateLang);
-    } else if (_role == "student") {
-      return MainShell(onSwitchRole: () => _updateRole("none"), currentLang: _currentLang, onLanguageChanged: _updateLang);
-    } else {
-      return RoleSelectionScreen(
-        onSelectRole: (role) {
-          _updateRole(role);
-        },
-        currentLang: _currentLang,
-        onLanguageChanged: _updateLang,
-      );
     }
+    return MainShell(
+      onSwitchRole: () {}, // Removed role switching
+      currentLang: _currentLang, 
+      onLanguageChanged: _updateLang
+    );
   }
 }

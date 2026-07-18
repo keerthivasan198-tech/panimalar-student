@@ -2383,76 +2383,6 @@ class _StudentDashboardState extends State<StudentDashboard>
         backgroundColor: Colors.white,
         elevation: 0,
         actions: [
-          // Exit/Home button - returns to role selection screen
-          Tooltip(
-            message: 'Go to Home',
-            child: InkWell(
-              borderRadius: BorderRadius.circular(24),
-              onTap: () {
-                showDialog(
-                  context: context,
-                  builder: (ctx) => AlertDialog(
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    title: const Row(
-                      children: [
-                        Icon(Icons.home_rounded, color: Color(0xFF2563EB)),
-                        SizedBox(width: 8),
-                        Text(
-                          'Go to Home',
-                          style: TextStyle(
-                            fontWeight: FontWeight.w800,
-                            fontSize: 18,
-                          ),
-                        ),
-                      ],
-                    ),
-                    content: const Text(
-                      'Are you sure you want to exit the student portal and go back to the home screen?',
-                      style: TextStyle(color: Color(0xFF64748B)),
-                    ),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(ctx),
-                        child: const Text(
-                          'Cancel',
-                          style: TextStyle(color: Color(0xFF64748B)),
-                        ),
-                      ),
-                      ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF2563EB),
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        onPressed: () {
-                          Navigator.pop(ctx);
-                          widget.onSwitchRole();
-                        },
-                        child: const Text('Yes, Go Home'),
-                      ),
-                    ],
-                  ),
-                );
-              },
-              child: Container(
-                margin: const EdgeInsets.only(right: 4),
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFEFF6FF),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Icon(
-                  Icons.home_rounded,
-                  color: Color(0xFF2563EB),
-                  size: 22,
-                ),
-              ),
-            ),
-          ),
           // Notification button with badge
           Stack(
             alignment: Alignment.center,
@@ -4025,7 +3955,7 @@ class _StudentDashboardState extends State<StudentDashboard>
     }
 
     // Student location marker — blue pulsing dot
-    if (_studentLat != null && _studentLng != null && _isInsideCampus) {
+    if (_studentLat != null && _studentLng != null) {
       markers.add(
         Marker(
           point: LatLng(_studentLat!, _studentLng!),
@@ -4100,7 +4030,7 @@ class _StudentDashboardState extends State<StudentDashboard>
           ),
           children: [
             TileLayer(
-              urlTemplate: 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+              urlTemplate: 'https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',
               userAgentPackageName: 'com.panimalar.bus',
               maxNativeZoom: 20,
               maxZoom: 22.0,
