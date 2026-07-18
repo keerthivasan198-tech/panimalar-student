@@ -23,6 +23,7 @@ class StudentLoginScreen extends StatefulWidget {
 
 class _StudentLoginScreenState extends State<StudentLoginScreen> {
   final _rollNoController = TextEditingController();
+  bool _isLoading = false;
 
   void _handleLogin() async {
     final rollNo = _rollNoController.text.trim();
@@ -33,6 +34,10 @@ class _StudentLoginScreenState extends State<StudentLoginScreen> {
       return;
     }
     
+    setState(() {
+      _isLoading = true;
+    });
+
     try {
       final response = await http.get(Uri.parse('https://panimalr-bus.onrender.com/api/students/$rollNo'));
       if (response.statusCode == 200) {
@@ -46,6 +51,12 @@ class _StudentLoginScreenState extends State<StudentLoginScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Network error. Please try again.')),
       );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -100,13 +111,15 @@ class _StudentLoginScreenState extends State<StudentLoginScreen> {
                 width: double.infinity,
                 height: 50,
                 child: ElevatedButton(
-                  onPressed: _handleLogin,
+                  onPressed: _isLoading ? null : _handleLogin,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF2563EB),
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
-                  child: const Text('Login', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  child: _isLoading 
+                      ? const SizedBox(height: 24, width: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 3))
+                      : const Text('Login', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                 ),
               ),
               const SizedBox(height: 16),

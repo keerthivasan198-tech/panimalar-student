@@ -40,7 +40,12 @@ class MainShell extends StatefulWidget {
   final VoidCallback onSwitchRole;
   final String currentLang;
   final Function(String) onLanguageChanged;
-  const MainShell({super.key, required this.onSwitchRole, required this.currentLang, required this.onLanguageChanged});
+  const MainShell({
+    super.key,
+    required this.onSwitchRole,
+    required this.currentLang,
+    required this.onLanguageChanged,
+  });
 
   @override
   State<MainShell> createState() => _MainShellState();
@@ -81,7 +86,7 @@ class _MainShellState extends State<MainShell> {
     await prefs.remove('studentRollNo');
     await prefs.remove('profilePicUrl');
     await prefs.remove('studentBusNo');
-    
+
     try {
       await FirebaseAuth.instance.signOut();
     } catch (e) {}
@@ -91,7 +96,7 @@ class _MainShellState extends State<MainShell> {
       _isLoggedIn = false;
       _showCreateProfile = false;
     });
-    
+
     widget.onSwitchRole();
   }
 
@@ -151,7 +156,8 @@ class StudentDashboard extends StatefulWidget {
   State<StudentDashboard> createState() => _StudentDashboardState();
 }
 
-class _StudentDashboardState extends State<StudentDashboard> with TickerProviderStateMixin {
+class _StudentDashboardState extends State<StudentDashboard>
+    with TickerProviderStateMixin {
   String t(String key) {
     return appLang[widget.currentLang]?[key] ?? appLang['en']?[key] ?? key;
   }
@@ -162,6 +168,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   MemoryImage? _cachedProfileImage; // cached to prevent blinking
 
   bool _busIsOnline = false;
+  bool _isFollowingBus = true;
   double? _busLat;
   double? _busLng;
   double? _busAccuracy;
@@ -198,6 +205,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   Timer? _notifProgressTimer;
 
   bool _breakdownActive = false;
+  bool _breakdownDismissed = false;
   String _replacementBus = "";
   StreamSubscription? _breakdownSub;
   StreamSubscription? _locationSub;
@@ -224,7 +232,12 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   Map<String, LatLng> _coords = {};
 
   String _busFirebaseId = '1';
-  String get _displayBusId => (_breakdownActive && _replacementBus.isNotEmpty && _replacementBus != 'Unknown') ? _replacementBus : _busFirebaseId;
+  String get _displayBusId =>
+      (_breakdownActive &&
+          _replacementBus.isNotEmpty &&
+          _replacementBus != 'Unknown')
+      ? _replacementBus
+      : _busFirebaseId;
   Color _routeColor = const Color(0xFF2563EB);
   String _studentBusNo = "";
 
@@ -234,17 +247,17 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   // Campus points search filter
   final TextEditingController _searchCtrl = TextEditingController();
   String _searchFilter = "";
-  
+
   // Route search filter
   final TextEditingController _routeSearchCtrl = TextEditingController();
   String _routeSearchQuery = "";
   String _selectedNavPointName = "";
   Polyline? _campusRoute;
-  bool _routeLoading = false;        // true while OSRM fetch is in progress
-  double _routeDistanceM = 0;        // actual road distance from OSRM (metres)
-  int _routeWalkMinutes = 0;         // estimated walk time from OSRM (minutes)
-  double _routeRemainingM = 0;       // remaining distance to destination (metres)
-  String _routeError = '';           // last routing error message for UI display
+  bool _routeLoading = false; // true while OSRM fetch is in progress
+  double _routeDistanceM = 0; // actual road distance from OSRM (metres)
+  int _routeWalkMinutes = 0; // estimated walk time from OSRM (minutes)
+  double _routeRemainingM = 0; // remaining distance to destination (metres)
+  String _routeError = ''; // last routing error message for UI display
   List<Map<String, dynamic>> _navSteps = []; // turn-by-turn steps (future use)
 
   // Bus perfectly routed points
@@ -252,10 +265,12 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   bool _busRouteLoading = false;
 
   // Route cache — prevents unnecessary API calls
-  String _cachedRouteDestName = '';  // name of destination when route was last fetched
-  double? _cachedFromLat;            // origin lat when route was last fetched
-  double? _cachedFromLng;            // origin lng when route was last fetched
-  static const double _rerouteThresholdM = 30.0; // reroute only after moving 30 m
+  String _cachedRouteDestName =
+      ''; // name of destination when route was last fetched
+  double? _cachedFromLat; // origin lat when route was last fetched
+  double? _cachedFromLng; // origin lng when route was last fetched
+  static const double _rerouteThresholdM =
+      30.0; // reroute only after moving 30 m
 
   // Student's own GPS location (for campus navigation)
   double? _studentLat;
@@ -266,8 +281,8 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   // ── Profile tab controllers — declared at state level so they survive rebuilds
   late final TextEditingController _profileRollNoCtrl;
   late final TextEditingController _profileNameCtrl;
-  late final TextEditingController _profileBusCtrl;   // bus number input
-  String _profileTempYear = '';   // tracks dropdown selection before saving
+  late final TextEditingController _profileBusCtrl; // bus number input
+  String _profileTempYear = ''; // tracks dropdown selection before saving
 
   // --- Dynamic Route Fetching State ---
   String? _fetchedRouteKey;
@@ -333,21 +348,23 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     if (key == null) return [];
     return List<String>.from(routeStopsConfig[key] ?? []);
   }
+
   List<Map<String, dynamic>> _adminNotifications = [];
-  
+
   List<Map<String, dynamic>> get _filteredNotifications {
     return _adminNotifications.where((n) {
-      final target = n['bus']?.toString().toLowerCase() ?? 'all';
-      if (target == 'all') return true;
-      final busName = 'bus $_busFirebaseId'.toLowerCase();
-      final targetStr = target.toLowerCase();
-      return targetStr == _busFirebaseId || 
-             targetStr == _studentBusNo || 
-             targetStr == busName || 
-             targetStr.contains(_busFirebaseId);
+      if (_hiddenNotifIds.contains(n['id'].toString())) return false;
+      final target = n['bus']?.toString().toLowerCase().trim() ?? 'all';
+      if (target == 'all') return false; // Strict filter as requested
+      final myBusStr = _busFirebaseId.toLowerCase().trim();
+      return target == myBusStr;
     }).toList();
   }
+
+  List<String> _hiddenNotifIds = [];
   int _unreadNotifCount = 0;
+  double _lastSeenNotifId = 0;
+
   StreamSubscription? _notifSub;
 
   // Real-time bus arrivals log feed
@@ -362,12 +379,12 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     // Profile controllers — empty initially; populated after prefs load
     _profileRollNoCtrl = TextEditingController();
     _profileNameCtrl = TextEditingController();
-    
+
     if (widget.isFirstTimeSignup) {
       _currentIndex = 3;
       _isEditingProfile = true;
     }
-    _profileBusCtrl  = TextEditingController();
+    _profileBusCtrl = TextEditingController();
     _profileTempYear = '';
     _loadPreferences();
     _startLerpLoop();
@@ -406,10 +423,11 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       // ── 1. Check service enabled ──────────────────────────────────────────
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        if (mounted) setState(() {
-          _studentLocationDenied = true;
-          _routeError = 'GPS is disabled. Enable location in Settings.';
-        });
+        if (mounted)
+          setState(() {
+            _studentLocationDenied = true;
+            _routeError = 'GPS is disabled. Enable location in Settings.';
+          });
         return;
       }
 
@@ -420,19 +438,22 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       }
       if (permission == LocationPermission.denied ||
           permission == LocationPermission.deniedForever) {
-        if (mounted) setState(() {
-          _studentLocationDenied = true;
-          _routeError = permission == LocationPermission.deniedForever
-              ? 'Location permission permanently denied. Enable in app settings.'
-              : 'Location permission denied.';
-        });
+        if (mounted)
+          setState(() {
+            _studentLocationDenied = true;
+            _routeError = permission == LocationPermission.deniedForever
+                ? 'Location permission permanently denied. Enable in app settings.'
+                : 'Location permission denied.';
+          });
         return;
       }
 
       // ── 3. Get immediate first fix ────────────────────────────────────────
       try {
         final pos = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.bestForNavigation,
+          ),
         );
         if (mounted) {
           setState(() {
@@ -441,57 +462,74 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
             _routeError = '';
           });
         }
-      } catch (_) { /* first fix failed — stream will recover */ }
+      } catch (_) {
+        /* first fix failed — stream will recover */
+      }
 
       // ── 4. Continuous stream (update every 3 m for smooth dot movement) ──
-      _studentLocationSub = Geolocator.getPositionStream(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          distanceFilter: 3, // dot moves every 3 m
-        ),
-      ).listen((pos) {
-        if (!mounted) return;
-        final newLat = pos.latitude;
-        final newLng = pos.longitude;
+      _studentLocationSub =
+          Geolocator.getPositionStream(
+            locationSettings: const LocationSettings(
+              accuracy: LocationAccuracy.bestForNavigation,
+              distanceFilter: 0, // continuous update
+            ),
+          ).listen(
+            (pos) {
+              if (!mounted) return;
+              final newLat = pos.latitude;
+              final newLng = pos.longitude;
 
-        // Only reroute when user has moved > threshold AND a destination is set
-        bool needsReroute = false;
-        if (_selectedNavPointName.isNotEmpty &&
-            _cachedFromLat != null && _cachedFromLng != null) {
-          final movedM = _haversineM(
-              _cachedFromLat!, _cachedFromLng!, newLat, newLng);
-          needsReroute = movedM > _rerouteThresholdM;
-        } else if (_selectedNavPointName.isNotEmpty) {
-          // No cached origin yet — fetch immediately
-          needsReroute = true;
-        }
+              // Only reroute when user has moved > threshold AND a destination is set
+              bool needsReroute = false;
+              if (_selectedNavPointName.isNotEmpty &&
+                  _cachedFromLat != null &&
+                  _cachedFromLng != null) {
+                final movedM = _haversineM(
+                  _cachedFromLat!,
+                  _cachedFromLng!,
+                  newLat,
+                  newLng,
+                );
+                needsReroute = movedM > _rerouteThresholdM;
+              } else if (_selectedNavPointName.isNotEmpty) {
+                // No cached origin yet — fetch immediately
+                needsReroute = true;
+              }
 
-        setState(() {
-          _studentLat = newLat;
-          _studentLng = newLng;
-          _routeError = '';
-          // Update remaining distance from current position
-          if (_selectedNavPointName.isNotEmpty) {
-            try {
-              final dest = _campusPointsList
-                  .firstWhere((p) => p.name == _selectedNavPointName);
-              _routeRemainingM = _haversineM(
-                  newLat, newLng,
-                  dest.coords.latitude, dest.coords.longitude);
-            } catch (_) {}
-          }
-        });
+              setState(() {
+                _studentLat = newLat;
+                _studentLng = newLng;
+                _routeError = '';
+                // Update remaining distance from current position
+                if (_selectedNavPointName.isNotEmpty) {
+                  try {
+                    final dest = _campusPointsList.firstWhere(
+                      (p) => p.name == _selectedNavPointName,
+                    );
+                    _routeRemainingM = _haversineM(
+                      newLat,
+                      newLng,
+                      dest.coords.latitude,
+                      dest.coords.longitude,
+                    );
+                  } catch (_) {}
+                }
+              });
 
-        if (needsReroute) _updateCampusRoute();
-      }, onError: (e) {
-        if (mounted) setState(() => _routeError = 'Location stream error: $e');
-      });
+              if (needsReroute) _updateCampusRoute();
+            },
+            onError: (e) {
+              if (mounted)
+                setState(() => _routeError = 'Location stream error: $e');
+            },
+          );
     } catch (e) {
       debugPrint("Student location error: $e");
-      if (mounted) setState(() {
-        _studentLocationDenied = true;
-        _routeError = 'Could not start location tracking.';
-      });
+      if (mounted)
+        setState(() {
+          _studentLocationDenied = true;
+          _routeError = 'Could not start location tracking.';
+        });
     }
   }
 
@@ -505,38 +543,60 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     }
     CampusPoint dest;
     try {
-      dest = _campusPointsList.firstWhere((p) => p.name == _selectedNavPointName);
+      dest = _campusPointsList.firstWhere(
+        (p) => p.name == _selectedNavPointName,
+      );
     } catch (_) {
-      setState(() { _campusRoute = null; _routeError = 'Invalid destination.'; });
+      setState(() {
+        _campusRoute = null;
+        _routeError = 'Invalid destination.';
+      });
       return;
     }
     if (_studentLat == null || _studentLng == null) {
-      setState(() { _campusRoute = null; _routeError = 'Waiting for GPS fix…'; });
+      setState(() {
+        _campusRoute = null;
+        _routeError = 'Waiting for GPS fix…';
+      });
       return;
     }
 
     // Cache check
     if (_cachedRouteDestName == _selectedNavPointName &&
-        _cachedFromLat != null && _cachedFromLng != null) {
+        _cachedFromLat != null &&
+        _cachedFromLng != null) {
       final movedM = _haversineM(
-          _cachedFromLat!, _cachedFromLng!, _studentLat!, _studentLng!);
+        _cachedFromLat!,
+        _cachedFromLng!,
+        _studentLat!,
+        _studentLng!,
+      );
       if (movedM < _rerouteThresholdM) return;
     }
 
-    setState(() { _routeLoading = true; _routeError = ''; });
+    setState(() {
+      _routeLoading = true;
+      _routeError = '';
+    });
 
     // Straight-line fallback values
     List<LatLng> points = [LatLng(_studentLat!, _studentLng!), dest.coords];
-    double distM = _haversineM(_studentLat!, _studentLng!,
-        dest.coords.latitude, dest.coords.longitude);
+    double distM = _haversineM(
+      _studentLat!,
+      _studentLng!,
+      dest.coords.latitude,
+      dest.coords.longitude,
+    );
     int walkMin = max(1, (distM / 70).ceil());
 
     // Use the custom local graph for strictly internal campus paths
     final origin = LatLng(_studentLat!, _studentLng!);
     final graph = CampusPathGraph(); // Instantiate fresh for hot-reload safety
     points = graph.shortestPath(origin, dest.coords, destName: dest.name);
-    distM  = graph.pathDistanceM(points);
+    distM = graph.pathDistanceM(points);
     walkMin = max(1, (distM / 70).ceil());
+
+    if (!mounted) return;
     setState(() => _routeError = '');
 
     _cachedRouteDestName = _selectedNavPointName;
@@ -547,17 +607,17 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       _campusRoute = Polyline(
         points: points,
         color: const Color(0xFF2563EB),
-        strokeWidth: 5.0,
-        strokeCap: StrokeCap.round,
-        strokeJoin: StrokeJoin.round,
-        borderColor: Colors.white,
-        borderStrokeWidth: 2.0,
+        strokeWidth: 4.0,
       );
-      _routeDistanceM   = distM;
+      _routeDistanceM = distM;
       _routeWalkMinutes = walkMin;
-      _routeRemainingM  = _haversineM(_studentLat!, _studentLng!,
-          dest.coords.latitude, dest.coords.longitude);
-      _navSteps    = [];
+      _routeRemainingM = _haversineM(
+        _studentLat!,
+        _studentLng!,
+        dest.coords.latitude,
+        dest.coords.longitude,
+      );
+      _navSteps = [];
       _routeLoading = false;
     });
   }
@@ -569,7 +629,8 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     final phi2 = lat2 * (pi / 180);
     final dPhi = (lat2 - lat1) * (pi / 180);
     final dLambda = (lng2 - lng1) * (pi / 180);
-    final a = sin(dPhi / 2) * sin(dPhi / 2) +
+    final a =
+        sin(dPhi / 2) * sin(dPhi / 2) +
         cos(phi1) * cos(phi2) * sin(dLambda / 2) * sin(dLambda / 2);
     return r * 2 * atan2(sqrt(a), sqrt(1 - a));
   }
@@ -578,7 +639,11 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   double _distanceTo(CampusPoint cp) {
     if (_studentLat == null || _studentLng == null) return 0.0;
     return _haversineM(
-        _studentLat!, _studentLng!, cp.coords.latitude, cp.coords.longitude);
+      _studentLat!,
+      _studentLng!,
+      cp.coords.latitude,
+      cp.coords.longitude,
+    );
   }
 
   /// Clears cached route — called when destination changes so a fresh fetch runs.
@@ -596,31 +661,50 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
           .ref('student_notifications')
           .onValue
           .listen((event) {
-        final data = event.snapshot.value as Map?;
-        final List<Map<String, dynamic>> loaded = [];
-        if (data != null) {
-          data.forEach((key, val) {
-            if (val is Map) {
-              loaded.add({
-                'id': key.toString(),
-                'type': val['type']?.toString() ?? 'info',
-                'title': val['title']?.toString() ?? '',
-                'msg': val['msg']?.toString() ?? '',
-                'bus': val['bus']?.toString() ?? 'all',
-                'time': val['time']?.toString() ?? '',
-                'read': val['read'] == true,
+            final data = event.snapshot.value as Map?;
+            final List<Map<String, dynamic>> loaded = [];
+            if (data != null) {
+              data.forEach((key, val) {
+                if (val is Map) {
+                  loaded.add({
+                    'id': key.toString(),
+                    'type': val['type']?.toString() ?? 'info',
+                    'title': val['title']?.toString() ?? '',
+                    'msg': val['msg']?.toString() ?? '',
+                    'bus': val['bus']?.toString() ?? 'all',
+                    'time': val['time']?.toString() ?? '',
+                    'read': val['read'] == true,
+                  });
+                }
               });
             }
+            // Sort newest first
+            loaded.sort((a, b) => b['id'].compareTo(a['id']));
+            if (!mounted) return;
+            setState(() {
+              _adminNotifications = loaded;
+              _unreadNotifCount = _filteredNotifications
+                  .where((n) => n['read'] != true)
+                  .length;
+            });
+
+            // Show popup for new notifications relevant to this student
+            if (_filteredNotifications.isNotEmpty) {
+              final latest = _filteredNotifications.first;
+              final double latestId = double.tryParse(latest['id']) ?? 0.0;
+              if (_lastSeenNotifId == 0) {
+                _lastSeenNotifId = latestId;
+              } else if (latestId > _lastSeenNotifId) {
+                _lastSeenNotifId = latestId;
+                _showInAppNotification(
+                  latest['title'] ?? 'New Notification',
+                  latest['msg'] ?? '',
+                  '🔔',
+                  durationMs: 4000,
+                );
+              }
+            }
           });
-        }
-        // Sort newest first
-        loaded.sort((a, b) => b['id'].compareTo(a['id']));
-        if (!mounted) return;
-        setState(() {
-          _adminNotifications = loaded;
-          _unreadNotifCount = _filteredNotifications.where((n) => n['read'] != true).length;
-        });
-      });
     } catch (e) {
       debugPrint("Notification listener error: $e");
     }
@@ -649,114 +733,132 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (ctx) => DraggableScrollableSheet(
-        initialChildSize: 0.75,
-        minChildSize: 0.4,
-        maxChildSize: 0.95,
-        expand: false,
-        builder: (_, scrollCtrl) => Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-          ),
-          child: Column(
-            children: [
-              // Handle bar
-              Container(
-                margin: const EdgeInsets.only(top: 12, bottom: 4),
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade300,
-                  borderRadius: BorderRadius.circular(2),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModalState) => DraggableScrollableSheet(
+          initialChildSize: 0.75,
+          minChildSize: 0.4,
+          maxChildSize: 0.95,
+          expand: false,
+          builder: (_, scrollCtrl) => Container(
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            ),
+            child: Column(
+              children: [
+                // Handle bar
+                Container(
+                  margin: const EdgeInsets.only(top: 12, bottom: 4),
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade300,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
                 ),
-              ),
-              // Header
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
-                child: Row(
-                  children: [
-                    const Icon(Icons.notifications_rounded,
-                        color: Color(0xFF2563EB), size: 22),
-                    const SizedBox(width: 10),
-                    const Expanded(
-                      child: Text(
-                        "Notifications",
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w900,
-                          color: Color(0xFF0F172A),
+                // Header
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.notifications_rounded,
+                        color: Color(0xFF2563EB),
+                        size: 22,
+                      ),
+                      const SizedBox(width: 10),
+                      const Expanded(
+                        child: Text(
+                          "Notifications",
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w900,
+                            color: Color(0xFF0F172A),
+                          ),
                         ),
                       ),
-                    ),
-                    if (_filteredNotifications.isNotEmpty)
-                      TextButton(
-                        onPressed: () => Navigator.pop(ctx),
-                        child: const Text("Close",
-                            style: TextStyle(color: Color(0xFF64748B))),
-                      ),
-                  ],
+                      if (_filteredNotifications.isNotEmpty)
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx),
+                          child: const Text(
+                            "Close",
+                            style: TextStyle(color: Color(0xFF64748B)),
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
-              ),
-              // Category legend chips
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                child: Row(
-                  children: [
-                    _notifChip("🚌", "Delay", "delay"),
-                    _notifChip("⚠️", "Emergency", "emergency"),
-                    _notifChip("🔀", "Route Change", "route_change"),
-                    _notifChip("🛎️", "Arrival", "arrival"),
-                    _notifChip("🔧", "Breakdown", "breakdown"),
-                  ],
+                // Category legend chips
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
+                  ),
+                  child: Row(
+                    children: [
+                      _notifChip("🚌", "Delay", "delay"),
+                      _notifChip("⚠️", "Emergency", "emergency"),
+                      _notifChip("🔀", "Route Change", "route_change"),
+                      _notifChip("🛎️", "Arrival", "arrival"),
+                      _notifChip("🔧", "Breakdown", "breakdown"),
+                    ],
+                  ),
                 ),
-              ),
-              const Divider(height: 1),
-              // Notifications list
-               Expanded(
-                child: (!_breakdownActive && _filteredNotifications.isEmpty)
-                    ? const Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
+                const Divider(height: 1),
+                // Notifications list
+                Expanded(
+                  child: ((!_breakdownActive || _breakdownDismissed) && _filteredNotifications.isEmpty)
+                      ? const Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text("🔔", style: TextStyle(fontSize: 48)),
+                              SizedBox(height: 12),
+                              Text(
+                                "No notifications yet",
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w700,
+                                  color: Color(0xFF64748B),
+                                ),
+                              ),
+                              SizedBox(height: 4),
+                              Text(
+                                "Admin alerts will appear here",
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey,
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      : ListView(
+                          controller: scrollCtrl,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 8,
+                          ),
                           children: [
-                            Text("🔔", style: TextStyle(fontSize: 48)),
-                            SizedBox(height: 12),
-                            Text(
-                              "No notifications yet",
-                              style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w700,
-                                color: Color(0xFF64748B),
+                            if (_breakdownActive && !_breakdownDismissed) ...[
+                              _buildStudentBreakdownNotifTile(ctx),
+                              const SizedBox(height: 8),
+                            ],
+                            ..._filteredNotifications.map(
+                              (n) => Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  _buildNotifTile(n, setModalState),
+                                  const Divider(height: 1, indent: 56),
+                                ],
                               ),
                             ),
-                            SizedBox(height: 4),
-                            Text(
-                              "Admin alerts will appear here",
-                              style: TextStyle(fontSize: 12, color: Colors.grey),
-                            ),
                           ],
                         ),
-                      )
-                    : ListView(
-                        controller: scrollCtrl,
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                        children: [
-                          if (_breakdownActive) ...[
-                            _buildStudentBreakdownNotifTile(ctx),
-                            const SizedBox(height: 8),
-                          ],
-                          ..._filteredNotifications.map((n) => Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              _buildNotifTile(n),
-                              const Divider(height: 1, indent: 56),
-                            ],
-                          )),
-                        ],
-                      ),
-              ),
-            ],
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -835,9 +937,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
             constraints: const BoxConstraints(),
             icon: const Icon(Icons.close, color: Color(0xFF991B1B), size: 18),
             onPressed: () {
-              if (Firebase.apps.isNotEmpty) {
-                FirebaseDatabase.instance.ref('breakdowns/$breakdownBusId').remove();
-              }
+              setState(() {
+                _breakdownDismissed = true;
+              });
               Navigator.pop(sheetCtx);
               _showSnackBar("Breakdown alert dismissed.");
             },
@@ -855,7 +957,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       decoration: BoxDecoration(
         color: config['bg'] as Color,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: (config['color'] as Color).withValues(alpha: 0.3)),
+        border: Border.all(
+          color: (config['color'] as Color).withValues(alpha: 0.3),
+        ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -875,7 +979,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     );
   }
 
-  Widget _buildNotifTile(Map<String, dynamic> n) {
+  Widget _buildNotifTile(Map<String, dynamic> n, StateSetter setModalState) {
     final config = _notifTypeConfig(n['type'] as String);
     final isUnread = n['read'] != true;
     return Container(
@@ -925,7 +1029,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                     Text(
                       n['time'] as String,
                       style: const TextStyle(
-                          fontSize: 10, color: Color(0xFF94A3B8)),
+                        fontSize: 10,
+                        color: Color(0xFF94A3B8),
+                      ),
                     ),
                     if (isUnread) ...[
                       const SizedBox(width: 6),
@@ -937,39 +1043,38 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                           shape: BoxShape.circle,
                         ),
                       ),
-                    ]
+                    ],
                   ],
                 ),
-                const SizedBox(height: 3),
+                const SizedBox(height: 4),
                 Text(
                   n['msg'] as String,
                   style: const TextStyle(
                     fontSize: 12,
                     color: Color(0xFF475569),
+                    fontWeight: FontWeight.w500,
                     height: 1.4,
                   ),
                 ),
-                if ((n['bus'] as String) != 'all') ...[
-                  const SizedBox(height: 4),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFEFF6FF),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      "Bus ${n['bus']}",
-                      style: const TextStyle(
-                        fontSize: 9,
-                        fontWeight: FontWeight.w700,
-                        color: Color(0xFF2563EB),
-                      ),
-                    ),
-                  ),
-                ],
               ],
             ),
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            icon: const Icon(Icons.close, color: Colors.grey, size: 18),
+            onPressed: () async {
+              setModalState(() {
+                _hiddenNotifIds.add(n['id'].toString());
+              });
+              setState(() {});
+              final prefs = await SharedPreferences.getInstance();
+              prefs.setStringList(
+                'hidden_notifs_$_busFirebaseId',
+                _hiddenNotifIds,
+              );
+            },
           ),
         ],
       ),
@@ -979,17 +1084,41 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   Map<String, dynamic> _notifTypeConfig(String type) {
     switch (type) {
       case 'delay':
-        return {'icon': '🚌', 'color': const Color(0xFFF59E0B), 'bg': const Color(0xFFFFFBEB)};
+        return {
+          'icon': '🚌',
+          'color': const Color(0xFFF59E0B),
+          'bg': const Color(0xFFFFFBEB),
+        };
       case 'emergency':
-        return {'icon': '🚨', 'color': const Color(0xFFDC2626), 'bg': const Color(0xFFFEF2F2)};
+        return {
+          'icon': '🚨',
+          'color': const Color(0xFFDC2626),
+          'bg': const Color(0xFFFEF2F2),
+        };
       case 'route_change':
-        return {'icon': '🔀', 'color': const Color(0xFF7C3AED), 'bg': const Color(0xFFF5F3FF)};
+        return {
+          'icon': '🔀',
+          'color': const Color(0xFF7C3AED),
+          'bg': const Color(0xFFF5F3FF),
+        };
       case 'arrival':
-        return {'icon': '🛎️', 'color': const Color(0xFF16A34A), 'bg': const Color(0xFFF0FDF4)};
+        return {
+          'icon': '🛎️',
+          'color': const Color(0xFF16A34A),
+          'bg': const Color(0xFFF0FDF4),
+        };
       case 'breakdown':
-        return {'icon': '🔧', 'color': const Color(0xFFEA580C), 'bg': const Color(0xFFFFF7ED)};
+        return {
+          'icon': '🔧',
+          'color': const Color(0xFFEA580C),
+          'bg': const Color(0xFFFFF7ED),
+        };
       default:
-        return {'icon': '🔔', 'color': const Color(0xFF2563EB), 'bg': const Color(0xFFEFF6FF)};
+        return {
+          'icon': '🔔',
+          'color': const Color(0xFF2563EB),
+          'bg': const Color(0xFFEFF6FF),
+        };
     }
   }
 
@@ -1021,13 +1150,21 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       _profileBusCtrl.text = _studentBusNo;
       if (_profilePicUrl.startsWith('base64:')) {
         try {
-          _cachedProfileImage = MemoryImage(base64Decode(_profilePicUrl.substring(7)));
-        } catch (_) { _cachedProfileImage = null; }
+          _cachedProfileImage = MemoryImage(
+            base64Decode(_profilePicUrl.substring(7)),
+          );
+        } catch (_) {
+          _cachedProfileImage = null;
+        }
       }
     });
 
     try {
-      final response = await http.get(Uri.parse('https://panimalr-bus.onrender.com/api/students/${widget.studentRollNo}'));
+      final response = await http.get(
+        Uri.parse(
+          'https://panimalr-bus.onrender.com/api/students/${widget.studentRollNo}',
+        ),
+      );
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         if (mounted) {
@@ -1041,57 +1178,76 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
             // Keep edit controllers in sync with latest fetched values
             _profileNameCtrl.text = _studentName;
             _profileTempYear = _studentYear;
-            if (data['profilePicBase64'] != null && data['profilePicBase64'].isNotEmpty) {
+            if (data['profilePicBase64'] != null &&
+                data['profilePicBase64'].isNotEmpty) {
               _profilePicUrl = data['profilePicBase64'];
               if (_profilePicUrl.startsWith('base64:')) {
                 try {
-                  _cachedProfileImage = MemoryImage(base64Decode(_profilePicUrl.substring(7)));
-                } catch (_) { _cachedProfileImage = null; }
+                  _cachedProfileImage = MemoryImage(
+                    base64Decode(_profilePicUrl.substring(7)),
+                  );
+                } catch (_) {
+                  _cachedProfileImage = null;
+                }
               }
             }
           });
         }
       } else {
-         if (mounted) setState(() { _isEditingProfile = true; });
+        if (mounted)
+          setState(() {
+            _isEditingProfile = true;
+          });
       }
     } catch (e) {
       debugPrint("Failed to fetch profile from MongoDB: $e");
     }
-
-    // Attempt to dynamically load the route for the student's saved bus
-    if (_studentBusNo.isNotEmpty && Firebase.apps.isNotEmpty) {
+    // Check if the student has previously selected a route manually
+    final savedRoute = prefs.getString('studentSelectedRoute');
+    if (savedRoute != null && savedRoute.isNotEmpty) {
+      // Student manually selected a route before — use it directly, skip profile bus lookup
+      setState(() {
+        _selectedRoute = savedRoute;
+      });
+      _updateRouteDetails(_selectedRoute, startListener: true);
+    } else if (_studentBusNo.isNotEmpty && Firebase.apps.isNotEmpty) {
+      // No saved route — fall back to finding the route from the student's profile bus number
       final initialRoute = _selectedRoute;
-      FirebaseDatabase.instance.ref('drivers').get().then((snap) {
-         if (snap.exists) {
-            String? foundRoute;
-            for (final child in snap.children) {
-              final val = child.value;
-              if (val is Map) {
-                final b = (val['bus']?.toString() ?? '').trim().toUpperCase();
-                if (b == _studentBusNo.trim().toUpperCase()) {
-                  foundRoute = val['route'] as String?;
-                  break;
+      FirebaseDatabase.instance
+          .ref('drivers')
+          .get()
+          .then((snap) {
+            if (snap.exists) {
+              String? foundRoute;
+              for (final child in snap.children) {
+                final val = child.value;
+                if (val is Map) {
+                  final b = (val['bus']?.toString() ?? '').trim().toUpperCase();
+                  if (b == _studentBusNo.trim().toUpperCase()) {
+                    foundRoute = val['route'] as String?;
+                    break;
+                  }
+                }
+              }
+              if (foundRoute != null && mounted) {
+                if (_selectedRoute == initialRoute) {
+                  setState(() {
+                    _selectedRoute = foundRoute!;
+                  });
+                  _updateRouteDetails(_selectedRoute, startListener: true);
+                  return;
                 }
               }
             }
-            if (foundRoute != null && mounted) {
-               // Only apply if the user hasn't manually selected another route while loading
-               if (_selectedRoute == initialRoute) {
-                 setState(() {
-                    _selectedRoute = foundRoute!;
-                 });
-                 _updateRouteDetails(_selectedRoute, startListener: true);
-                 return;
-               }
-            }
-         }
-         _updateRouteDetails(_selectedRoute, startListener: true);
-      }).catchError((_) {
-         _updateRouteDetails(_selectedRoute, startListener: true);
-      });
+            _updateRouteDetails(_selectedRoute, startListener: true);
+          })
+          .catchError((_) {
+            _updateRouteDetails(_selectedRoute, startListener: true);
+          });
     } else {
       _updateRouteDetails(_selectedRoute, startListener: true);
     }
+
     _startPickupRequestListener();
     _listenForStudentIntercomMessages();
   }
@@ -1115,77 +1271,25 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     _routeColor = const Color(0xFF2563EB);
     try {
       if (routeColorsConfig.containsKey(routeKey)) {
-         _routeColor = Color(int.parse(routeColorsConfig[routeKey]!.replaceFirst('#', '0xFF')));
+        _routeColor = Color(
+          int.parse(routeColorsConfig[routeKey]!.replaceFirst('#', '0xFF')),
+        );
       }
     } catch (_) {}
 
     if (startListener) {
       _startFirebaseListener();
     }
-    
+
     _fetchBusOsrmRoute();
   }
 
   Future<void> _fetchBusOsrmRoute() async {
-    if (_routeStops.length < 2) {
-      setState(() => _busRoutePoints = []);
-      return;
-    }
-    if (!mounted) return;
-    setState(() => _busRouteLoading = true);
-
-    try {
-      final coordsList = <String>[];
-      for (var stop in _routeStops) {
-        final coord = _coords[stop];
-        if (coord != null) {
-          coordsList.add('${coord.longitude.toStringAsFixed(6)},${coord.latitude.toStringAsFixed(6)}');
-        }
-      }
-
-      if (coordsList.length < 2) {
-        setState(() => _busRouteLoading = false);
-        return;
-      }
-
-      final coords = coordsList.join(';');
-      final url = Uri.parse(
-        'http://router.project-osrm.org/route/v1/driving/$coords'
-        '?overview=full&geometries=geojson',
-      );
-
-      final response = await http.get(url).timeout(const Duration(seconds: 15));
-      if (!mounted) return;
-
-      if (response.statusCode == 200) {
-        final json = jsonDecode(response.body) as Map<String, dynamic>;
-        final routes = json['routes'] as List?;
-        if (routes != null && routes.isNotEmpty) {
-          final geometry = routes[0]['geometry'] as Map<String, dynamic>?;
-          final coordinates = geometry?['coordinates'] as List?;
-          if (coordinates != null) {
-            final points = coordinates.map((c) {
-              final lng = (c[0] as num).toDouble();
-              final lat = (c[1] as num).toDouble();
-              return LatLng(lat, lng);
-            }).toList();
-            if (mounted) {
-              setState(() {
-                _busRoutePoints = points;
-                _busRouteLoading = false;
-              });
-            }
-            return;
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint('OSRM bus route fetch error: $e');
-    }
-
+    // The user explicitly requested NO connecting lines on the live tracker map.
+    // We skip the slow OSRM HTTP fetch entirely to make the map load instantly.
     if (mounted) {
       setState(() {
-        _busRoutePoints = []; // Fallback to no line instead of straight imperfect lines
+        _busRoutePoints = [];
         _busRouteLoading = false;
       });
     }
@@ -1205,6 +1309,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
         'savedStop': '',
       });
     }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('studentSelectedRoute', routeKey);
+    await prefs.setString('studentSavedStop', '');
     _showSnackBar("Route switched to ${routeLabelsConfig[routeKey]}");
   }
 
@@ -1222,15 +1329,20 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     _showSnackBar("⭐ Boarding stop saved: $stopName");
   }
 
-  void _saveProfile(String name, String year, String dept,
-      {String busNo = '', String boardingStop = '', String rollNo = ''}) async {
-      
+  void _saveProfile(
+    String name,
+    String year,
+    String dept, {
+    String busNo = '',
+    String boardingStop = '',
+    String rollNo = '',
+  }) async {
     final actualRollNo = rollNo.isNotEmpty ? rollNo : widget.studentRollNo;
     if (actualRollNo.trim().isEmpty) {
       _showSnackBar("Roll No is required");
       return;
     }
-    
+
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('studentName', name);
     await prefs.setString('studentYear', year);
@@ -1240,10 +1352,21 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     await prefs.setString('studentSavedStop', boardingStop);
     // Always persist the roll number — covers first-time signup AND edits
     await prefs.setString('studentRollNo', actualRollNo);
-    
+
+    setState(() {
+      _studentName = name;
+      _studentYear = year;
+      _studentDept = dept;
+      _studentBusNo = busNo;
+      _savedStop = boardingStop;
+      _studentId = actualRollNo;
+    });
+
     try {
       final response = await http.post(
-        Uri.parse('https://panimalr-bus.onrender.com/api/students/${actualRollNo}'),
+        Uri.parse(
+          'https://panimalr-bus.onrender.com/api/students/${actualRollNo}',
+        ),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
           'name': name,
@@ -1251,7 +1374,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
           'department': dept,
           'busNo': busNo,
           'boardingStop': boardingStop,
-          'profilePicBase64': _profilePicUrl.startsWith('base64:') ? _profilePicUrl : '',
+          'profilePicBase64': _profilePicUrl.startsWith('base64:')
+              ? _profilePicUrl
+              : '',
         }),
       );
       if (response.statusCode != 200) {
@@ -1262,14 +1387,6 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     }
 
     setState(() {
-      _studentName = name;
-      _studentYear = year;
-      _studentDept = dept;
-      _studentBusNo = busNo;
-      _savedStop = boardingStop;
-      // Update the local student ID so sub-heading shows new roll no immediately
-      _studentId = actualRollNo;
-      
       if (busNo.isNotEmpty) {
         if (_fetchedRouteKey != null) {
           _selectedRoute = _fetchedRouteKey!;
@@ -1277,64 +1394,77 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
         } else {
           if (Firebase.apps.isNotEmpty) {
             FirebaseDatabase.instance.ref('drivers').get().then((snap) {
-               if (snap.exists) {
-                  String? foundRoute;
-                  for (final child in snap.children) {
-                    final val = child.value;
-                    if (val is Map) {
-                      final b = (val['bus']?.toString() ?? '').trim().toUpperCase();
-                      if (b == busNo.trim().toUpperCase()) {
-                        foundRoute = val['route'] as String?;
-                        break;
-                      }
+              if (snap.exists) {
+                String? foundRoute;
+                for (final child in snap.children) {
+                  final val = child.value;
+                  if (val is Map) {
+                    final b = (val['bus']?.toString() ?? '')
+                        .trim()
+                        .toUpperCase();
+                    if (b == busNo.trim().toUpperCase()) {
+                      foundRoute = val['route'] as String?;
+                      break;
                     }
                   }
-                  if (foundRoute != null && mounted) {
-                     setState(() {
-                        _selectedRoute = foundRoute!;
-                        _updateRouteDetails(_selectedRoute, startListener: true);
-                     });
-                  }
-               }
+                }
+                if (foundRoute != null && mounted) {
+                  setState(() {
+                    _selectedRoute = foundRoute!;
+                    _updateRouteDetails(_selectedRoute, startListener: true);
+                  });
+                  SharedPreferences.getInstance().then(
+                    (p) => p.setString('studentSelectedRoute', foundRoute!),
+                  );
+                }
+              }
             });
           }
         }
+      } else {
+        SharedPreferences.getInstance().then(
+          (p) => p.setString('studentSelectedRoute', ''),
+        );
       }
-      
+
       if (widget.isFirstTimeSignup) {
-         _currentIndex = 0;
+        _currentIndex = 0;
       }
       _isEditingProfile = false;
     });
-    
+
     // Notify parent shell of the (possibly new) roll number so auto-login is always in sync
     if (widget.onFirstTimeSave != null) {
       widget.onFirstTimeSave!(actualRollNo);
     }
-    
+
     _showSnackBar("✅ Profile saved successfully");
   }
 
   Future<void> _uploadProfilePhoto() async {
     try {
-      FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.image);
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+      );
       if (result != null) {
         final file = result.files.single;
         if (file.bytes != null || file.path != null) {
           _showSnackBar("Processing profile photo...");
-          
+
           Uint8List? imageBytes = file.bytes;
           if (imageBytes == null && file.path != null) {
             imageBytes = await File(file.path!).readAsBytes();
           }
-          
+
           if (imageBytes != null) {
             final base64String = base64Encode(imageBytes);
             setState(() {
               _profilePicUrl = 'base64:' + base64String;
               try {
                 _cachedProfileImage = MemoryImage(imageBytes!);
-              } catch (_) { _cachedProfileImage = null; }
+              } catch (_) {
+                _cachedProfileImage = null;
+              }
             });
             _showSnackBar("Profile photo attached! Don't forget to save!");
           }
@@ -1349,32 +1479,35 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     _studentIntercomSub?.cancel();
     if (Firebase.apps.isEmpty || _studentId.isEmpty) return;
     try {
-      _studentIntercomSub = FirebaseDatabase.instance.ref('voice_messages/student_$_studentId').onValue.listen((event) {
-        final data = event.snapshot.value as Map?;
-        final List<Map<String, dynamic>> temp = [];
-        if (data != null) {
-          data.forEach((key, val) {
-            if (val is Map) {
-              temp.add({
-                'id': key.toString(),
-                'sender': val['sender'] ?? 'unknown',
-                'timestamp': val['timestamp'] ?? 0,
-                'msg': val['msg'] ?? '',
-                'senderName': val['senderName'] ?? '',
-                'isVoice': val['isVoice'] ?? false,
-                'voiceDuration': val['voiceDuration'] ?? 0,
-                'transcript': val['transcript'] ?? '',
+      _studentIntercomSub = FirebaseDatabase.instance
+          .ref('voice_messages/student_$_studentId')
+          .onValue
+          .listen((event) {
+            final data = event.snapshot.value as Map?;
+            final List<Map<String, dynamic>> temp = [];
+            if (data != null) {
+              data.forEach((key, val) {
+                if (val is Map) {
+                  temp.add({
+                    'id': key.toString(),
+                    'sender': val['sender'] ?? 'unknown',
+                    'timestamp': val['timestamp'] ?? 0,
+                    'msg': val['msg'] ?? '',
+                    'senderName': val['senderName'] ?? '',
+                    'isVoice': val['isVoice'] ?? false,
+                    'voiceDuration': val['voiceDuration'] ?? 0,
+                    'transcript': val['transcript'] ?? '',
+                  });
+                }
+              });
+              temp.sort((a, b) => a['timestamp'].compareTo(b['timestamp']));
+            }
+            if (mounted) {
+              setState(() {
+                _studentIntercomMessages = temp;
               });
             }
           });
-          temp.sort((a, b) => a['timestamp'].compareTo(b['timestamp']));
-        }
-        if (mounted) {
-          setState(() {
-            _studentIntercomMessages = temp;
-          });
-        }
-      });
     } catch (e) {
       debugPrint("Error listening to intercom: $e");
     }
@@ -1384,12 +1517,14 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     if (Firebase.apps.isEmpty || _studentId.isEmpty) return;
     try {
       final msgId = DateTime.now().millisecondsSinceEpoch.toString();
-      await FirebaseDatabase.instance.ref('voice_messages/student_$_studentId/$msgId').set({
-        'sender': 'student',
-        'senderName': _studentName,
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
-        'msg': text,
-      });
+      await FirebaseDatabase.instance
+          .ref('voice_messages/student_$_studentId/$msgId')
+          .set({
+            'sender': 'student',
+            'senderName': _studentName,
+            'timestamp': DateTime.now().millisecondsSinceEpoch,
+            'msg': text,
+          });
     } catch (e) {
       debugPrint("Error sending message: $e");
     }
@@ -1424,7 +1559,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   void _stopAndSendRecordingVoice() async {
     _recordingTimer?.cancel();
     if (!_isRecordingVoice) return;
-    
+
     final path = await _audioRecorder.stop();
     final duration = _recordingDurationSecs == 0 ? 3 : _recordingDurationSecs;
     setState(() {
@@ -1441,9 +1576,11 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
           bytes = await File(path).readAsBytes();
         }
         final base64Audio = base64Encode(bytes);
-        
-        final String apiUrl = kIsWeb ? 'https://panimalr-bus.onrender.com/api/voice' : 'https://panimalr-bus.onrender.com/api/voice';
-        
+
+        final String apiUrl = kIsWeb
+            ? 'https://panimalr-bus.onrender.com/api/voice'
+            : 'https://panimalr-bus.onrender.com/api/voice';
+
         final response = await http.post(
           Uri.parse(apiUrl),
           headers: {'Content-Type': 'application/json'},
@@ -1454,21 +1591,24 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
             'duration': duration,
           }),
         );
-        
+
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body);
           final mongoId = data['id'];
-          
+
           final msgId = DateTime.now().millisecondsSinceEpoch.toString();
-          await FirebaseDatabase.instance.ref('voice_messages/student_$_studentId/$msgId').set({
-            'sender': 'student',
-            'senderName': _studentName,
-            'timestamp': DateTime.now().millisecondsSinceEpoch,
-            'msg': '[Voice Message - 0:${duration.toString().padLeft(2, '0')}] "$mongoId"',
-            'isVoice': true,
-            'voiceDuration': duration,
-            'mongoId': mongoId,
-          });
+          await FirebaseDatabase.instance
+              .ref('voice_messages/student_$_studentId/$msgId')
+              .set({
+                'sender': 'student',
+                'senderName': _studentName,
+                'timestamp': DateTime.now().millisecondsSinceEpoch,
+                'msg':
+                    '[Voice Message - 0:${duration.toString().padLeft(2, '0')}] "$mongoId"',
+                'isVoice': true,
+                'voiceDuration': duration,
+                'mongoId': mongoId,
+              });
         }
       } catch (e) {
         debugPrint("Error sending voice message: $e");
@@ -1505,10 +1645,12 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
         mongoId = text.substring(index + 1).replaceAll('"', '').trim();
       }
     }
-    
+
     if (mongoId.isNotEmpty) {
       try {
-        final String apiUrl = kIsWeb ? 'https://panimalr-bus.onrender.com/api/voice/$mongoId' : 'https://panimalr-bus.onrender.com/api/voice/$mongoId';
+        final String apiUrl = kIsWeb
+            ? 'https://panimalr-bus.onrender.com/api/voice/$mongoId'
+            : 'https://panimalr-bus.onrender.com/api/voice/$mongoId';
         final response = await http.get(Uri.parse(apiUrl));
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body);
@@ -1524,7 +1666,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       _playingMsgId = msgId;
       _playbackProgress = 0.0;
     });
-    
+
     final int totalSteps = durationSecs * 10;
     int currentStep = 0;
     _playbackTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
@@ -1550,22 +1692,25 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     _pickupRequestSub?.cancel();
     if (Firebase.apps.isEmpty || _studentId.isEmpty) return;
     try {
-      _pickupRequestSub = FirebaseDatabase.instance.ref('pickup_requests/$_studentId').onValue.listen((event) {
-        final data = event.snapshot.value as Map?;
-        if (data != null) {
-          setState(() {
-            _pickupRequestStatus = data['status'] as String? ?? "none";
-            _pickupRequestDoc = data['documentName'] as String? ?? "";
-            _pickupRequestDocUrl = data['documentUrl'] as String? ?? "";
+      _pickupRequestSub = FirebaseDatabase.instance
+          .ref('pickup_requests/$_studentId')
+          .onValue
+          .listen((event) {
+            final data = event.snapshot.value as Map?;
+            if (data != null) {
+              setState(() {
+                _pickupRequestStatus = data['status'] as String? ?? "none";
+                _pickupRequestDoc = data['documentName'] as String? ?? "";
+                _pickupRequestDocUrl = data['documentUrl'] as String? ?? "";
+              });
+            } else {
+              setState(() {
+                _pickupRequestStatus = "none";
+                _pickupRequestDoc = "";
+                _pickupRequestDocUrl = "";
+              });
+            }
           });
-        } else {
-          setState(() {
-            _pickupRequestStatus = "none";
-            _pickupRequestDoc = "";
-            _pickupRequestDocUrl = "";
-          });
-        }
-      });
     } catch (e) {
       debugPrint("Error listening to pickup request: $e");
     }
@@ -1576,29 +1721,36 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     if (Firebase.apps.isEmpty) return;
     try {
       final today = DateTime.now().toIso8601String().substring(0, 10);
-      _logsSub = FirebaseDatabase.instance.ref('arrival_logs/$today').onValue.listen((event) {
-        final data = event.snapshot.value as Map?;
-        final List<LogEntry> temp = [];
-        if (data != null) {
-          data.forEach((key, val) {
-            if (val is Map) {
-              temp.add(LogEntry(
-                id: (val['timestamp'] as num?)?.toDouble() ?? DateTime.now().millisecondsSinceEpoch.toDouble(),
-                bus: val['bus'] ?? key,
-                driver: val['driver'] ?? 'Unknown',
-                route: val['route'] ?? 'Unknown',
-                date: val['date'] ?? today,
-                arrived: val['arrived'],
-                departed: val['departed'],
-                status: val['status'] ?? 'arrived',
-              ));
+      _logsSub = FirebaseDatabase.instance
+          .ref('arrival_logs/$today')
+          .onValue
+          .listen((event) {
+            final data = event.snapshot.value as Map?;
+            final List<LogEntry> temp = [];
+            if (data != null) {
+              data.forEach((key, val) {
+                if (val is Map) {
+                  temp.add(
+                    LogEntry(
+                      id:
+                          (val['timestamp'] as num?)?.toDouble() ??
+                          DateTime.now().millisecondsSinceEpoch.toDouble(),
+                      bus: val['bus'] ?? key,
+                      driver: val['driver'] ?? 'Unknown',
+                      route: val['route'] ?? 'Unknown',
+                      date: val['date'] ?? today,
+                      arrived: val['arrived'],
+                      departed: val['departed'],
+                      status: val['status'] ?? 'arrived',
+                    ),
+                  );
+                }
+              });
             }
+            setState(() {
+              _arrivalLogs = temp;
+            });
           });
-        }
-        setState(() {
-          _arrivalLogs = temp;
-        });
-      });
     } catch (e) {
       debugPrint("Error listening to arrival logs: $e");
     }
@@ -1608,163 +1760,256 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     _locationSub?.cancel();
     _breakdownSub?.cancel();
     if (Firebase.apps.isEmpty) return;
-    
+
     void startLocationTracker(String targetBusId) {
       _locationSub?.cancel();
-      _locationSub = FirebaseDatabase.instance.ref('liveLocations/$targetBusId').onValue.listen((event) {
-        final data = event.snapshot.value as Map?;
-        final status = data?['status'] as String? ?? 'offline';
+      _locationSub = FirebaseDatabase.instance
+          .ref('liveLocations/$targetBusId')
+          .onValue
+          .listen(
+            (event) {
+              final data = event.snapshot.value as Map?;
+              final status = data?['status'] as String? ?? 'offline';
 
-        // Only mark online when driver has explicitly started tracking
-        final bool isLive = status == 'tracking' || status == 'broken';
-        final bool isCompleted = status == 'completed';
-
-        if (data == null || (!isLive && !isCompleted)) {
-          setState(() {
-            _wasBusOnline = false;
-            _busIsOnline = false;
-            _busStatus = "offline";
-            _hasAlertedApproachingRadius = false;
-          });
-          return;
-        }
-
-        final bool justCameOnline = !_wasBusOnline && isLive;
-        final bool justCompleted = _wasBusOnline && isCompleted;
-
-        setState(() {
-          _busIsOnline = isLive;
-          _wasBusOnline = isLive || isCompleted; // keep it true if completed so we don't re-trigger
-          _busLat = (data['lat'] as num).toDouble();
-          _busLng = (data['lng'] as num).toDouble();
-          _busAccuracy = (data['acc'] as num?)?.toDouble() ?? (data['accuracy'] as num?)?.toDouble() ?? 10.0;
-          _busStatus = status;
-          _busDirection = data['direction'] as String? ?? "To College";
-
-          final rawUpdatedAt = data['updatedAt'] as String?;
-          if (rawUpdatedAt != null) {
-            try {
-              final dt = DateTime.parse(rawUpdatedAt).toLocal();
-              _busUpdatedAt = "${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}";
-            } catch (_) {
-              _busUpdatedAt = "--:--";
-            }
-          } else {
-            _busUpdatedAt = "--:--";
-          }
-
-          if (_renderLat == null || _renderLng == null) {
-            _renderLat = _busLat;
-            _renderLng = _busLng;
-          }
-        });
-
-        if (justCameOnline) {
-          _showInAppNotification(
-            "🚌 Trip has started",
-            "Bus $targetBusId has started its route. Live GPS tracking is now active. Get ready to board!",
-            "✅",
-            durationMs: 10000,
-          );
-          // Auto-pan to bus location when it comes online
-          if (_busLat != null && _busLng != null) {
-            Future.delayed(const Duration(milliseconds: 300), () {
-              if (mounted) {
-                _mapController.move(LatLng(_busLat!, _busLng!), 14.0);
+              final rawUpdatedAt = data?['updatedAt'] as String?;
+              bool isStale = false;
+              if (rawUpdatedAt != null) {
+                try {
+                  final dt = DateTime.parse(rawUpdatedAt).toLocal();
+                  if (DateTime.now().difference(dt).inMinutes > 5) {
+                    isStale = true;
+                  }
+                } catch (_) {}
               }
-            });
-          }
-        } else if (justCompleted) {
-          _showInAppNotification(
-            "🏁 Trip is completed",
-            "Bus $targetBusId has successfully completed its trip.",
-            "🏁",
-            durationMs: 10000,
+
+              // Only mark online when driver has explicitly started tracking and data is fresh
+              final bool isLive = (status == 'tracking' || status == 'broken') && !isStale;
+              final bool isCompleted = status == 'completed';
+
+              if (data == null || (!isLive && !isCompleted)) {
+                setState(() {
+                  _wasBusOnline = false;
+                  _busIsOnline = false;
+                  _busStatus = "offline";
+                  _hasAlertedApproachingRadius = false;
+                });
+                return;
+              }
+
+              final bool justCameOnline = !_wasBusOnline && isLive;
+              final bool justCompleted = _wasBusOnline && isCompleted;
+
+              setState(() {
+                _busIsOnline = isLive;
+                _wasBusOnline =
+                    isLive ||
+                    isCompleted; // keep it true if completed so we don't re-trigger
+                final rawLat = (data['lat'] as num).toDouble();
+                final rawLng = (data['lng'] as num).toDouble();
+
+                if (rawLat == 0.0 && rawLng == 0.0)
+                  return; // Ignore invalid GPS coordinate
+
+                _busLat = rawLat;
+                _busLng = rawLng;
+                _busAccuracy =
+                    (data['acc'] as num?)?.toDouble() ??
+                    (data['accuracy'] as num?)?.toDouble() ??
+                    10.0;
+                _busStatus = status;
+                _busDirection = data['direction'] as String? ?? "To College";
+
+                final rawUpdatedAt = data['updatedAt'] as String?;
+                if (rawUpdatedAt != null) {
+                  try {
+                    final dt = DateTime.parse(rawUpdatedAt).toLocal();
+                    _busUpdatedAt =
+                        "${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}";
+                  } catch (_) {
+                    _busUpdatedAt = "--:--";
+                  }
+                } else {
+                  _busUpdatedAt = "--:--";
+                }
+
+                if (_renderLat == null || _renderLng == null) {
+                  _renderLat = _busLat;
+                  _renderLng = _busLng;
+                }
+              });
+
+              if (justCameOnline) {
+                _showInAppNotification(
+                  "🚌 Trip has started",
+                  "Bus $targetBusId has started its route. Live GPS tracking is now active. Get ready to board!",
+                  "✅",
+                  durationMs: 10000,
+                );
+                setState(() {
+                  _isFollowingBus = true;
+                });
+                // Auto-pan to bus location when it comes online
+                if (_busLat != null && _busLng != null) {
+                  Future.delayed(const Duration(milliseconds: 300), () {
+                    if (mounted) {
+                      _mapController.move(LatLng(_busLat!, _busLng!), 14.0);
+                    }
+                  });
+                }
+              } else if (justCompleted) {
+                _showInAppNotification(
+                  "🏁 Trip is completed",
+                  "Bus $targetBusId has successfully completed its trip.",
+                  "🏁",
+                  durationMs: 10000,
+                );
+              }
+
+              if (_isFollowingBus &&
+                  !justCameOnline &&
+                  _busLat != null &&
+                  _busLng != null) {
+                try {
+                  if (mounted) {
+                    _mapController.move(
+                      LatLng(_busLat!, _busLng!),
+                      _mapController.camera.zoom,
+                    );
+                  }
+                } catch (_) {}
+              }
+
+              if (_savedStop.isNotEmpty && _busLat != null && _busLng != null) {
+                final nearestIdx = _getNearestStopIndex(_busLat!, _busLng!);
+                final displayStops = _busDirection == 'To Home'
+                    ? _routeStops.reversed.toList()
+                    : _routeStops;
+                final myStopIdx = displayStops.indexOf(_savedStop);
+                final logicalNearestIdx = displayStops.indexOf(
+                  _routeStops[nearestIdx],
+                );
+
+                if (logicalNearestIdx == 0) {
+                  _hasAlertedApproaching = false;
+                  _hasAlertedArrived = false;
+                }
+
+                if (myStopIdx != -1) {
+                  if (logicalNearestIdx == myStopIdx - 1 &&
+                      !_hasAlertedApproaching) {
+                    _hasAlertedApproaching = true;
+                    _showInAppNotification(
+                      "Bus $targetBusId is approaching!",
+                      "Bus $targetBusId is at ${displayStops[logicalNearestIdx]}, which is 1 stop away from $_savedStop.",
+                      "🔔",
+                    );
+                  } else if (logicalNearestIdx == myStopIdx &&
+                      !_hasAlertedArrived) {
+                    _hasAlertedArrived = true;
+                    _showInAppNotification(
+                      "Bus $targetBusId has arrived!",
+                      "Bus $targetBusId is now at your boarding stop: $_savedStop. Get ready to board!",
+                      "🚏",
+                    );
+                  }
+                }
+
+                // Proximity Radius Alert
+                final stopCoords = _coords[_savedStop];
+                if (stopCoords != null) {
+                  double distanceMeters = _haversineM(
+                    _busLat!,
+                    _busLng!,
+                    stopCoords.latitude,
+                    stopCoords.longitude,
+                  );
+                  if (distanceMeters <= _alertRadiusMeters &&
+                      !_hasAlertedApproachingRadius) {
+                    _hasAlertedApproachingRadius = true;
+                    _showInAppNotification(
+                      "Bus is approaching!",
+                      "The bus is within ${(_alertRadiusMeters / 1000).toStringAsFixed(1)}km of your stop. Be ready!",
+                      "🔔",
+                    );
+                  } else if (distanceMeters > _alertRadiusMeters) {
+                    _hasAlertedApproachingRadius = false;
+                  }
+                }
+              }
+            },
+            onError: (e) {
+              debugPrint("Database listen error: $e");
+            },
           );
-        }
-
-        if (_savedStop.isNotEmpty && _busLat != null && _busLng != null) {
-          final nearestIdx = _getNearestStopIndex(_busLat!, _busLng!);
-          final displayStops = _busDirection == 'To Home' ? _routeStops.reversed.toList() : _routeStops;
-          final myStopIdx = displayStops.indexOf(_savedStop);
-          final logicalNearestIdx = displayStops.indexOf(_routeStops[nearestIdx]);
-
-          if (logicalNearestIdx == 0) {
-            _hasAlertedApproaching = false;
-            _hasAlertedArrived = false;
-          }
-
-          if (myStopIdx != -1) {
-            if (logicalNearestIdx == myStopIdx - 1 && !_hasAlertedApproaching) {
-              _hasAlertedApproaching = true;
-              _showInAppNotification(
-                "Bus $targetBusId is approaching!",
-                "Bus $targetBusId is at ${displayStops[logicalNearestIdx]}, which is 1 stop away from $_savedStop.",
-                "🔔",
-              );
-            } else if (logicalNearestIdx == myStopIdx && !_hasAlertedArrived) {
-              _hasAlertedArrived = true;
-              _showInAppNotification(
-                "Bus $targetBusId has arrived!",
-                "Bus $targetBusId is now at your boarding stop: $_savedStop. Get ready to board!",
-                "🚏",
-              );
-            }
-          }
-
-          // Proximity Radius Alert
-          final stopCoords = _coords[_savedStop];
-          if (stopCoords != null) {
-            double distanceMeters = _haversineM(_busLat!, _busLng!, stopCoords.latitude, stopCoords.longitude);
-            if (distanceMeters <= _alertRadiusMeters && !_hasAlertedApproachingRadius) {
-              _hasAlertedApproachingRadius = true;
-              _showInAppNotification(
-                "Bus is approaching!",
-                "The bus is within ${(_alertRadiusMeters/1000).toStringAsFixed(1)}km of your stop. Be ready!",
-                "🔔",
-              );
-            } else if (distanceMeters > _alertRadiusMeters) {
-              _hasAlertedApproachingRadius = false;
-            }
-          }
-        }
-      }, onError: (e) {
-        debugPrint("Database listen error: $e");
-      });
     }
 
     try {
       startLocationTracker(_busFirebaseId);
 
-      _breakdownSub = FirebaseDatabase.instance.ref('breakdowns/$_busFirebaseId').onValue.listen((event) {
-        final data = event.snapshot.value as Map?;
-        if (data == null) {
-          setState(() {
-            _breakdownActive = false;
-            _replacementBus = "";
-          });
-          startLocationTracker(_busFirebaseId);
-          return;
-        }
-        setState(() {
-          _breakdownActive = true;
-          _replacementBus = data['replacement'] as String? ?? "Unknown";
-        });
-        
-        if (_replacementBus.isNotEmpty && _replacementBus != "Unknown") {
-          startLocationTracker(_replacementBus);
-        } else {
-          startLocationTracker(_busFirebaseId);
-        }
-      }, onError: (e) {
-        debugPrint("Breakdown database listen error: $e");
-      });
+      _breakdownSub = FirebaseDatabase.instance
+          .ref('breakdowns/$_busFirebaseId')
+          .onValue
+          .listen(
+            (event) {
+              final data = event.snapshot.value as Map?;
+              if (data == null) {
+                setState(() {
+                  _breakdownActive = false;
+                  _replacementBus = "";
+                });
+                startLocationTracker(_busFirebaseId);
+                return;
+              }
+
+              final timestamp = data['timestamp'] as int? ?? 0;
+              final now = DateTime.now().millisecondsSinceEpoch;
+              if (now - timestamp > 12 * 60 * 60 * 1000) {
+                // Old breakdown from yesterday, ignore it
+                setState(() {
+                  _breakdownActive = false;
+                  _replacementBus = "";
+                });
+                startLocationTracker(_busFirebaseId);
+                return;
+              }
+
+              final isNew = !_breakdownActive;
+              setState(() {
+                _breakdownActive = true;
+                if (isNew) _breakdownDismissed = false; // Reset dismiss for new breakdowns
+                _replacementBus = data['replacement'] as String? ?? "Unknown";
+              });
+
+              if (isNew) {
+                _showInAppNotification(
+                  "Bus Breakdown Alert!",
+                  "Bus $_busFirebaseId has broken down. Replacement bus $_replacementBus is dispatched.",
+                  "⚠️",
+                  durationMs: 4000,
+                );
+              }
+
+              if (_replacementBus.isNotEmpty && _replacementBus != "Unknown") {
+                startLocationTracker(_replacementBus);
+              } else {
+                startLocationTracker(_busFirebaseId);
+              }
+            },
+            onError: (e) {
+              debugPrint("Breakdown database listen error: $e");
+            },
+          );
     } catch (e) {
       debugPrint("Error starting database listener: $e");
     }
   }
 
-  void _showInAppNotification(String title, String body, String icon, {int durationMs = 5000}) {
+  void _showInAppNotification(
+    String title,
+    String body,
+    String icon, {
+    int durationMs = 5000,
+  }) {
     _notifTimer?.cancel();
     _notifProgressTimer?.cancel();
 
@@ -1805,7 +2050,11 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
 
   void _startLerpLoop() {
     _lerpTimer = Timer.periodic(const Duration(milliseconds: 50), (timer) {
-      if (_busLat == null || _busLng == null || _renderLat == null || _renderLng == null) return;
+      if (_busLat == null ||
+          _busLng == null ||
+          _renderLat == null ||
+          _renderLng == null)
+        return;
       const lerpSpeed = 0.08;
       setState(() {
         _renderLat = _renderLat! + (_busLat! - _renderLat!) * lerpSpeed;
@@ -1818,8 +2067,12 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     const r = 6371;
     final dLat = (lat2 - lat1) * pi / 180;
     final dLon = (lon2 - lon1) * pi / 180;
-    final a = sin(dLat / 2) * sin(dLat / 2) +
-        cos(lat1 * pi / 180) * cos(lat2 * pi / 180) * sin(dLon / 2) * sin(dLon / 2);
+    final a =
+        sin(dLat / 2) * sin(dLat / 2) +
+        cos(lat1 * pi / 180) *
+            cos(lat2 * pi / 180) *
+            sin(dLon / 2) *
+            sin(dLon / 2);
     return r * 2 * atan2(sqrt(a), sqrt(1 - a));
   }
 
@@ -1840,9 +2093,16 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   }
 
   int? _calculateEtaMinutes(int nearestIdx) {
-    if (!_busIsOnline || _busLat == null || _busLng == null || _savedStop.isEmpty) return null;
-    
-    final displayStops = _busDirection == 'To Home' ? _routeStops.reversed.toList() : _routeStops;
+    if (!_busIsOnline ||
+        _busLat == null ||
+        _busLng == null ||
+        _savedStop.isEmpty)
+      return null;
+    if (_busLat == 0.0 && _busLng == 0.0) return null;
+
+    final displayStops = _busDirection == 'To Home'
+        ? _routeStops.reversed.toList()
+        : _routeStops;
     final myStopIdx = displayStops.indexOf(_savedStop);
     final logicalNearestIdx = displayStops.indexOf(_routeStops[nearestIdx]);
 
@@ -1856,7 +2116,12 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       final stopName = displayStops[i];
       final stopCoord = _coords[stopName];
       if (stopCoord != null) {
-        totalDist += _haversineKm(currentLat, currentLng, stopCoord.latitude, stopCoord.longitude);
+        totalDist += _haversineKm(
+          currentLat,
+          currentLng,
+          stopCoord.latitude,
+          stopCoord.longitude,
+        );
         currentLat = stopCoord.latitude;
         currentLng = stopCoord.longitude;
       }
@@ -1870,7 +2135,10 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   void _showSnackBar(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(message, style: const TextStyle(fontWeight: FontWeight.bold)),
+        content: Text(
+          message,
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         backgroundColor: const Color(0xFF2563EB),
@@ -1923,7 +2191,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   }
 
   Widget _buildGlobalMyStopBanner() {
-    final int nearestIdx = (_busLat != null && _busLng != null) ? _getNearestStopIndex(_busLat!, _busLng!) : 0;
+    final int nearestIdx = (_busLat != null && _busLng != null)
+        ? _getNearestStopIndex(_busLat!, _busLng!)
+        : 0;
     final int? eta = _calculateEtaMinutes(nearestIdx);
 
     return Container(
@@ -1967,12 +2237,14 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                       _savedStop = "";
                     });
                     if (Firebase.apps.isNotEmpty) {
-                      FirebaseDatabase.instance.ref('students/$_studentId').update({'savedStop': ''});
+                      FirebaseDatabase.instance
+                          .ref('students/$_studentId')
+                          .update({'savedStop': ''});
                     }
                     _showSnackBar("⭐ Boarding stop cleared");
                   },
                   child: const Text(
-                     "Change stop",
+                    "Change stop",
                     style: TextStyle(
                       fontSize: 11,
                       color: Color(0xFF93C5FD),
@@ -2032,10 +2304,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  _notifIcon,
-                  style: const TextStyle(fontSize: 28),
-                ),
+                Text(_notifIcon, style: const TextStyle(fontSize: 28)),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
@@ -2081,7 +2350,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 child: LinearProgressIndicator(
                   value: _notifProgress,
                   backgroundColor: const Color(0xFFF1F5F9),
-                  valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF2563EB)),
+                  valueColor: const AlwaysStoppedAnimation<Color>(
+                    Color(0xFF2563EB),
+                  ),
                 ),
               ),
             ),
@@ -2102,7 +2373,13 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(t('Panimalar Transit'), style: const TextStyle(fontWeight: FontWeight.w800, color: Colors.black87)),
+        title: Text(
+          t('Panimalar Transit'),
+          style: const TextStyle(
+            fontWeight: FontWeight.w800,
+            color: Colors.black87,
+          ),
+        ),
         backgroundColor: Colors.white,
         elevation: 0,
         actions: [
@@ -2115,12 +2392,20 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 showDialog(
                   context: context,
                   builder: (ctx) => AlertDialog(
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20),
+                    ),
                     title: const Row(
                       children: [
                         Icon(Icons.home_rounded, color: Color(0xFF2563EB)),
                         SizedBox(width: 8),
-                        Text('Go to Home', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
+                        Text(
+                          'Go to Home',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w800,
+                            fontSize: 18,
+                          ),
+                        ),
                       ],
                     ),
                     content: const Text(
@@ -2130,13 +2415,18 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                     actions: [
                       TextButton(
                         onPressed: () => Navigator.pop(ctx),
-                        child: const Text('Cancel', style: TextStyle(color: Color(0xFF64748B))),
+                        child: const Text(
+                          'Cancel',
+                          style: TextStyle(color: Color(0xFF64748B)),
+                        ),
                       ),
                       ElevatedButton(
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFF2563EB),
                           foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
                         ),
                         onPressed: () {
                           Navigator.pop(ctx);
@@ -2168,7 +2458,10 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
             alignment: Alignment.center,
             children: [
               IconButton(
-                icon: const Icon(Icons.notifications_rounded, color: Colors.black54),
+                icon: const Icon(
+                  Icons.notifications_rounded,
+                  color: Colors.black54,
+                ),
                 onPressed: _showNotificationsPanel,
               ),
               if (_unreadNotifCount > 0)
@@ -2231,10 +2524,26 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
             });
           },
           destinations: [
-            NavigationDestination(icon: const Icon(Icons.home_outlined, color: Color(0xFF64748B)), selectedIcon: const Icon(Icons.home, color: Color(0xFF2563EB)), label: t('student_home')),
-            NavigationDestination(icon: const Icon(Icons.map_outlined, color: Color(0xFF64748B)), selectedIcon: const Icon(Icons.map, color: Color(0xFF2563EB)), label: t('student_live_track')),
-            NavigationDestination(icon: const Icon(Icons.domain_outlined, color: Color(0xFF64748B)), selectedIcon: const Icon(Icons.domain, color: Color(0xFF2563EB)), label: t('student_campus_map')),
-            NavigationDestination(icon: const Icon(Icons.person_outline, color: Color(0xFF64748B)), selectedIcon: const Icon(Icons.person, color: Color(0xFF2563EB)), label: t('student_profile')),
+            NavigationDestination(
+              icon: const Icon(Icons.home_outlined, color: Color(0xFF64748B)),
+              selectedIcon: const Icon(Icons.home, color: Color(0xFF2563EB)),
+              label: t('student_home'),
+            ),
+            NavigationDestination(
+              icon: const Icon(Icons.map_outlined, color: Color(0xFF64748B)),
+              selectedIcon: const Icon(Icons.map, color: Color(0xFF2563EB)),
+              label: t('student_live_track'),
+            ),
+            NavigationDestination(
+              icon: const Icon(Icons.domain_outlined, color: Color(0xFF64748B)),
+              selectedIcon: const Icon(Icons.domain, color: Color(0xFF2563EB)),
+              label: t('student_campus_map'),
+            ),
+            NavigationDestination(
+              icon: const Icon(Icons.person_outline, color: Color(0xFF64748B)),
+              selectedIcon: const Icon(Icons.person, color: Color(0xFF2563EB)),
+              label: t('student_profile'),
+            ),
           ],
         ),
       ),
@@ -2242,16 +2551,20 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   }
 
   Widget _buildHomeTab() {
-    final int nearestIdx = (_busLat != null && _busLng != null) ? _getNearestStopIndex(_busLat!, _busLng!) : 0;
+    final int nearestIdx = (_busLat != null && _busLng != null)
+        ? _getNearestStopIndex(_busLat!, _busLng!)
+        : 0;
     final int? eta = _calculateEtaMinutes(nearestIdx);
-    final displayStops = _busDirection == 'To Home' ? _routeStops.reversed.toList() : _routeStops;
+    final displayStops = _busDirection == 'To Home'
+        ? _routeStops.reversed.toList()
+        : _routeStops;
 
     return SingleChildScrollView(
       padding: EdgeInsets.zero,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (_breakdownActive) _buildBreakdownBanner(),
+          if (_breakdownActive && !_breakdownDismissed) _buildBreakdownBanner(),
           _buildHeroBanner(),
 
           Padding(
@@ -2281,12 +2594,17 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
 
                 // Selected Route Status
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 14,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(
-                      color: _busIsOnline ? const Color(0xFFBBF7D0) : const Color(0xFFE2E8F0),
+                      color: _busIsOnline
+                          ? const Color(0xFFBBF7D0)
+                          : const Color(0xFFE2E8F0),
                     ),
                     boxShadow: [
                       BoxShadow(
@@ -2302,12 +2620,16 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                         width: 44,
                         height: 44,
                         decoration: BoxDecoration(
-                          color: _busIsOnline ? const Color(0xFFDCFCE7) : const Color(0xFFF1F5F9),
+                          color: _busIsOnline
+                              ? const Color(0xFFDCFCE7)
+                              : const Color(0xFFF1F5F9),
                           borderRadius: BorderRadius.circular(13),
                         ),
                         child: Icon(
                           Icons.directions_bus_rounded,
-                          color: _busIsOnline ? const Color(0xFF16A34A) : const Color(0xFF94A3B8),
+                          color: _busIsOnline
+                              ? const Color(0xFF16A34A)
+                              : const Color(0xFF94A3B8),
                           size: 22,
                         ),
                       ),
@@ -2317,19 +2639,29 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              _busIsOnline ? "Bus $_displayBusId is online" : "Bus $_displayBusId is offline",
+                              _busIsOnline
+                                  ? "Bus $_displayBusId is online"
+                                  : "Bus $_displayBusId is offline",
                               style: TextStyle(
                                 fontSize: 13,
                                 fontWeight: FontWeight.w800,
-                                color: _busIsOnline ? const Color(0xFF16A34A) : const Color(0xFF64748B),
+                                color: _busIsOnline
+                                    ? const Color(0xFF16A34A)
+                                    : const Color(0xFF64748B),
                               ),
                             ),
                             const SizedBox(height: 3),
                             Text(
-                              _busIsOnline 
-                                ? "Active • Updated $_busUpdatedAt" 
-                                : (_busStatus == 'completed' ? "Trip is completed" : "Trip not started"),
-                              style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8), fontWeight: FontWeight.bold),
+                              _busIsOnline
+                                  ? "Active • Updated $_busUpdatedAt"
+                                  : (_busStatus == 'completed'
+                                        ? "Trip is completed"
+                                        : "Trip not started"),
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Color(0xFF94A3B8),
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                           ],
                         ),
@@ -2338,7 +2670,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                         width: 8,
                         height: 8,
                         decoration: BoxDecoration(
-                          color: _busIsOnline ? const Color(0xFF22C55E) : const Color(0xFFCBD5E1),
+                          color: _busIsOnline
+                              ? const Color(0xFF22C55E)
+                              : const Color(0xFFCBD5E1),
                           shape: BoxShape.circle,
                         ),
                       ),
@@ -2351,14 +2685,19 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
 
                 if (_savedStop.isNotEmpty) ...[
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 14,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(16),
                       border: Border.all(color: const Color(0xFFDBEAFE)),
                       boxShadow: [
                         BoxShadow(
-                          color: const Color(0xFF2563EB).withValues(alpha: 0.05),
+                          color: const Color(
+                            0xFF2563EB,
+                          ).withValues(alpha: 0.05),
                           blurRadius: 10,
                           offset: const Offset(0, 2),
                         ),
@@ -2409,7 +2748,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                                 onTap: () {
                                   setState(() => _savedStop = "");
                                   if (Firebase.apps.isNotEmpty) {
-                                    FirebaseDatabase.instance.ref('students/$_studentId').update({'savedStop': ''});
+                                    FirebaseDatabase.instance
+                                        .ref('students/$_studentId')
+                                        .update({'savedStop': ''});
                                   }
                                 },
                                 child: const Text(
@@ -2429,14 +2770,21 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             Text(
-                              _busIsOnline ? (eta != null ? "$eta" : "🏁") : "—",
+                              _busIsOnline
+                                  ? (eta != null ? "$eta" : "🏁")
+                                  : "—",
                               style: TextStyle(
-                                  fontSize: 22,
-                                  fontWeight: FontWeight.w900,
-                                  color: _busIsOnline ? const Color(0xFF2563EB) : const Color(0xFF94A3B8)),
+                                fontSize: 22,
+                                fontWeight: FontWeight.w900,
+                                color: _busIsOnline
+                                    ? const Color(0xFF2563EB)
+                                    : const Color(0xFF94A3B8),
+                              ),
                             ),
                             Text(
-                              _busIsOnline ? (eta != null ? "min away" : "Passed") : "offline",
+                              _busIsOnline
+                                  ? (eta != null ? "min away" : "Passed")
+                                  : "offline",
                               style: const TextStyle(
                                 fontSize: 9,
                                 fontWeight: FontWeight.bold,
@@ -2456,11 +2804,18 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 // Dynamic Route select list
                 const Text(
                   "Find Your Bus & Route",
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900, color: Color(0xFF1E293B)),
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w900,
+                    color: Color(0xFF1E293B),
+                  ),
                 ),
                 const SizedBox(height: 12),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(16),
@@ -2471,15 +2826,26 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                         offset: const Offset(0, 8),
                       ),
                     ],
-                    border: Border.all(color: const Color(0xFF2563EB).withValues(alpha: 0.3), width: 1.5),
+                    border: Border.all(
+                      color: const Color(0xFF2563EB).withValues(alpha: 0.3),
+                      width: 1.5,
+                    ),
                   ),
                   child: TextField(
                     controller: _routeSearchCtrl,
                     onChanged: (val) => setState(() => _routeSearchQuery = val),
-                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF1E293B),
+                    ),
                     decoration: InputDecoration(
                       hintText: "Search bus stop or route no...",
-                      hintStyle: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13, fontWeight: FontWeight.w600),
+                      hintStyle: const TextStyle(
+                        color: Color(0xFF94A3B8),
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
                       border: InputBorder.none,
                       icon: Container(
                         padding: const EdgeInsets.all(8),
@@ -2487,7 +2853,11 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                           color: const Color(0xFFEFF6FF),
                           borderRadius: BorderRadius.circular(10),
                         ),
-                        child: const Icon(Icons.search_rounded, size: 20, color: Color(0xFF2563EB)),
+                        child: const Icon(
+                          Icons.search_rounded,
+                          size: 20,
+                          color: Color(0xFF2563EB),
+                        ),
                       ),
                     ),
                   ),
@@ -2505,13 +2875,24 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                       builder: (context) {
                         final query = _routeSearchQuery.toLowerCase();
                         final matches = routeLabelsConfig.keys.where((key) {
-                          final label = routeLabelsConfig[key]?.toLowerCase() ?? '';
+                          final label =
+                              routeLabelsConfig[key]?.toLowerCase() ?? '';
                           final stops = routeStopsConfig[key] ?? [];
-                          final stopsMatch = stops.any((s) => s.toLowerCase().contains(query));
+                          final stopsMatch = stops.any(
+                            (s) => s.toLowerCase().contains(query),
+                          );
                           return label.contains(query) || stopsMatch;
                         }).toList();
                         if (matches.isEmpty) {
-                          return const Center(child: Text("No routes found", style: TextStyle(fontSize: 12, color: Colors.grey)));
+                          return const Center(
+                            child: Text(
+                              "No routes found",
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          );
                         }
                         return ListView.separated(
                           padding: const EdgeInsets.all(8),
@@ -2522,8 +2903,20 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                             final label = routeLabelsConfig[key] ?? key;
                             return ListTile(
                               dense: true,
-                              title: Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
-                              trailing: _selectedRoute == key ? const Icon(Icons.check_circle, color: Colors.green, size: 18) : null,
+                              title: Text(
+                                label,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              trailing: _selectedRoute == key
+                                  ? const Icon(
+                                      Icons.check_circle,
+                                      color: Colors.green,
+                                      size: 18,
+                                    )
+                                  : null,
                               onTap: () {
                                 _changeSelectedRoute(key);
                                 _routeSearchCtrl.clear();
@@ -2532,21 +2925,37 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                             );
                           },
                         );
-                      }
+                      },
                     ),
                   ),
                 if (_routeSearchQuery.isEmpty)
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
                     decoration: BoxDecoration(
                       color: const Color(0xFFEEF2FF),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Row(
                       children: [
-                        const Icon(Icons.directions_bus, size: 18, color: Color(0xFF2563EB)),
+                        const Icon(
+                          Icons.directions_bus,
+                          size: 18,
+                          color: Color(0xFF2563EB),
+                        ),
                         const SizedBox(width: 8),
-                        Expanded(child: Text("Selected: ${routeLabelsConfig[_selectedRoute] ?? _selectedRoute}", style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Color(0xFF1E3A8A)))),
+                        Expanded(
+                          child: Text(
+                            "Selected: ${routeLabelsConfig[_selectedRoute] ?? _selectedRoute}",
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w800,
+                              color: Color(0xFF1E3A8A),
+                            ),
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -2579,7 +2988,11 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 if (_arrivalLogs.isNotEmpty) ...[
                   const Text(
                     "Real-time Automated Arrivals (Today)",
-                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFF64748B)),
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF64748B),
+                    ),
                   ),
                   const SizedBox(height: 8),
                   Container(
@@ -2598,12 +3011,29 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                             children: [
                               Row(
                                 children: [
-                                  const Icon(Icons.check_circle_outline, color: Colors.green, size: 16),
+                                  const Icon(
+                                    Icons.check_circle_outline,
+                                    color: Colors.green,
+                                    size: 16,
+                                  ),
                                   const SizedBox(width: 6),
-                                  Text("Bus ${log.bus} (${log.route})", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
+                                  Text(
+                                    "Bus ${log.bus} (${log.route})",
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 11,
+                                    ),
+                                  ),
                                 ],
                               ),
-                              Text("Arrived: ${log.arrived ?? '--:--'}", style: const TextStyle(color: Colors.grey, fontSize: 11, fontWeight: FontWeight.bold)),
+                              Text(
+                                "Arrived: ${log.arrived ?? '--:--'}",
+                                style: const TextStyle(
+                                  color: Colors.grey,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
                             ],
                           ),
                         );
@@ -2623,7 +3053,10 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 ),
                 const SizedBox(height: 10),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(16),
@@ -2646,7 +3079,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                           isMyStop: _savedStop == displayStops[i],
                         ),
                         if (i < displayStops.length - 1) _buildStopConnector(),
-                      ]
+                      ],
                     ],
                   ),
                 ),
@@ -2670,7 +3103,12 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     );
   }
 
-  Widget _buildStopRow(String stopName, {bool isFirst = false, bool isLast = false, bool isMyStop = false}) {
+  Widget _buildStopRow(
+    String stopName, {
+    bool isFirst = false,
+    bool isLast = false,
+    bool isMyStop = false,
+  }) {
     Color dotColor = const Color(0xFF94A3B8);
     double dotSize = 10.0;
     FontWeight fWeight = FontWeight.w600;
@@ -2697,8 +3135,12 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
             decoration: BoxDecoration(
               color: dotColor,
               shape: BoxShape.circle,
-              border: isMyStop ? Border.all(color: Colors.white, width: 2) : null,
-              boxShadow: isMyStop ? const [BoxShadow(color: Colors.black26, blurRadius: 4)] : null,
+              border: isMyStop
+                  ? Border.all(color: Colors.white, width: 2)
+                  : null,
+              boxShadow: isMyStop
+                  ? const [BoxShadow(color: Colors.black26, blurRadius: 4)]
+                  : null,
             ),
           ),
         ),
@@ -2709,18 +3151,34 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
             style: TextStyle(
               fontSize: 12.5,
               fontWeight: fWeight,
-              color: isMyStop ? const Color(0xFF2563EB) : const Color(0xFF1E293B),
+              color: isMyStop
+                  ? const Color(0xFF2563EB)
+                  : const Color(0xFF1E293B),
             ),
           ),
         ),
         if (!isFirst && !isLast && _savedStop.isEmpty)
           TextButton(
-            style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(40, 20), tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+            style: TextButton.styleFrom(
+              padding: EdgeInsets.zero,
+              minimumSize: const Size(40, 20),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
             onPressed: () => _saveStop(stopName),
-            child: const Text("Set My Stop", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+            child: const Text(
+              "Set My Stop",
+              style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+            ),
           ),
         if (isMyStop)
-          const Text("⭐ Boarding", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF2563EB))),
+          const Text(
+            "⭐ Boarding",
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF2563EB),
+            ),
+          ),
       ],
     );
   }
@@ -2743,7 +3201,12 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     );
   }
 
-  Widget _buildActionTile({required IconData icon, required Color iconColor, required String label, required VoidCallback onTap}) {
+  Widget _buildActionTile({
+    required IconData icon,
+    required Color iconColor,
+    required String label,
+    required VoidCallback onTap,
+  }) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -2767,10 +3230,18 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
             Expanded(
               child: Text(
                 label,
-                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF1E293B),
+                ),
               ),
             ),
-            const Icon(Icons.arrow_forward_ios_rounded, size: 10, color: Color(0xFF64748B)),
+            const Icon(
+              Icons.arrow_forward_ios_rounded,
+              size: 10,
+              color: Color(0xFF64748B),
+            ),
           ],
         ),
       ),
@@ -2858,7 +3329,10 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 top: 12,
                 right: 12,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
                   decoration: BoxDecoration(
                     color: const Color(0xFFDC2626),
                     borderRadius: BorderRadius.circular(6),
@@ -2905,7 +3379,10 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                   if (_busIsOnline)
                     Container(
                       margin: const EdgeInsets.only(bottom: 8),
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
                       decoration: BoxDecoration(
                         color: const Color(0xFF16A34A).withValues(alpha: 0.85),
                         borderRadius: BorderRadius.circular(20),
@@ -2945,7 +3422,10 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                     ),
                   // BUS number chip
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 4,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.white.withValues(alpha: 0.18),
                       borderRadius: BorderRadius.circular(8),
@@ -2988,7 +3468,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   }
 
   Widget _buildTrackTab() {
-    final int nearestIdx = (_busLat != null && _busLng != null) ? _getNearestStopIndex(_busLat!, _busLng!) : 0;
+    final int nearestIdx = (_busLat != null && _busLng != null)
+        ? _getNearestStopIndex(_busLat!, _busLng!)
+        : 0;
     final int? eta = _calculateEtaMinutes(nearestIdx);
 
     final List<Marker> markers = [];
@@ -2998,7 +3480,8 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       final coord = _coords[stopName];
       if (coord == null) continue;
 
-      final isCollege = stopName == "COLLEGE" || stopName == "Panimalar Engineering College";
+      final isCollege =
+          stopName == "COLLEGE" || stopName == "Panimalar Engineering College";
       markers.add(
         Marker(
           point: coord,
@@ -3012,12 +3495,22 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 color: isCollege ? const Color(0xFF1B5E20) : _routeColor,
                 shape: BoxShape.circle,
                 border: Border.all(color: Colors.white, width: 2),
-                boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))],
+                boxShadow: const [
+                  BoxShadow(
+                    color: Colors.black26,
+                    blurRadius: 4,
+                    offset: Offset(0, 2),
+                  ),
+                ],
               ),
               child: Center(
                 child: isCollege
                     ? const Text("🏫", style: TextStyle(fontSize: 16))
-                    : const Icon(Icons.location_pin, color: Colors.white, size: 16),
+                    : const Icon(
+                        Icons.location_pin,
+                        color: Colors.white,
+                        size: 16,
+                      ),
               ),
             ),
           ),
@@ -3043,11 +3536,22 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 decoration: BoxDecoration(
                   color: const Color(0xFF15803D),
                   borderRadius: BorderRadius.circular(20),
-                  boxShadow: const [BoxShadow(color: Colors.black38, blurRadius: 6, offset: Offset(0, 2))],
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Colors.black38,
+                      blurRadius: 6,
+                      offset: Offset(0, 2),
+                    ),
+                  ],
                 ),
                 child: Text(
                   "Bus $_displayBusId",
-                  style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w900, color: Colors.white, letterSpacing: 0.3),
+                  style: const TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.w900,
+                    color: Colors.white,
+                    letterSpacing: 0.3,
+                  ),
                 ),
               ),
               const SizedBox(height: 2),
@@ -3074,11 +3578,21 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
               decoration: BoxDecoration(
                 color: const Color(0xFF1D4ED8),
                 borderRadius: BorderRadius.circular(20),
-                boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))],
+                boxShadow: const [
+                  BoxShadow(
+                    color: Colors.black26,
+                    blurRadius: 4,
+                    offset: Offset(0, 2),
+                  ),
+                ],
               ),
               child: Text(
                 "Next: $nearStop",
-                style: const TextStyle(fontSize: 8, fontWeight: FontWeight.w900, color: Colors.white),
+                style: const TextStyle(
+                  fontSize: 8,
+                  fontWeight: FontWeight.w900,
+                  color: Colors.white,
+                ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
@@ -3089,7 +3603,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       }
     }
 
-    final String nearestStopName = _busIsOnline && _routeStops.isNotEmpty ? _routeStops[nearestIdx] : "Searching…";
+    final String nearestStopName = _busIsOnline && _routeStops.isNotEmpty
+        ? _routeStops[nearestIdx]
+        : "Searching…";
 
     return Stack(
       children: [
@@ -3100,15 +3616,33 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 ? _coords.values.first
                 : const LatLng(13.047, 80.11),
             initialZoom: 12.0,
+            maxZoom: 22.0,
+            cameraConstraint: CameraConstraint.contain(
+              bounds: LatLngBounds(
+                const LatLng(6.75, 68.16),
+                const LatLng(35.5, 97.4),
+              ),
+            ),
+            onPositionChanged: (position, hasGesture) {
+              if (hasGesture && _isFollowingBus) {
+                setState(() => _isFollowingBus = false);
+              }
+            },
           ),
           children: [
             // Map tiles
             TileLayer(
-              urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+              urlTemplate: 'https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',
+              userAgentPackageName: 'com.panimalar.bus',
+              maxNativeZoom: 19,
+              maxZoom: 22.0,
             ),
 
             // GPS accuracy circle around bus when live
-            if (_busIsOnline && _renderLat != null && _renderLng != null && _busAccuracy != null)
+            if (_busIsOnline &&
+                _renderLat != null &&
+                _renderLng != null &&
+                _busAccuracy != null)
               CircleLayer(
                 circles: [
                   CircleMarker(
@@ -3135,9 +3669,13 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
               children: [
                 GestureDetector(
                   onTap: () {
-                    setState(() { _savedStop = ""; });
+                    setState(() {
+                      _savedStop = "";
+                    });
                     if (Firebase.apps.isNotEmpty) {
-                      FirebaseDatabase.instance.ref('students/$_studentId').update({'savedStop': ''});
+                      FirebaseDatabase.instance
+                          .ref('students/$_studentId')
+                          .update({'savedStop': ''});
                     }
                   },
                   child: Container(
@@ -3145,17 +3683,30 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                     decoration: const BoxDecoration(
                       color: Colors.white,
                       shape: BoxShape.circle,
-                      boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 6)],
+                      boxShadow: [
+                        BoxShadow(color: Colors.black26, blurRadius: 6),
+                      ],
                     ),
-                    child: const Icon(Icons.arrow_back, size: 20, color: Color(0xFF0F172A)),
+                    child: const Icon(
+                      Icons.arrow_back,
+                      size: 20,
+                      color: Color(0xFF0F172A),
+                    ),
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 8,
+                  ),
                   decoration: BoxDecoration(
-                    color: _busIsOnline ? const Color(0xFF16A34A) : const Color(0xFF64748B),
+                    color: _busIsOnline
+                        ? const Color(0xFF16A34A)
+                        : const Color(0xFF64748B),
                     borderRadius: BorderRadius.circular(30),
-                    boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 6)],
+                    boxShadow: const [
+                      BoxShadow(color: Colors.black26, blurRadius: 6),
+                    ],
                   ),
                   child: Row(
                     children: [
@@ -3170,7 +3721,11 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                       const SizedBox(width: 6),
                       Text(
                         _busIsOnline ? "LIVE GPS" : "OFFLINE",
-                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w900, color: Colors.white),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w900,
+                          color: Colors.white,
+                        ),
                       ),
                     ],
                   ),
@@ -3189,7 +3744,13 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(24),
-              boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 16, offset: Offset(0, 4))],
+              boxShadow: const [
+                BoxShadow(
+                  color: Colors.black26,
+                  blurRadius: 16,
+                  offset: Offset(0, 4),
+                ),
+              ],
               border: Border.all(color: const Color(0xFFE2E8F0)),
             ),
             child: Column(
@@ -3214,20 +3775,30 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                         const SizedBox(height: 4),
                         Text(
                           routeLabelsConfig[_selectedRoute] ?? "Manali Route",
-                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: Color(0xFF0F172A)),
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w900,
+                            color: Color(0xFF0F172A),
+                          ),
                         ),
                       ],
                     ),
                     IconButton(
-                      icon: const Icon(Icons.gps_fixed, color: Color(0xFF2563EB)),
+                      icon: Icon(
+                        Icons.gps_fixed,
+                        color: _isFollowingBus
+                            ? const Color(0xFF16A34A)
+                            : const Color(0xFF2563EB),
+                      ),
                       onPressed: () {
                         if (_busLat != null && _busLng != null) {
+                          setState(() => _isFollowingBus = true);
                           _mapController.move(LatLng(_busLat!, _busLng!), 14.5);
                         } else {
                           _showSnackBar("Location signal not received yet");
                         }
                       },
-                    )
+                    ),
                   ],
                 ),
                 const SizedBox(height: 14),
@@ -3239,28 +3810,56 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text("NEAREST STOP", style: TextStyle(fontSize: 9, color: Color(0xFF64748B), fontWeight: FontWeight.bold)),
+                          const Text(
+                            "NEAREST STOP",
+                            style: TextStyle(
+                              fontSize: 9,
+                              color: Color(0xFF64748B),
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                           const SizedBox(height: 4),
                           Text(
                             nearestStopName,
-                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Color(0xFF1E293B)),
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w800,
+                              color: Color(0xFF1E293B),
+                            ),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
                         ],
                       ),
                     ),
-                    Container(width: 1, height: 30, color: const Color(0xFFCBD5E1)),
+                    Container(
+                      width: 1,
+                      height: 30,
+                      color: const Color(0xFFCBD5E1),
+                    ),
                     const SizedBox(width: 16),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text("ACCURACY SIGNAL", style: TextStyle(fontSize: 9, color: Color(0xFF64748B), fontWeight: FontWeight.bold)),
+                          const Text(
+                            "ACCURACY SIGNAL",
+                            style: TextStyle(
+                              fontSize: 9,
+                              color: Color(0xFF64748B),
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                           const SizedBox(height: 4),
                           Text(
-                            _busIsOnline && _busAccuracy != null ? "${_busAccuracy!.toStringAsFixed(1)} meters" : "No Signal",
-                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Color(0xFF1E293B)),
+                            _busIsOnline && _busAccuracy != null
+                                ? "${_busAccuracy!.toStringAsFixed(1)} meters"
+                                : "No Signal",
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w800,
+                              color: Color(0xFF1E293B),
+                            ),
                           ),
                         ],
                       ),
@@ -3270,7 +3869,10 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 const SizedBox(height: 16),
                 if (_savedStop.isNotEmpty) ...[
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
                     decoration: BoxDecoration(
                       color: const Color(0xFFEFF6FF),
                       borderRadius: BorderRadius.circular(16),
@@ -3283,15 +3885,36 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Text("ETA TO MY STOP", style: TextStyle(fontSize: 8.5, color: Color(0xFF1E40AF), fontWeight: FontWeight.w800)),
+                              const Text(
+                                "ETA TO MY STOP",
+                                style: TextStyle(
+                                  fontSize: 8.5,
+                                  color: Color(0xFF1E40AF),
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
                               const SizedBox(height: 2),
-                              Text(_savedStop, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)), overflow: TextOverflow.ellipsis),
+                              Text(
+                                _savedStop,
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF1E293B),
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ],
                           ),
                         ),
                         Text(
-                          _busIsOnline ? (eta != null ? "$eta min" : "Passed") : "offline",
-                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: Color(0xFF1E40AF)),
+                          _busIsOnline
+                              ? (eta != null ? "$eta min" : "Passed")
+                              : "offline",
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w900,
+                            color: Color(0xFF1E40AF),
+                          ),
                         ),
                       ],
                     ),
@@ -3309,7 +3932,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     final List<Marker> markers = [];
     CampusPoint? selectedPoint;
     try {
-      selectedPoint = _campusPointsList.firstWhere((p) => p.name == _selectedNavPointName);
+      selectedPoint = _campusPointsList.firstWhere(
+        (p) => p.name == _selectedNavPointName,
+      );
     } catch (_) {}
 
     // Campus location markers
@@ -3335,7 +3960,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
               _updateCampusRoute().then((_) {
                 if (mounted) {
                   try {
-                    final dest = _campusPointsList.firstWhere((p) => p.name == cp.name);
+                    final dest = _campusPointsList.firstWhere(
+                      (p) => p.name == cp.name,
+                    );
                     _fitMapToRoute(dest);
                   } catch (_) {}
                 }
@@ -3352,17 +3979,27 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                     shape: BoxShape.circle,
                     boxShadow: [
                       BoxShadow(
-                        color: isSelected ? const Color(0xFF2563EB).withOpacity(0.4) : Colors.black26,
+                        color: isSelected
+                            ? const Color(0xFF2563EB).withOpacity(0.4)
+                            : Colors.black26,
                         blurRadius: isSelected ? 8 : 4,
-                      )
+                      ),
                     ],
-                    border: Border.all(color: isSelected ? Colors.white : const Color(0xFF2563EB), width: 2),
+                    border: Border.all(
+                      color: isSelected
+                          ? Colors.white
+                          : const Color(0xFF2563EB),
+                      width: 2,
+                    ),
                   ),
                   child: Text(cp.icon, style: const TextStyle(fontSize: 16)),
                 ),
                 const SizedBox(height: 2),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(4),
@@ -3373,11 +4010,13 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                     style: TextStyle(
                       fontSize: 6,
                       fontWeight: FontWeight.bold,
-                      color: isSelected ? const Color(0xFF2563EB) : const Color(0xFF0F172A),
+                      color: isSelected
+                          ? const Color(0xFF2563EB)
+                          : const Color(0xFF0F172A),
                     ),
                     maxLines: 1,
                   ),
-                )
+                ),
               ],
             ),
           ),
@@ -3386,7 +4025,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     }
 
     // Student location marker — blue pulsing dot
-    if (_studentLat != null && _studentLng != null) {
+    if (_studentLat != null && _studentLng != null && _isInsideCampus) {
       markers.add(
         Marker(
           point: LatLng(_studentLat!, _studentLng!),
@@ -3402,7 +4041,10 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 decoration: BoxDecoration(
                   color: const Color(0xFF2563EB).withOpacity(0.15),
                   shape: BoxShape.circle,
-                  border: Border.all(color: const Color(0xFF2563EB).withOpacity(0.3), width: 1.5),
+                  border: Border.all(
+                    color: const Color(0xFF2563EB).withOpacity(0.3),
+                    width: 1.5,
+                  ),
                 ),
               ),
               // Inner solid dot
@@ -3417,7 +4059,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                     BoxShadow(
                       color: const Color(0xFF2563EB).withOpacity(0.5),
                       blurRadius: 6,
-                    )
+                    ),
                   ],
                 ),
               ),
@@ -3428,29 +4070,42 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     }
 
     final filteredPoints = _campusPointsList
-        .where((p) => p.name.toLowerCase().contains(_searchFilter.toLowerCase()))
+        .where(
+          (p) => p.name.toLowerCase().contains(_searchFilter.toLowerCase()),
+        )
         .toList();
 
     // Use OSRM-computed distance/time if available, else straight-line estimate
-    final distanceM = _routeDistanceM > 0 ? _routeDistanceM : (selectedPoint != null ? _distanceTo(selectedPoint) : 0.0);
-    final walkMinutes = _routeWalkMinutes > 0 ? _routeWalkMinutes : max(1, (distanceM / 83).ceil());
+    final distanceM = _routeDistanceM > 0
+        ? _routeDistanceM
+        : (selectedPoint != null ? _distanceTo(selectedPoint) : 0.0);
+    final walkMinutes = _routeWalkMinutes > 0
+        ? _routeWalkMinutes
+        : max(1, (distanceM / 83).ceil());
 
     return Stack(
       children: [
         FlutterMap(
           mapController: _mapController,
-          options: const MapOptions(
-            initialCenter: LatLng(13.049, 80.075),
+          options: MapOptions(
+            initialCenter: const LatLng(13.049, 80.075),
             initialZoom: 16.5,
+            maxZoom: 22.0,
+            cameraConstraint: CameraConstraint.contain(
+              bounds: LatLngBounds(
+                const LatLng(6.75, 68.16),
+                const LatLng(35.5, 97.4),
+              ),
+            ),
           ),
           children: [
             TileLayer(
-              urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+              urlTemplate: 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+              userAgentPackageName: 'com.panimalar.bus',
+              maxNativeZoom: 20,
+              maxZoom: 22.0,
             ),
-            if (_campusRoute != null)
-              PolylineLayer(
-                polylines: [_campusRoute!],
-              ),
+            if (_campusRoute != null) PolylineLayer(polylines: [_campusRoute!]),
             MarkerLayer(markers: markers),
           ],
         ),
@@ -3464,7 +4119,13 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(30),
-              boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 8, offset: Offset(0, 2))],
+              boxShadow: const [
+                BoxShadow(
+                  color: Colors.black12,
+                  blurRadius: 8,
+                  offset: Offset(0, 2),
+                ),
+              ],
             ),
             child: TextField(
               controller: _searchCtrl,
@@ -3496,10 +4157,13 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
               style: const TextStyle(fontSize: 12),
               onChanged: (val) {
                 final matches = _campusPointsList
-                    .where((p) => p.name.toLowerCase().contains(val.toLowerCase()))
+                    .where(
+                      (p) => p.name.toLowerCase().contains(val.toLowerCase()),
+                    )
                     .toList();
                 final newDest = matches.length == 1 ? matches.first.name : '';
-                final destChanged = newDest != _selectedNavPointName && newDest.isNotEmpty;
+                final destChanged =
+                    newDest != _selectedNavPointName && newDest.isNotEmpty;
                 if (destChanged) _clearRouteCache();
                 setState(() {
                   _searchFilter = val;
@@ -3515,8 +4179,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                   _updateCampusRoute().then((_) {
                     if (mounted) {
                       try {
-                        final dest = _campusPointsList
-                            .firstWhere((p) => p.name == _selectedNavPointName);
+                        final dest = _campusPointsList.firstWhere(
+                          (p) => p.name == _selectedNavPointName,
+                        );
                         _fitMapToRoute(dest);
                       } catch (_) {}
                     }
@@ -3542,7 +4207,11 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.warning_amber_rounded, size: 14, color: Color(0xFFB45309)),
+                  const Icon(
+                    Icons.warning_amber_rounded,
+                    size: 14,
+                    color: Color(0xFFB45309),
+                  ),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
@@ -3550,7 +4219,10 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                           ? _routeError
                           : 'Location permission denied — enable in Settings',
                       style: const TextStyle(
-                          fontSize: 10, color: Color(0xFF92400E), fontWeight: FontWeight.w600),
+                        fontSize: 10,
+                        color: Color(0xFF92400E),
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                 ],
@@ -3561,55 +4233,23 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
         // ── Navigation info card — shown when a route is active ─────────────
         if (selectedPoint != null && _campusRoute != null && !_routeLoading)
           Positioned(
-            top: _studentLocationDenied || _routeError.isNotEmpty ? 116 : 68,
-            left: 12,
-            right: 12,
+            top: _studentLocationDenied || _routeError.isNotEmpty ? 100 : 64,
+            left: 20,
+            right: 20,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 8, offset: Offset(0, 2))],
+                color: Colors.white.withOpacity(0.95),
+                borderRadius: BorderRadius.circular(12),
               ),
               child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  // Total distance
-                  _navInfoCell(
-                    Icons.straighten,
-                    'Total',
-                    distanceM < 1000
-                        ? '${distanceM.round()} m'
-                        : '${(distanceM / 1000).toStringAsFixed(1)} km',
-                    const Color(0xFF2563EB),
-                  ),
+                  _navInfoCell(Icons.straighten, 'Dist', distanceM < 1000 ? '${distanceM.round()}m' : '${(distanceM / 1000).toStringAsFixed(1)}km', const Color(0xFF2563EB)),
                   _navDivider(),
-                  // Remaining distance
-                  _navInfoCell(
-                    Icons.near_me,
-                    'Remaining',
-                    _routeRemainingM < 1000
-                        ? '${_routeRemainingM.round()} m'
-                        : '${(_routeRemainingM / 1000).toStringAsFixed(1)} km',
-                    const Color(0xFF16A34A),
-                  ),
+                  _navInfoCell(Icons.near_me, 'Left', _routeRemainingM < 1000 ? '${_routeRemainingM.round()}m' : '${(_routeRemainingM / 1000).toStringAsFixed(1)}km', const Color(0xFF16A34A)),
                   _navDivider(),
-                  // Walk time
-                  _navInfoCell(
-                    Icons.directions_walk,
-                    'ETA',
-                    '$walkMinutes min',
-                    const Color(0xFFF59E0B),
-                  ),
-                  // Steps count (future voice nav indicator)
-                  if (_navSteps.isNotEmpty) ...[
-                    _navDivider(),
-                    _navInfoCell(
-                      Icons.turn_right,
-                      'Turns',
-                      '${_navSteps.length}',
-                      const Color(0xFF7C3AED),
-                    ),
-                  ],
+                  _navInfoCell(Icons.directions_walk, 'Time', '$walkMinutes min', const Color(0xFFF59E0B)),
                 ],
               ),
             ),
@@ -3618,171 +4258,55 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
         // Bottom Detail Card — when a destination is selected
         if (selectedPoint != null)
           Positioned(
-            left: 12,
-            right: 12,
+            left: 16,
+            right: 16,
             bottom: 20,
             child: Card(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              color: Colors.white,
-              elevation: 10,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              color: Colors.white.withOpacity(0.95),
+              elevation: 8,
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 14, 8, 14),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  mainAxisSize: MainAxisSize.min,
+                padding: const EdgeInsets.all(12),
+                child: Row(
                   children: [
-                    Row(
-                      children: [
-                        Container(
-                          width: 46,
-                          height: 46,
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFEFF6FF),
-                            shape: BoxShape.circle,
-                            border: Border.all(color: const Color(0xFF2563EB).withOpacity(0.3), width: 1.5),
-                          ),
-                          child: Center(
-                            child: Text(selectedPoint.icon, style: const TextStyle(fontSize: 24)),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                selectedPoint.name,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w900,
-                                  fontSize: 14,
-                                  color: Color(0xFF1E3A8A),
-                                ),
-                              ),
-                              const Text(
-                                "Panimalar Engineering College Campus",
-                                style: TextStyle(fontSize: 10, color: Colors.grey),
-                              ),
-                            ],
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.close, size: 18),
-                          onPressed: () {
-                            _clearRouteCache();
-                            setState(() {
-                              _selectedNavPointName = "";
-                              _campusRoute = null;
-                              _routeDistanceM = 0;
-                              _routeWalkMinutes = 0;
-                              _routeRemainingM = 0;
-                              _routeError = '';
-                              _searchCtrl.clear();
-                              _searchFilter = "";
-                            });
-                          },
-                        )
-                      ],
+                    Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(color: const Color(0xFFEFF6FF), shape: BoxShape.circle),
+                      child: Center(child: Text(selectedPoint.icon, style: const TextStyle(fontSize: 20))),
                     ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        const Icon(Icons.my_location, size: 14, color: Color(0xFF2563EB)),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            "Coords: ${selectedPoint.coords.latitude.toStringAsFixed(6)}, ${selectedPoint.coords.longitude.toStringAsFixed(6)}",
-                            style: const TextStyle(
-                              fontSize: 10,
-                              color: Color(0xFF475569),
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    if (_studentLat != null) ...[
-                      const SizedBox(height: 12),
-                      Row(
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          // Walk time badge — shows OSRM data or loading
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFEFF6FF),
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(color: const Color(0xFF2563EB).withOpacity(0.3)),
-                            ),
-                            child: _routeLoading
-                                ? const SizedBox(
-                                    width: 60,
-                                    height: 14,
-                                    child: LinearProgressIndicator(
-                                      backgroundColor: Color(0xFFBFDBFE),
-                                      color: Color(0xFF2563EB),
-                                    ),
-                                  )
-                                : Text(
-                                    "$walkMinutes min · ${distanceM < 1000 ? '${distanceM.round()} m' : '${(distanceM / 1000).toStringAsFixed(1)} km'}",
-                                    style: const TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w700,
-                                      color: Color(0xFF1E3A8A),
-                                    ),
-                                  ),
-                          ),
-                          const Spacer(),
-                          // Navigate button — fully in-app via OSRM
-                          TextButton.icon(
-                            onPressed: _routeLoading
-                                ? null
-                                : () => _handleNavigationTap(selectedPoint!),
-                            style: TextButton.styleFrom(
-                              backgroundColor: _routeLoading
-                                  ? Colors.grey.shade300
-                                  : const Color(0xFF2563EB),
-                              foregroundColor: Colors.white,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                            ),
-                            icon: _routeLoading
-                                ? const SizedBox(
-                                    width: 12,
-                                    height: 12,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Colors.white,
-                                    ),
-                                  )
-                                : const Icon(Icons.directions_walk, size: 14),
-                            label: Text(
-                              _routeLoading ? "Routing…" : "Navigate →",
-                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
-                            ),
-                          ),
+                          Text(selectedPoint.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF1E3A8A))),
+                          if (_studentLat != null)
+                            Text("Walking: $walkMinutes min (${distanceM.round()} m)", style: const TextStyle(fontSize: 11, color: Colors.black87, fontWeight: FontWeight.w600)),
                         ],
                       ),
-                     ] else ...[
-                       const SizedBox(height: 10),
-                       const Row(
-                         children: [
-                           Icon(Icons.info_outline, size: 12, color: Colors.grey),
-                           SizedBox(width: 4),
-                           Text(
-                             "Enable location to see distance & walking time",
-                             style: TextStyle(fontSize: 10, color: Colors.grey),
-                           ),
-                         ],
-                       ),
-                     ],
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, size: 20),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      onPressed: () {
+                        _clearRouteCache();
+                        setState(() {
+                          _selectedNavPointName = "";
+                          _campusRoute = null;
+                          _searchCtrl.clear();
+                        });
+                      },
+                    ),
                   ],
                 ),
               ),
             ),
-          )
+          ),
         // Search results list — shown when searching but no point selected yet
-        else if (filteredPoints.isNotEmpty && _searchFilter.isNotEmpty)
+        if (filteredPoints.isNotEmpty && _searchFilter.isNotEmpty)
           Positioned(
             left: 12,
             right: 12,
@@ -3792,10 +4316,15 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
               decoration: BoxDecoration(
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(20),
-                boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10)],
+                boxShadow: const [
+                  BoxShadow(color: Colors.black12, blurRadius: 10),
+                ],
               ),
               child: ListView.builder(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
                 scrollDirection: Axis.horizontal,
                 itemCount: filteredPoints.length,
                 itemBuilder: (ctx, idx) {
@@ -3847,7 +4376,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 },
               ),
             ),
-          )
+          ),
       ],
     );
   }
@@ -3878,11 +4407,8 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
   }
 
   /// Thin vertical divider for the nav info card.
-  Widget _navDivider() => Container(
-        width: 1,
-        height: 32,
-        color: const Color(0xFFE2E8F0),
-      );
+  Widget _navDivider() =>
+      Container(width: 1, height: 32, color: const Color(0xFFE2E8F0));
 
   /// Fits the map camera to show both the student's position and the destination.
   void _fitMapToRoute(CampusPoint dest) {
@@ -3911,7 +4437,8 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
 
   // Campus centre coordinate — used to decide if student is inside campus.
   static const LatLng _campusCentre = LatLng(13.0508, 80.0754);
-  static const double _campusRadiusMetres = 600.0; // ~600 m covers the whole campus
+  static const double _campusRadiusMetres =
+      600.0; // ~600 m covers the whole campus
 
   /// Returns true if the student's current GPS fix is inside the campus boundary.
   bool get _isInsideCampus {
@@ -3923,7 +4450,8 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     const r = 6371000.0;
     final dLat = lat2 - lat1;
     final dLng = lng2 - lng1;
-    final a = sin(dLat / 2) * sin(dLat / 2) +
+    final a =
+        sin(dLat / 2) * sin(dLat / 2) +
         cos(lat1) * cos(lat2) * sin(dLng / 2) * sin(dLng / 2);
     final dist = r * 2 * atan2(sqrt(a), sqrt(1 - a));
     return dist <= _campusRadiusMetres;
@@ -3937,8 +4465,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     });
   }
 
-
-    Widget _buildProfileTab() {
+  Widget _buildProfileTab() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20.0),
       child: Column(
@@ -3968,10 +4495,13 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                             color: Color(0xFF2563EB),
                             shape: BoxShape.circle,
                           ),
-                          child: const Icon(Icons.camera_alt,
-                              size: 18, color: Colors.white),
+                          child: const Icon(
+                            Icons.camera_alt,
+                            size: 18,
+                            color: Colors.white,
+                          ),
                         ),
-                      )
+                      ),
                   ],
                 ),
                 const SizedBox(height: 12),
@@ -3987,7 +4517,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  _studentId.isEmpty ? "Panimalar Smart Transit Account" : _studentId,
+                  _studentId.isEmpty
+                      ? "Panimalar Smart Transit Account"
+                      : _studentId,
                   style: const TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
@@ -4040,14 +4572,24 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                           color: Color(0xFFCBD5E1),
                           fontSize: 13,
                         ),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(30)),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(30),
+                        ),
                         enabledBorder: OutlineInputBorder(
-                          borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                          borderSide: const BorderSide(
+                            color: Color(0xFFE2E8F0),
+                          ),
                           borderRadius: BorderRadius.circular(30),
                         ),
                         focusedBorder: OutlineInputBorder(
-                          borderSide: const BorderSide(color: Color(0xFF2563EB), width: 1.5),
+                          borderSide: const BorderSide(
+                            color: Color(0xFF2563EB),
+                            width: 1.5,
+                          ),
                           borderRadius: BorderRadius.circular(30),
                         ),
                       ),
@@ -4068,16 +4610,19 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                     controller: _profileNameCtrl,
                     textCapitalization: TextCapitalization.words,
                     decoration: InputDecoration(
-                      hintText: "Enter your full name",          // placeholder
+                      hintText: "Enter your full name", // placeholder
                       hintStyle: const TextStyle(
-                        color: Color(0xFFCBD5E1),               // light colour
+                        color: Color(0xFFCBD5E1), // light colour
                         fontSize: 13,
                         fontWeight: FontWeight.normal,
                       ),
                       contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 12),
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
                       border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(30)),
+                        borderRadius: BorderRadius.circular(30),
+                      ),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(30),
                         borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
@@ -4085,11 +4630,15 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(30),
                         borderSide: const BorderSide(
-                            color: Color(0xFF2563EB), width: 2),
+                          color: Color(0xFF2563EB),
+                          width: 2,
+                        ),
                       ),
                     ),
                     style: const TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.w600),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                   const SizedBox(height: 16),
 
@@ -4104,19 +4653,21 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                   ),
                   const SizedBox(height: 6),
                   DropdownButtonFormField<String>(
-                    value: _profileTempYear.isNotEmpty ? _profileTempYear : null,
+                    value: _profileTempYear.isNotEmpty
+                        ? _profileTempYear
+                        : null,
                     hint: const Text(
                       "Select year of study",
-                      style: TextStyle(
-                        color: Color(0xFFCBD5E1),
-                        fontSize: 13,
-                      ),
+                      style: TextStyle(color: Color(0xFFCBD5E1), fontSize: 13),
                     ),
                     decoration: InputDecoration(
                       contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 12),
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
                       border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(30)),
+                        borderRadius: BorderRadius.circular(30),
+                      ),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(30),
                         borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
@@ -4124,7 +4675,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(30),
                         borderSide: const BorderSide(
-                            color: Color(0xFF2563EB), width: 2),
+                          color: Color(0xFF2563EB),
+                          width: 2,
+                        ),
                       ),
                     ),
                     style: const TextStyle(
@@ -4133,10 +4686,22 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                       fontSize: 13,
                     ),
                     items: const [
-                      DropdownMenuItem(value: "1st Year", child: Text("1st Year")),
-                      DropdownMenuItem(value: "2nd Year", child: Text("2nd Year")),
-                      DropdownMenuItem(value: "3rd Year", child: Text("3rd Year")),
-                      DropdownMenuItem(value: "4th Year", child: Text("4th Year")),
+                      DropdownMenuItem(
+                        value: "1st Year",
+                        child: Text("1st Year"),
+                      ),
+                      DropdownMenuItem(
+                        value: "2nd Year",
+                        child: Text("2nd Year"),
+                      ),
+                      DropdownMenuItem(
+                        value: "3rd Year",
+                        child: Text("3rd Year"),
+                      ),
+                      DropdownMenuItem(
+                        value: "4th Year",
+                        child: Text("4th Year"),
+                      ),
                     ],
                     onChanged: (val) {
                       if (val != null) setState(() => _profileTempYear = val);
@@ -4158,16 +4723,16 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                     value: _deptDropdownValue(),
                     hint: const Text(
                       "Select your department",
-                      style: TextStyle(
-                        color: Color(0xFFCBD5E1),
-                        fontSize: 13,
-                      ),
+                      style: TextStyle(color: Color(0xFFCBD5E1), fontSize: 13),
                     ),
                     decoration: InputDecoration(
                       contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 12),
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
                       border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(30)),
+                        borderRadius: BorderRadius.circular(30),
+                      ),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(30),
                         borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
@@ -4175,7 +4740,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(30),
                         borderSide: const BorderSide(
-                            color: Color(0xFF2563EB), width: 2),
+                          color: Color(0xFF2563EB),
+                          width: 2,
+                        ),
                       ),
                     ),
                     style: const TextStyle(
@@ -4185,15 +4752,39 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                     ),
                     isExpanded: true,
                     items: const [
-                      DropdownMenuItem(value: "Computer Science (CSE)",            child: Text("Computer Science (CSE)")),
-                      DropdownMenuItem(value: "Artificial Intelligence & DS (AIDS)", child: Text("AI & Data Science (AIDS)")),
-                      DropdownMenuItem(value: "Computer Science & BS (CSBS)",      child: Text("CS & Business Systems (CSBS)")),
-                      DropdownMenuItem(value: "Electronics & Communication (ECE)", child: Text("Electronics & Communication (ECE)")),
-                      DropdownMenuItem(value: "Electrical & Electronics (EEE)",    child: Text("Electrical & Electronics (EEE)")),
-                      DropdownMenuItem(value: "Information Technology (IT)",       child: Text("Information Technology (IT)")),
-                      DropdownMenuItem(value: "Mechanical Engineering (MECH)",     child: Text("Mechanical Engineering (MECH)")),
-                      DropdownMenuItem(value: "Civil Engineering (CIVIL)",         child: Text("Civil Engineering (CIVIL)")),
-                      DropdownMenuItem(value: "MBA",                               child: Text("MBA")),
+                      DropdownMenuItem(
+                        value: "Computer Science (CSE)",
+                        child: Text("Computer Science (CSE)"),
+                      ),
+                      DropdownMenuItem(
+                        value: "Artificial Intelligence & DS (AIDS)",
+                        child: Text("AI & Data Science (AIDS)"),
+                      ),
+                      DropdownMenuItem(
+                        value: "Computer Science & BS (CSBS)",
+                        child: Text("CS & Business Systems (CSBS)"),
+                      ),
+                      DropdownMenuItem(
+                        value: "Electronics & Communication (ECE)",
+                        child: Text("Electronics & Communication (ECE)"),
+                      ),
+                      DropdownMenuItem(
+                        value: "Electrical & Electronics (EEE)",
+                        child: Text("Electrical & Electronics (EEE)"),
+                      ),
+                      DropdownMenuItem(
+                        value: "Information Technology (IT)",
+                        child: Text("Information Technology (IT)"),
+                      ),
+                      DropdownMenuItem(
+                        value: "Mechanical Engineering (MECH)",
+                        child: Text("Mechanical Engineering (MECH)"),
+                      ),
+                      DropdownMenuItem(
+                        value: "Civil Engineering (CIVIL)",
+                        child: Text("Civil Engineering (CIVIL)"),
+                      ),
+                      DropdownMenuItem(value: "MBA", child: Text("MBA")),
                     ],
                     onChanged: (val) {
                       if (val != null) setState(() => _studentDept = val);
@@ -4216,10 +4807,14 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                     textCapitalization: TextCapitalization.characters,
                     onChanged: (val) {
                       setState(() {});
-                      if (_debounceTimer?.isActive ?? false) _debounceTimer!.cancel();
-                      _debounceTimer = Timer(const Duration(milliseconds: 500), () {
-                        _fetchRouteForBus(val);
-                      });
+                      if (_debounceTimer?.isActive ?? false)
+                        _debounceTimer!.cancel();
+                      _debounceTimer = Timer(
+                        const Duration(milliseconds: 500),
+                        () {
+                          _fetchRouteForBus(val);
+                        },
+                      );
                     },
                     decoration: InputDecoration(
                       hintText: "e.g. 1, 3, 6, 23, 65",
@@ -4228,8 +4823,11 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                         fontSize: 13,
                         fontWeight: FontWeight.normal,
                       ),
-                      prefixIcon: const Icon(Icons.directions_bus_rounded,
-                          color: Color(0xFF2563EB), size: 18),
+                      prefixIcon: const Icon(
+                        Icons.directions_bus_rounded,
+                        color: Color(0xFF2563EB),
+                        size: 18,
+                      ),
                       suffixIcon: _isFetchingRoute
                           ? const Padding(
                               padding: EdgeInsets.all(12.0),
@@ -4238,15 +4836,20 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                                 height: 16,
                                 child: CircularProgressIndicator(
                                   strokeWidth: 2,
-                                  valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF2563EB)),
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    Color(0xFF2563EB),
+                                  ),
                                 ),
                               ),
                             )
                           : null,
                       contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 12),
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
                       border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(30)),
+                        borderRadius: BorderRadius.circular(30),
+                      ),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(30),
                         borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
@@ -4254,7 +4857,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(30),
                         borderSide: const BorderSide(
-                            color: Color(0xFF2563EB), width: 2),
+                          color: Color(0xFF2563EB),
+                          width: 2,
+                        ),
                       ),
                       // Show route label as helper text when bus is recognised
                       helperText: () {
@@ -4264,18 +4869,23 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                         return '✓  ' + (routeLabelsConfig[key] ?? '');
                       }(),
                       helperStyle: TextStyle(
-                        color: _isFetchingRoute ? const Color(0xFF64748B) : const Color(0xFF16A34A),
+                        color: _isFetchingRoute
+                            ? const Color(0xFF64748B)
+                            : const Color(0xFF16A34A),
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
                       ),
-                      errorText: _profileBusCtrl.text.trim().isNotEmpty &&
+                      errorText:
+                          _profileBusCtrl.text.trim().isNotEmpty &&
                               !_isFetchingRoute &&
                               _fetchedRouteKey == null
                           ? 'Unknown bus number'
                           : null,
                     ),
                     style: const TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.w600),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                   const SizedBox(height: 16),
 
@@ -4302,21 +4912,30 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                         ),
                       ),
                       decoration: InputDecoration(
-                        prefixIcon: const Icon(Icons.location_on_outlined,
-                            color: Color(0xFF2563EB), size: 18),
+                        prefixIcon: const Icon(
+                          Icons.location_on_outlined,
+                          color: Color(0xFF2563EB),
+                          size: 18,
+                        ),
                         contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 12),
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
                         border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(30)),
+                          borderRadius: BorderRadius.circular(30),
+                        ),
                         enabledBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(30),
-                          borderSide:
-                              const BorderSide(color: Color(0xFFE2E8F0)),
+                          borderSide: const BorderSide(
+                            color: Color(0xFFE2E8F0),
+                          ),
                         ),
                         focusedBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(30),
                           borderSide: const BorderSide(
-                              color: Color(0xFF2563EB), width: 2),
+                            color: Color(0xFF2563EB),
+                            width: 2,
+                          ),
                         ),
                       ),
                       style: const TextStyle(
@@ -4326,10 +4945,12 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                       ),
                       isExpanded: true,
                       items: _profileBusStops
-                          .map((stop) => DropdownMenuItem(
-                                value: stop,
-                                child: Text(stop),
-                              ))
+                          .map(
+                            (stop) => DropdownMenuItem(
+                              value: stop,
+                              child: Text(stop),
+                            ),
+                          )
                           .toList(),
                       onChanged: (val) {
                         if (val != null) setState(() => _savedStop = val);
@@ -4347,7 +4968,8 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(30)),
+                        borderRadius: BorderRadius.circular(30),
+                      ),
                     ),
                     onPressed: () {
                       final name = _profileNameCtrl.text.trim();
@@ -4359,7 +4981,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                         return;
                       }
                       _saveProfile(
-                        name, year, _studentDept,
+                        name,
+                        year,
+                        _studentDept,
                         busNo: _profileBusCtrl.text.trim().toUpperCase(),
                         boardingStop: _savedStop,
                         rollNo: _profileRollNoCtrl.text.trim(),
@@ -4367,7 +4991,10 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                     },
                     child: const Text(
                       "💾  Save Profile",
-                      style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 14,
+                      ),
                     ),
                   ),
                 ] else ...[
@@ -4378,27 +5005,46 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                   const SizedBox(height: 12),
                   _buildProfileRow("DEPARTMENT", _studentDept),
                   const SizedBox(height: 12),
-                  _buildProfileRow("ROLL NO", widget.studentRollNo.isEmpty ? "-" : widget.studentRollNo),
+                  _buildProfileRow(
+                    "ROLL NO",
+                    widget.studentRollNo.isEmpty ? "-" : widget.studentRollNo,
+                  ),
                   const SizedBox(height: 12),
-                  _buildProfileRow("BUS NUMBER", _studentBusNo.isEmpty ? "-" : _studentBusNo),
+                  _buildProfileRow(
+                    "BUS NUMBER",
+                    _studentBusNo.isEmpty ? "-" : _studentBusNo,
+                  ),
                   const SizedBox(height: 12),
-                  _buildProfileRow("BOARDING STOP", _savedStop.isEmpty ? "-" : _savedStop),
+                  _buildProfileRow(
+                    "BOARDING STOP",
+                    _savedStop.isEmpty ? "-" : _savedStop,
+                  ),
                   const SizedBox(height: 24),
                   OutlinedButton.icon(
                     style: OutlinedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       side: const BorderSide(color: Color(0xFF2563EB)),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(30),
+                      ),
                     ),
                     onPressed: () {
                       setState(() {
                         _isEditingProfile = true;
                       });
                     },
-                    icon: const Icon(Icons.edit, color: Color(0xFF2563EB), size: 18),
+                    icon: const Icon(
+                      Icons.edit,
+                      color: Color(0xFF2563EB),
+                      size: 18,
+                    ),
                     label: const Text(
                       "Edit Profile",
-                      style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14, color: Color(0xFF2563EB)),
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 14,
+                        color: Color(0xFF2563EB),
+                      ),
                     ),
                   ),
                 ],
@@ -4423,10 +5069,13 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 OutlinedButton(
                   style: OutlinedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 16),
-                    side: const BorderSide(color: Color(0xFFDC2626)), // Red for logout
+                    side: const BorderSide(
+                      color: Color(0xFFDC2626),
+                    ), // Red for logout
                     foregroundColor: const Color(0xFFDC2626),
                     shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(30)),
+                      borderRadius: BorderRadius.circular(30),
+                    ),
                   ),
                   onPressed: widget.onLogout,
                   child: const Text(
@@ -4497,7 +5146,11 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
           children: [
             const Text(
               "You need a confirmed letter request to board the bus. Please upload your permission letter (Image/PDF) for Admin approval.",
-              style: TextStyle(fontSize: 12, color: Color(0xFF475569), height: 1.4),
+              style: TextStyle(
+                fontSize: 12,
+                color: Color(0xFF475569),
+                height: 1.4,
+              ),
             ),
             const SizedBox(height: 12),
             ElevatedButton.icon(
@@ -4505,11 +5158,16 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 backgroundColor: const Color(0xFF2563EB),
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(30),
+                ),
               ),
               onPressed: _showSimulatedFilePicker,
               icon: const Icon(Icons.upload_file, size: 16),
-              label: const Text("Select & Upload Letter", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+              label: const Text(
+                "Select & Upload Letter",
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+              ),
             ),
           ],
         ),
@@ -4549,8 +5207,8 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
             color: const Color(0xFF0F172A).withValues(alpha: 0.03),
             blurRadius: 10,
             offset: const Offset(0, 4),
-          )
-        ]
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -4565,20 +5223,30 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                   children: [
                     Text(
                       _pickupRequestDoc,
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                        color: Color(0xFF0F172A),
+                      ),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 2),
-                    const Text("Attached Document", style: TextStyle(fontSize: 10, color: Color(0xFF64748B))),
+                    const Text(
+                      "Attached Document",
+                      style: TextStyle(fontSize: 10, color: Color(0xFF64748B)),
+                    ),
                   ],
                 ),
               ),
               if (_pickupRequestDocUrl.isNotEmpty)
                 IconButton(
                   icon: const Icon(Icons.visibility, color: Color(0xFF2563EB)),
-                  onPressed: () => _viewUploadedLetter(_pickupRequestDoc, _pickupRequestDocUrl),
-                )
+                  onPressed: () => _viewUploadedLetter(
+                    _pickupRequestDoc,
+                    _pickupRequestDocUrl,
+                  ),
+                ),
             ],
           ),
           const SizedBox(height: 16),
@@ -4595,21 +5263,35 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 const SizedBox(width: 6),
                 Text(
                   statusText,
-                  style: TextStyle(fontWeight: FontWeight.w800, fontSize: 11, color: textColor),
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 11,
+                    color: textColor,
+                  ),
                 ),
               ],
             ),
           ),
-          if (_pickupRequestStatus == "rejected" || _pickupRequestStatus == "confirmed") ...[
+          if (_pickupRequestStatus == "rejected" ||
+              _pickupRequestStatus == "confirmed") ...[
             const SizedBox(height: 12),
             OutlinedButton(
               style: OutlinedButton.styleFrom(
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(30),
+                ),
                 side: const BorderSide(color: Color(0xFFCBD5E1)),
                 padding: const EdgeInsets.symmetric(vertical: 8),
               ),
               onPressed: _showSimulatedFilePicker,
-              child: const Text("Upload Another Document", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF475569))),
+              child: const Text(
+                "Upload Another Document",
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 11,
+                  color: Color(0xFF475569),
+                ),
+              ),
             ),
           ],
         ],
@@ -4644,7 +5326,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       barrierDismissible: false,
       builder: (ctx) {
         return Dialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
           child: Padding(
             padding: EdgeInsets.all(24),
             child: Column(
@@ -4652,7 +5336,10 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
               children: [
                 CircularProgressIndicator(),
                 SizedBox(height: 16),
-                Text("Uploading file...", style: TextStyle(fontWeight: FontWeight.bold)),
+                Text(
+                  "Uploading file...",
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
               ],
             ),
           ),
@@ -4661,8 +5348,10 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
     );
 
     try {
-      final storageRef = FirebaseStorage.instance.ref().child('pickup_letters/$_studentId/${DateTime.now().millisecondsSinceEpoch}_${file.name}');
-      
+      final storageRef = FirebaseStorage.instance.ref().child(
+        'pickup_letters/$_studentId/${DateTime.now().millisecondsSinceEpoch}_${file.name}',
+      );
+
       String downloadUrl = "";
       if (file.path != null) {
         final uploadTask = storageRef.putFile(File(file.path!));
@@ -4675,7 +5364,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       }
 
       if (downloadUrl.isEmpty) {
-        throw Exception("Failed to get document URL. Are you running on web without a hard restart?");
+        throw Exception(
+          "Failed to get document URL. Are you running on web without a hard restart?",
+        );
       }
 
       if (mounted) {
@@ -4720,7 +5411,9 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
       context: context,
       builder: (ctx) {
         return Dialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
           child: Container(
             padding: const EdgeInsets.all(24),
             child: Column(
@@ -4733,13 +5426,17 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                     const Expanded(
                       child: Text(
                         "Document Preview",
-                        style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A)),
+                        style: TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16,
+                          color: Color(0xFF1E3A8A),
+                        ),
                       ),
                     ),
                     IconButton(
                       icon: const Icon(Icons.close, size: 20),
                       onPressed: () => Navigator.pop(ctx),
-                    )
+                    ),
                   ],
                 ),
                 const SizedBox(height: 16),
@@ -4750,7 +5447,11 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(color: const Color(0xFFCBD5E1)),
                   ),
-                  child: docUrl.isNotEmpty && (docName.toLowerCase().endsWith('.png') || docName.toLowerCase().endsWith('.jpg') || docName.toLowerCase().endsWith('.jpeg'))
+                  child:
+                      docUrl.isNotEmpty &&
+                          (docName.toLowerCase().endsWith('.png') ||
+                              docName.toLowerCase().endsWith('.jpg') ||
+                              docName.toLowerCase().endsWith('.jpeg'))
                       ? ClipRRect(
                           borderRadius: BorderRadius.circular(15),
                           child: Image.network(
@@ -4758,10 +5459,18 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                             fit: BoxFit.cover,
                             loadingBuilder: (context, child, progress) {
                               if (progress == null) return child;
-                              return const Center(child: CircularProgressIndicator());
+                              return const Center(
+                                child: CircularProgressIndicator(),
+                              );
                             },
                             errorBuilder: (context, error, stackTrace) {
-                              return const Center(child: Icon(Icons.broken_image, size: 40, color: Colors.grey));
+                              return const Center(
+                                child: Icon(
+                                  Icons.broken_image,
+                                  size: 40,
+                                  color: Colors.grey,
+                                ),
+                              );
                             },
                           ),
                         )
@@ -4770,17 +5479,27 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               Icon(
-                                docName.toLowerCase().endsWith(".pdf") ? Icons.picture_as_pdf : Icons.insert_drive_file,
+                                docName.toLowerCase().endsWith(".pdf")
+                                    ? Icons.picture_as_pdf
+                                    : Icons.insert_drive_file,
                                 size: 40,
-                                color: docName.toLowerCase().endsWith(".pdf") ? Colors.red : Colors.grey,
+                                color: docName.toLowerCase().endsWith(".pdf")
+                                    ? Colors.red
+                                    : Colors.grey,
                               ),
                               const SizedBox(height: 8),
                               Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 16.0,
+                                ),
                                 child: Text(
                                   docName,
                                   textAlign: TextAlign.center,
-                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF0F172A)),
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                    color: Color(0xFF0F172A),
+                                  ),
                                   maxLines: 2,
                                   overflow: TextOverflow.ellipsis,
                                 ),
@@ -4795,17 +5514,28 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF2563EB),
                       foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                      ),
                       padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
                     onPressed: () async {
                       final uri = Uri.parse(docUrl);
                       if (await canLaunchUrl(uri)) {
-                        await launchUrl(uri, mode: LaunchMode.externalApplication);
+                        await launchUrl(
+                          uri,
+                          mode: LaunchMode.externalApplication,
+                        );
                       }
                     },
                     icon: const Icon(Icons.open_in_new, size: 16),
-                    label: const Text("Open in Browser", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                    label: const Text(
+                      "Open in Browser",
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                      ),
+                    ),
                   ),
                   const SizedBox(height: 8),
                 ],
@@ -4813,12 +5543,17 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFFF1F5F9),
                     foregroundColor: const Color(0xFF1E293B),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20),
+                    ),
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
                   onPressed: () => Navigator.pop(ctx),
-                  child: const Text("Close Preview", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                )
+                  child: const Text(
+                    "Close Preview",
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                  ),
+                ),
               ],
             ),
           ),
@@ -4840,13 +5575,21 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
             SizedBox(width: 8),
             Text(
               "Admin STT Voice Intercom",
-              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 12, color: Color(0xFF1E293B)),
+              style: TextStyle(
+                fontWeight: FontWeight.w900,
+                fontSize: 12,
+                color: Color(0xFF1E293B),
+              ),
             ),
           ],
         ),
         subtitle: const Text(
           "Send direct transcripts & voice notes to admin",
-          style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.w600),
+          style: TextStyle(
+            fontSize: 10,
+            color: Colors.grey,
+            fontWeight: FontWeight.w600,
+          ),
         ),
         children: [
           Padding(
@@ -4861,7 +5604,11 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                       child: Text(
                         "No messages yet. Tap Mic to dictate a message.",
                         textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.w600),
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: Colors.grey,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     ),
                   )
@@ -4875,33 +5622,48 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                         final msg = _studentIntercomMessages[idx];
                         final isMe = msg['sender'] == 'student';
                         final isVoice = msg['isVoice'] == true;
-                        
+
                         return Align(
-                          alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                          alignment: isMe
+                              ? Alignment.centerRight
+                              : Alignment.centerLeft,
                           child: Container(
                             margin: const EdgeInsets.symmetric(vertical: 4),
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
                             width: isVoice ? 220 : null,
                             decoration: BoxDecoration(
-                              color: isMe ? const Color(0xFFEFF6FF) : const Color(0xFFF1F5F9),
+                              color: isMe
+                                  ? const Color(0xFFEFF6FF)
+                                  : const Color(0xFFF1F5F9),
                               borderRadius: BorderRadius.only(
                                 topLeft: const Radius.circular(14),
                                 topRight: const Radius.circular(14),
                                 bottomLeft: Radius.circular(isMe ? 14 : 2),
                                 bottomRight: Radius.circular(isMe ? 2 : 14),
                               ),
-                              border: Border.all(color: isMe ? const Color(0xFFBFDBFE) : const Color(0xFFE2E8F0)),
+                              border: Border.all(
+                                color: isMe
+                                    ? const Color(0xFFBFDBFE)
+                                    : const Color(0xFFE2E8F0),
+                              ),
                             ),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 Text(
-                                  isMe ? "You" : (msg['senderName'] ?? "Sender"),
+                                  isMe
+                                      ? "You"
+                                      : (msg['senderName'] ?? "Sender"),
                                   style: TextStyle(
                                     fontSize: 8,
                                     fontWeight: FontWeight.w900,
-                                    color: isMe ? const Color(0xFF2563EB) : const Color(0xFF64748B),
+                                    color: isMe
+                                        ? const Color(0xFF2563EB)
+                                        : const Color(0xFF64748B),
                                   ),
                                 ),
                                 const SizedBox(height: 4),
@@ -4913,39 +5675,73 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                                         padding: EdgeInsets.zero,
                                         icon: Icon(
                                           _playingMsgId == msg['id']
-                                              ? Icons.pause_circle_filled_rounded
-                                              : Icons.play_circle_filled_rounded,
-                                          color: isMe ? const Color(0xFF2563EB) : const Color(0xFF1E293B),
+                                              ? Icons
+                                                    .pause_circle_filled_rounded
+                                              : Icons
+                                                    .play_circle_filled_rounded,
+                                          color: isMe
+                                              ? const Color(0xFF2563EB)
+                                              : const Color(0xFF1E293B),
                                           size: 28,
                                         ),
                                         onPressed: () {
-                                          _playVoiceMessage(msg['id'], msg['msg'] ?? '', msg['voiceDuration'] ?? 3);
+                                          _playVoiceMessage(
+                                            msg['id'],
+                                            msg['msg'] ?? '',
+                                            msg['voiceDuration'] ?? 3,
+                                          );
                                         },
                                       ),
                                       Expanded(
                                         child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.stretch,
                                           children: [
                                             ClipRRect(
-                                              borderRadius: BorderRadius.circular(2),
+                                              borderRadius:
+                                                  BorderRadius.circular(2),
                                               child: LinearProgressIndicator(
-                                                value: _playingMsgId == msg['id'] ? _playbackProgress : 0.0,
-                                                backgroundColor: isMe ? const Color(0xFFDBEAFE) : const Color(0xFFE2E8F0),
-                                                valueColor: AlwaysStoppedAnimation<Color>(
-                                                  isMe ? const Color(0xFF2563EB) : const Color(0xFF64748B),
-                                                ),
+                                                value:
+                                                    _playingMsgId == msg['id']
+                                                    ? _playbackProgress
+                                                    : 0.0,
+                                                backgroundColor: isMe
+                                                    ? const Color(0xFFDBEAFE)
+                                                    : const Color(0xFFE2E8F0),
+                                                valueColor:
+                                                    AlwaysStoppedAnimation<
+                                                      Color
+                                                    >(
+                                                      isMe
+                                                          ? const Color(
+                                                              0xFF2563EB,
+                                                            )
+                                                          : const Color(
+                                                              0xFF64748B,
+                                                            ),
+                                                    ),
                                                 minHeight: 3,
                                               ),
                                             ),
                                             const SizedBox(height: 2),
                                             Row(
-                                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                              mainAxisAlignment:
+                                                  MainAxisAlignment
+                                                      .spaceBetween,
                                               children: [
                                                 Text(
                                                   "0:${(msg['voiceDuration'] as int? ?? 3).toString().padLeft(2, '0')}",
-                                                  style: const TextStyle(fontSize: 8, color: Color(0xFF64748B), fontWeight: FontWeight.bold),
+                                                  style: const TextStyle(
+                                                    fontSize: 8,
+                                                    color: Color(0xFF64748B),
+                                                    fontWeight: FontWeight.bold,
+                                                  ),
                                                 ),
-                                                const Icon(Icons.volume_up, size: 8, color: Color(0xFF64748B)),
+                                                const Icon(
+                                                  Icons.volume_up,
+                                                  size: 8,
+                                                  color: Color(0xFF64748B),
+                                                ),
                                               ],
                                             ),
                                           ],
@@ -4955,9 +5751,18 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                                   ),
                                   const SizedBox(height: 4),
                                   Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 4,
+                                    ),
                                     decoration: BoxDecoration(
-                                      color: isMe ? const Color(0xFFDBEAFE).withValues(alpha: 0.3) : const Color(0xFFE2E8F0).withValues(alpha: 0.5),
+                                      color: isMe
+                                          ? const Color(
+                                              0xFFDBEAFE,
+                                            ).withValues(alpha: 0.3)
+                                          : const Color(
+                                              0xFFE2E8F0,
+                                            ).withValues(alpha: 0.5),
                                       borderRadius: BorderRadius.circular(6),
                                     ),
                                     child: Text(
@@ -4973,7 +5778,11 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                                 ] else ...[
                                   Text(
                                     msg['msg'] ?? '',
-                                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF0F172A)),
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Color(0xFF0F172A),
+                                    ),
                                   ),
                                 ],
                               ],
@@ -4988,7 +5797,10 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 const SizedBox(height: 12),
                 if (_isRecordingVoice)
                   Container(
-                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 8,
+                      horizontal: 12,
+                    ),
                     decoration: BoxDecoration(
                       color: const Color(0xFFFEF2F2),
                       borderRadius: BorderRadius.circular(20),
@@ -5004,16 +5816,25 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                             children: [
                               Text(
                                 "Recording... 0:${_recordingDurationSecs.toString().padLeft(2, '0')}",
-                                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF991B1B)),
+                                style: const TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF991B1B),
+                                ),
                               ),
                               const SizedBox(height: 2),
                               Row(
                                 children: List.generate(8, (idx) {
-                                  final height = 3.0 + (idx % 2 == 0 ? 8.0 : 4.0) + (Random().nextDouble() * 5.0);
+                                  final height =
+                                      3.0 +
+                                      (idx % 2 == 0 ? 8.0 : 4.0) +
+                                      (Random().nextDouble() * 5.0);
                                   return Container(
                                     width: 2,
                                     height: height,
-                                    margin: const EdgeInsets.symmetric(horizontal: 1),
+                                    margin: const EdgeInsets.symmetric(
+                                      horizontal: 1,
+                                    ),
                                     decoration: BoxDecoration(
                                       color: const Color(0xFFEF4444),
                                       borderRadius: BorderRadius.circular(1),
@@ -5027,13 +5848,21 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                         IconButton(
                           visualDensity: VisualDensity.compact,
                           padding: EdgeInsets.zero,
-                          icon: const Icon(Icons.cancel, color: Color(0xFFEF4444), size: 20),
+                          icon: const Icon(
+                            Icons.cancel,
+                            color: Color(0xFFEF4444),
+                            size: 20,
+                          ),
                           onPressed: _cancelRecordingVoice,
                         ),
                         IconButton(
                           visualDensity: VisualDensity.compact,
                           padding: EdgeInsets.zero,
-                          icon: const Icon(Icons.check_circle, color: Color(0xFF16A34A), size: 20),
+                          icon: const Icon(
+                            Icons.check_circle,
+                            color: Color(0xFF16A34A),
+                            size: 20,
+                          ),
                           onPressed: _stopAndSendRecordingVoice,
                         ),
                       ],
@@ -5046,9 +5875,17 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                         child: TextField(
                           decoration: InputDecoration(
                             hintText: "Type note or hold mic...",
-                            hintStyle: const TextStyle(fontSize: 11, color: Colors.grey),
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(30)),
+                            hintStyle: const TextStyle(
+                              fontSize: 11,
+                              color: Colors.grey,
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 8,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(30),
+                            ),
                             fillColor: const Color(0xFFF8FAFC),
                             filled: true,
                           ),
@@ -5075,7 +5912,11 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                             color: Color(0xFFEFF6FF),
                             shape: BoxShape.circle,
                           ),
-                          child: const Icon(Icons.mic, color: Color(0xFF2563EB), size: 20),
+                          child: const Icon(
+                            Icons.mic,
+                            color: Color(0xFF2563EB),
+                            size: 20,
+                          ),
                         ),
                       ),
                     ],
@@ -5083,7 +5924,7 @@ class _StudentDashboardState extends State<StudentDashboard> with TickerProvider
                 const SizedBox(height: 8),
               ],
             ),
-          )
+          ),
         ],
       ),
     );

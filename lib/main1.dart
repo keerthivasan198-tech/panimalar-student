@@ -5143,7 +5143,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
           ),
           children: [
             TileLayer(
-              urlTemplate: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+              urlTemplate: "https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
               subdomains: const ['a', 'b', 'c'],
             ),
             MarkerLayer(

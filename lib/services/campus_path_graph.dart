@@ -29,51 +29,51 @@ class _Node {
 // Coordinates were manually read off the Google Maps satellite view.
 
 final _nodes = <_Node>[
-  // ── Main Entrance & south entry road ─────────────────────────────────────
-  _Node('gate',         const LatLng(13.04723, 80.07553)),
-  _Node('gate_n',       const LatLng(13.04790, 80.07548)),
-  _Node('admin_jct',    const LatLng(13.04885, 80.07541)), // Admin / south junction
+  // ── Main Entrance & south entry road (Longitude: 80.07520) ───────────────
+  _Node('gate',         const LatLng(13.04723, 80.07520)),
+  _Node('gate_n',       const LatLng(13.04790, 80.07520)),
+  _Node('admin_jct',    const LatLng(13.04885, 80.07520)),
 
-  // ── CSE Lane (E-W road through southern block) ────────────────────────────
-  _Node('cse_w',        const LatLng(13.04960, 80.07465)), // west end of CSE Ln
-  _Node('cse_jct',      const LatLng(13.04968, 80.07533)), // CSE Dept junction
-  _Node('cse_e',        const LatLng(13.04975, 80.07610)), // east end (AIDS side)
+  // ── CSE Lane (Latitude: 13.04960) ─────────────────────────────────────────
+  _Node('cse_w',        const LatLng(13.04960, 80.07465)),
+  _Node('cse_jct',      const LatLng(13.04960, 80.07520)),
+  _Node('cse_e',        const LatLng(13.04960, 80.07650)),
 
-  // ── AIDS / east side ──────────────────────────────────────────────────────
-  _Node('aids_jct',     const LatLng(13.04980, 80.07646)), // AIDS building
-  _Node('east_lane_mid',const LatLng(13.05075, 80.07648)), // Eastern Caneldea Lane
+  // ── AIDS / East Lane (Longitude: 80.07650) ────────────────────────────────
+  _Node('aids_jct',     const LatLng(13.04980, 80.07650)),
+  _Node('east_lane_mid',const LatLng(13.05075, 80.07650)),
 
-  // ── Perimeter / central spine road (N-S) ─────────────────────────────────
-  _Node('spine_a',      const LatLng(13.05020, 80.07510)),
-  _Node('spine_b',      const LatLng(13.05085, 80.07490)), // Mess-1 side
-  _Node('spine_c',      const LatLng(13.05090, 80.07525)), // ECE junction
-  _Node('spine_d',      const LatLng(13.05130, 80.07510)),
-  _Node('spine_e',      const LatLng(13.05172, 80.07520)), // CSBS Ln west junction
+  // ── Central Spine Road (Longitude: 80.07520) ──────────────────────────────
+  _Node('spine_a',      const LatLng(13.05020, 80.07520)),
+  _Node('spine_b',      const LatLng(13.05085, 80.07520)),
+  _Node('spine_c',      const LatLng(13.05100, 80.07520)),
+  _Node('spine_d',      const LatLng(13.05130, 80.07520)),
+  _Node('spine_e',      const LatLng(13.05172, 80.07520)),
 
-  // ── CSBS Lane (E-W road through middle block) ─────────────────────────────
-  _Node('csbs_w',       const LatLng(13.05172, 80.07520)), // = spine_e
+  // ── CSBS Lane (Latitude: 13.05172) ────────────────────────────────────────
+  _Node('csbs_w',       const LatLng(13.05172, 80.07520)),
   _Node('csbs_mid',     const LatLng(13.05172, 80.07575)),
-  _Node('csbs_jct',     const LatLng(13.05172, 80.07600)), // CSBS building
-  _Node('csbs_e',       const LatLng(13.05172, 80.07650)), // east end
+  _Node('csbs_jct',     const LatLng(13.05172, 80.07600)),
+  _Node('csbs_e',       const LatLng(13.05172, 80.07650)),
 
-  // ── Upper central road (N-S, continues from spine) ───────────────────────
-  _Node('mid_n1',       const LatLng(13.05240, 80.07510)),
-  _Node('mid_n2',       const LatLng(13.05310, 80.07500)), // Mess-2 / MBA side
-  _Node('mess2_jct',    const LatLng(13.05352, 80.07515)), // Mess 2
-  _Node('mba_jct',      const LatLng(13.05391, 80.07534)), // MBA Block
+  // ── Upper Central Road (Longitude: 80.07520) ──────────────────────────────
+  _Node('mid_n1',       const LatLng(13.05240, 80.07520)),
+  _Node('mid_n2',       const LatLng(13.05310, 80.07520)),
+  _Node('mess2_jct',    const LatLng(13.05352, 80.07520)),
+  _Node('mba_jct',      const LatLng(13.05391, 80.07520)),
 
-  // ── IT / North road ───────────────────────────────────────────────────────
-  _Node('it_road_s',    const LatLng(13.05340, 80.07410)),
-  _Node('it_jct',       const LatLng(13.05348, 80.07340)), // IT Dept
-  _Node('north_jct',    const LatLng(13.05410, 80.07340)), // N junction
+  // ── IT / North Road (Longitude: 80.07340) ─────────────────────────────────
+  _Node('it_road_s',    const LatLng(13.05340, 80.07340)),
+  _Node('it_jct',       const LatLng(13.05348, 80.07340)),
+  _Node('north_jct',    const LatLng(13.05410, 80.07340)),
 
-  // ── EEE / Mech (north end) ────────────────────────────────────────────────
-  _Node('eee_road',     const LatLng(13.05459, 80.07300)),
-  _Node('eee_jct',      const LatLng(13.05459, 80.07269)), // EEE
-  _Node('mech_jct',     const LatLng(13.05474, 80.07274)), // Mech
+  // ── EEE / Mech (North End) ────────────────────────────────────────────────
+  _Node('eee_road',     const LatLng(13.05459, 80.07340)),
+  _Node('eee_jct',      const LatLng(13.05459, 80.07270)),
+  _Node('mech_jct',     const LatLng(13.05474, 80.07270)),
 
-  // ── Mess-1 ────────────────────────────────────────────────────────────────
-  _Node('mess1_jct',    const LatLng(13.05085, 80.07474)), // Mess-1
+  // ── Mess-1 (Latitude: 13.05085) ───────────────────────────────────────────
+  _Node('mess1_jct',    const LatLng(13.05085, 80.07470)),
 ];
 
 // ── Road edges (bidirectional) ────────────────────────────────────────────────

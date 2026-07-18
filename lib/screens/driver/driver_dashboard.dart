@@ -948,7 +948,9 @@ class _DriverDashboardState extends State<DriverDashboard> {
     };
 
     try {
-      await FirebaseDatabase.instance.ref('liveLocations/${widget.driverBus}').set(data);
+      final ref = FirebaseDatabase.instance.ref('liveLocations/${widget.driverBus}');
+      await ref.set(data);
+      ref.onDisconnect().cancel();
       setState(() {
         _isSyncing = false;
         _syncStatusText = "☁️ Offline status saved";
@@ -982,9 +984,14 @@ class _DriverDashboardState extends State<DriverDashboard> {
   void _startTracking() async {
     setState(() {
       _isTracking = true;
+      _breakdownActive = false; // Reset breakdown when starting new trip
       _appStatus = "Online";
       _syncStatusText = "Starting GPS stream...";
     });
+
+    if (Firebase.apps.isNotEmpty) {
+      FirebaseDatabase.instance.ref('breakdowns/${widget.driverBus}').remove();
+    }
 
     // IMMEDIATELY push the 'tracking' status to Firebase so students see "Bus is online" 
     // instantly, without waiting for the first GPS lock (which can take 10-30 seconds).
@@ -999,13 +1006,16 @@ class _DriverDashboardState extends State<DriverDashboard> {
 
     // Push "Trip Started" to the global notifications node so students see it in their notification center
     if (Firebase.apps.isNotEmpty) {
-      final notifRef = FirebaseDatabase.instance.ref('notifications').push();
-      notifRef.set({
+      final id = DateTime.now().millisecondsSinceEpoch;
+      final timeNow = "${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}";
+      FirebaseDatabase.instance.ref('student_notifications/$id').set({
         'title': '🚌 Trip Started',
-        'body': 'Bus ${widget.driverBus} has started its route. Live GPS tracking is active.',
+        'msg': 'Bus ${widget.driverBus} has started its route. Live GPS tracking is active.',
         'type': 'alert',
-        'target_bus': widget.driverBus,
-        'timestamp': DateTime.now().toIso8601String(),
+        'bus': widget.driverBus,
+        'time': timeNow,
+        'read': false,
+        'sentAt': DateTime.now().toIso8601String(),
       });
     }
 
@@ -1076,14 +1086,20 @@ class _DriverDashboardState extends State<DriverDashboard> {
         _gpsStatus = "Active";
       });
       await _fbUpdateLocationRaw(_latitude, _longitude, _accuracy);
+      if (Firebase.apps.isNotEmpty) {
+        FirebaseDatabase.instance.ref('liveLocations/${widget.driverBus}').onDisconnect().update({
+          'status': 'offline',
+          'updatedAt': DateTime.now().toIso8601String(),
+        });
+      }
       _mapController.move(LatLng(initialPos.latitude, initialPos.longitude), _mapController.camera.zoom);
 
       LocationSettings locationSettings;
       if (defaultTargetPlatform == TargetPlatform.android) {
         locationSettings = AndroidSettings(
-          accuracy: LocationAccuracy.high,
-          distanceFilter: 5,
-          intervalDuration: const Duration(seconds: 2),
+          accuracy: LocationAccuracy.bestForNavigation,
+          distanceFilter: 0, // 0 for continuous update regardless of distance
+          intervalDuration: const Duration(seconds: 1), // 1 second interval for smooth tracking
           foregroundNotificationConfig: const ForegroundNotificationConfig(
             notificationText: "Panimalar Smart Transit is tracking location in background",
             notificationTitle: "Live GPS Active",
@@ -1091,8 +1107,8 @@ class _DriverDashboardState extends State<DriverDashboard> {
         );
       } else {
         locationSettings = const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          distanceFilter: 5,
+          accuracy: LocationAccuracy.bestForNavigation,
+          distanceFilter: 0,
         );
       }
 
@@ -1123,9 +1139,14 @@ class _DriverDashboardState extends State<DriverDashboard> {
 
     setState(() {
       _isTracking = false;
+      _breakdownActive = false; // Reset breakdown when trip finishes
       _appStatus = "Completed";
       _gpsStatus = "Offline";
     });
+
+    if (Firebase.apps.isNotEmpty) {
+      FirebaseDatabase.instance.ref('breakdowns/${widget.driverBus}').remove();
+    }
 
     await _fbSetOffline(statusToSet: 'completed');
     _stopSpeechMonitor();
@@ -1134,13 +1155,16 @@ class _DriverDashboardState extends State<DriverDashboard> {
 
     // Push "Trip Completed" to the global notifications node so students see it in their notification center
     if (Firebase.apps.isNotEmpty) {
-      final notifRef = FirebaseDatabase.instance.ref('notifications').push();
-      notifRef.set({
+      final id = DateTime.now().millisecondsSinceEpoch;
+      final timeNow = "${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}";
+      FirebaseDatabase.instance.ref('student_notifications/$id').set({
         'title': '🏁 Trip Completed',
-        'body': 'Bus ${widget.driverBus} has completed its trip. Thank you for riding with us!',
+        'msg': 'Bus ${widget.driverBus} has completed its trip. Thank you for riding with us!',
         'type': 'alert',
-        'target_bus': widget.driverBus,
-        'timestamp': DateTime.now().toIso8601String(),
+        'bus': widget.driverBus,
+        'time': timeNow,
+        'read': false,
+        'sentAt': DateTime.now().toIso8601String(),
       });
     }
   }

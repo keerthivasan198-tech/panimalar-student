@@ -51,6 +51,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
   List<RouteEntry> _routes = [];
   List<LogEntry> _logs = [];
   List<AlertEntry> _alerts = [];
+  List<Map<String, dynamic>> _adminBreakdownsList = [];
+  int _adminUnreadCount = 0;
   List<UploadEntry> _uploads = [];
 
   // Admin STT Intercom State
@@ -125,6 +127,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     _listenForLiveLocations();
     _listenForAdminSettings();
     _listenForNewStops();
+    _listenForBreakdowns();
   }
 
   @override
@@ -578,7 +581,22 @@ class _AdminDashboardState extends State<AdminDashboard> {
         if (data != null) {
           data.forEach((k, v) {
             if (v is Map) {
-              temp[k.toString()] = Map<String, dynamic>.from(v);
+              final mapV = Map<String, dynamic>.from(v);
+              final status = mapV['status'] as String? ?? 'offline';
+              final rawUpdatedAt = mapV['updatedAt'] as String?;
+              bool isStale = false;
+              if (rawUpdatedAt != null) {
+                try {
+                  final dt = DateTime.parse(rawUpdatedAt).toLocal();
+                  if (DateTime.now().difference(dt).inMinutes > 5) {
+                    isStale = true;
+                  }
+                } catch (_) {}
+              }
+              if (isStale && status != 'completed') {
+                mapV['status'] = 'offline';
+              }
+              temp[k.toString()] = mapV;
             }
           });
         }
@@ -591,6 +609,109 @@ class _AdminDashboardState extends State<AdminDashboard> {
     } catch (e) {
       debugPrint("Error listening to live locations: $e");
     }
+  }
+
+  void _listenForBreakdowns() {
+    _breakdownListenerSub?.cancel();
+    if (Firebase.apps.isEmpty) return;
+    try {
+      _breakdownListenerSub = FirebaseDatabase.instance.ref('breakdowns').onValue.listen((event) {
+        final data = event.snapshot.value as Map?;
+        final List<Map<String, dynamic>> loaded = [];
+        if (data != null) {
+          data.forEach((k, v) {
+            if (v is Map) {
+              loaded.add({
+                'busId': k.toString(),
+                'replacement': v['replacement']?.toString() ?? 'Pending',
+                'time': v['time']?.toString() ?? '',
+                'timestamp': v['timestamp'] ?? 0,
+              });
+            }
+          });
+        }
+        loaded.sort((a, b) => b['timestamp'].compareTo(a['timestamp']));
+        if (mounted) {
+          setState(() {
+            final oldLen = _adminBreakdownsList.length;
+            _adminBreakdownsList = loaded;
+            if (loaded.length > oldLen && oldLen != 0) {
+              _adminUnreadCount += (loaded.length - oldLen);
+            } else if (oldLen == 0) {
+              _adminUnreadCount = loaded.length;
+            }
+          });
+        }
+      });
+    } catch (e) {
+      debugPrint("Error listening to breakdowns: $e");
+    }
+  }
+
+  void _showBreakdownNotifications() {
+    setState(() {
+      _adminUnreadCount = 0;
+    });
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModalState) => Container(
+          height: MediaQuery.of(ctx).size.height * 0.7,
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text("Driver Breakdown Alerts", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1E3A8A))),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Color(0xFF64748B)),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: _adminBreakdownsList.isEmpty
+                    ? const Center(child: Text("No breakdowns reported.", style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)))
+                    : ListView.separated(
+                        itemCount: _adminBreakdownsList.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1),
+                        itemBuilder: (context, index) {
+                          final b = _adminBreakdownsList[index];
+                          return ListTile(
+                            contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                            leading: const CircleAvatar(backgroundColor: Color(0xFFFEE2E2), child: Icon(Icons.warning_amber_rounded, color: Color(0xFFDC2626))),
+                            title: Text("Bus ${b['busId']} Breakdown", style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF991B1B))),
+                            subtitle: Text("Replacement: ${b['replacement']}\nTime: ${b['time']}", style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+                            isThreeLine: true,
+                            trailing: IconButton(
+                              icon: const Icon(Icons.delete_outline, color: Colors.grey),
+                              onPressed: () {
+                                if (Firebase.apps.isNotEmpty) {
+                                  FirebaseDatabase.instance.ref('breakdowns/${b['busId']}').remove();
+                                }
+                                setModalState(() {
+                                  _adminBreakdownsList.removeAt(index);
+                                });
+                              },
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   // ─── DRIVER LOCATIONS SETTINGS & SUGGESTIONS ──────────────────────
@@ -1381,6 +1502,30 @@ class _AdminDashboardState extends State<AdminDashboard> {
           ],
         ),
         actions: [
+          Stack(
+            children: [
+              IconButton(
+                icon: const Icon(Icons.notifications, color: Color(0xFF2563EB)),
+                onPressed: _showBreakdownNotifications,
+              ),
+              if (_adminUnreadCount > 0)
+                Positioned(
+                  right: 8,
+                  top: 8,
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: const BoxDecoration(
+                      color: Colors.red,
+                      shape: BoxShape.circle,
+                    ),
+                    child: Text(
+                      '$_adminUnreadCount',
+                      style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                )
+            ],
+          ),
           IconButton(
             icon: const Icon(Icons.logout, color: Color(0xFF64748B)),
             onPressed: widget.onSwitchRole,
@@ -1709,6 +1854,17 @@ class _AdminDashboardState extends State<AdminDashboard> {
     _liveBuses.forEach((busId, data) {
       final status = data['status'] as String? ?? 'offline';
       if (status != 'offline') {
+        if (_selectedLiveRoute != null) {
+          // Find if this bus belongs to the selected route
+          final driver = _drivers.firstWhere(
+            (d) => d.bus == busId, 
+            orElse: () => DriverEntry(id: 0, bus: '', driver: '', contact: '', route: '', type: '', password: '')
+          );
+          if (driver.route != _selectedLiveRoute!.key) {
+            return; // Skip this bus, it doesn't belong to the selected route
+          }
+        }
+
         final double lat = (data['lat'] as num).toDouble();
         final double lng = (data['lng'] as num).toDouble();
         markers.add(
@@ -1747,8 +1903,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
           ),
           children: [
             TileLayer(
-              urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-              subdomains: const ['a', 'b', 'c', 'd'],
+              urlTemplate: 'https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',
+              userAgentPackageName: 'com.panimalar.bus',
             ),
             MarkerLayer(markers: markers),
           ],
