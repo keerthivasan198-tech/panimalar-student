@@ -4,7 +4,7 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 mongoose.connect('mongodb+srv://panimalar:panimalar1234@panimalar.binwh1b.mongodb.net/?appName=panimalar')
   .then(() => console.log('✅ Connected to MongoDB Atlas'))
@@ -31,6 +31,15 @@ const voiceMessageSchema = new mongoose.Schema({
 });
 
 const VoiceMessage = mongoose.model('VoiceMessage', voiceMessageSchema);
+
+const documentSchema = new mongoose.Schema({
+  fileName: { type: String, required: true },
+  mimeType: { type: String, required: true },
+  fileBase64: { type: String, required: true },
+  timestamp: { type: Date, default: Date.now }
+});
+
+const DocumentModel = mongoose.model('Document', documentSchema);
 
 // GET profile
 app.get('/api/students/:rollNo', async (req, res) => {
@@ -86,6 +95,37 @@ app.get('/api/voice/:id', async (req, res) => {
       res.json({ audioBase64: voiceMessage.audioBase64, duration: voiceMessage.duration });
     } else {
       res.status(404).json({ message: 'Voice message not found' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST document
+app.post('/api/documents', async (req, res) => {
+  try {
+    const { fileName, mimeType, fileBase64 } = req.body;
+    if (!fileName || !mimeType || !fileBase64) {
+      return res.status(400).json({ error: 'Missing file data' });
+    }
+    const document = new DocumentModel({ fileName, mimeType, fileBase64 });
+    await document.save();
+    res.json({ id: document._id });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET document (serves binary file for direct URL rendering)
+app.get('/api/documents/:id', async (req, res) => {
+  try {
+    const document = await DocumentModel.findById(req.params.id);
+    if (document) {
+      const buffer = Buffer.from(document.fileBase64, 'base64');
+      res.set('Content-Type', document.mimeType);
+      res.send(buffer);
+    } else {
+      res.status(404).json({ message: 'Document not found' });
     }
   } catch (error) {
     res.status(500).json({ error: error.message });

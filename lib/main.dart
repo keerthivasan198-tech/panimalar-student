@@ -74,7 +74,7 @@ class _RootShellState extends State<RootShell> {
 
   Future<void> _loadState() async {
     final prefs = await SharedPreferences.getInstance();
-    final savedLang = prefs.getString("user_lang") ?? "en";
+    final savedLang = prefs.getString("student_user_lang") ?? "en";
     setState(() {
       _currentLang = savedLang;
       _isLoading = false;
@@ -83,7 +83,7 @@ class _RootShellState extends State<RootShell> {
 
   void _updateLang(String lang) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString("user_lang", lang);
+    await prefs.setString("student_user_lang", lang);
     setState(() {
       _currentLang = lang;
     });

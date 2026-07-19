@@ -38,25 +38,14 @@ class _StudentLoginScreenState extends State<StudentLoginScreen> {
       _isLoading = true;
     });
 
-    try {
-      final response = await http.get(Uri.parse('https://panimalr-bus.onrender.com/api/students/$rollNo'));
-      if (response.statusCode == 200) {
-        widget.onLogin(rollNo);
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Profile not found. Please create a new profile.')),
-        );
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Network error. Please try again.')),
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
+    // Login instantly. StudentShell will fetch the profile in the background 
+    // and prompt to create a new profile if it doesn't exist.
+    widget.onLogin(rollNo);
+
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+      });
     }
   }
 

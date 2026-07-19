@@ -22,6 +22,7 @@ import '../../models/log_entry.dart';
 import '../../models/alert_entry.dart';
 import '../../config/routes_config.dart';
 import '../../config/lang_config.dart';
+import '../../config/app_config.dart';
 import '../../widgets/marquee_notice_bar.dart';
 import 'package:record/record.dart';
 import 'package:audioplayers/audioplayers.dart';
@@ -162,6 +163,23 @@ class _StudentDashboardState extends State<StudentDashboard>
     return appLang[widget.currentLang]?[key] ?? appLang['en']?[key] ?? key;
   }
 
+  String translateDynamic(String text) {
+    if (widget.currentLang == 'en') return text;
+    String translated = text;
+    final keys = [
+      'Bus ', 'Breakdown', 'Ready', 'Replacement Bus ', 'is dispatched. Stay at your stop.',
+      'The bus is now starts the journey.', 'Vehicle Breakdown Alert', 'Live',
+      'breakdown reported. Replacement Bus dispatch is pending. Stay at your stop.',
+      'breakdown. Replacement Bus ', ' dispatched. Stay at your stop.'
+    ];
+    for (final k in keys) {
+      if (translated.contains(k)) {
+        translated = translated.replaceAll(k, t(k));
+      }
+    }
+    return translated;
+  }
+
   int _currentIndex = 0;
   bool _isEditingProfile = false;
   String _profilePicUrl = "";
@@ -207,6 +225,7 @@ class _StudentDashboardState extends State<StudentDashboard>
   bool _breakdownActive = false;
   bool _breakdownDismissed = false;
   String _replacementBus = "";
+  DateTime? _lastBreakdownClearTime;
   StreamSubscription? _breakdownSub;
   StreamSubscription? _locationSub;
 
@@ -898,10 +917,10 @@ class _StudentDashboardState extends State<StudentDashboard>
               children: [
                 Row(
                   children: [
-                    const Expanded(
+                    Expanded(
                       child: Text(
-                        "Vehicle Breakdown Alert",
-                        style: TextStyle(
+                        translateDynamic("Vehicle Breakdown Alert"),
+                        style: const TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w900,
                           color: Color(0xFF991B1B),
@@ -909,7 +928,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                       ),
                     ),
                     Text(
-                      "Live",
+                      translateDynamic("Live"),
                       style: TextStyle(
                         fontSize: 10,
                         fontWeight: FontWeight.bold,
@@ -920,7 +939,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  msg,
+                  translateDynamic(msg),
                   style: const TextStyle(
                     fontSize: 12,
                     color: Color(0xFF7F1D1D),
@@ -1016,7 +1035,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                   children: [
                     Expanded(
                       child: Text(
-                        n['title'] as String,
+                        translateDynamic(n['title'] as String),
                         style: TextStyle(
                           fontSize: 13,
                           fontWeight: isUnread
@@ -1048,11 +1067,17 @@ class _StudentDashboardState extends State<StudentDashboard>
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  n['msg'] as String,
-                  style: const TextStyle(
+                  translateDynamic(n['msg'] as String),
+                  style: TextStyle(
                     fontSize: 12,
-                    color: Color(0xFF475569),
-                    fontWeight: FontWeight.w500,
+                    color: n['msg'].toString().contains("started the journey from the breakdown") 
+                        ? const Color(0xFF16A34A) // Green color
+                        : (n['msg'].toString().toLowerCase().contains("breakdown reported") || n['msg'].toString().toLowerCase().contains("replacement bus"))
+                            ? const Color(0xFFEF4444) // Red color for breakdowns
+                            : const Color(0xFF475569),
+                    fontWeight: (n['msg'].toString().contains("started the journey from the breakdown") || n['msg'].toString().toLowerCase().contains("breakdown"))
+                        ? FontWeight.w700
+                        : FontWeight.w500,
                     height: 1.4,
                   ),
                 ),
@@ -1191,6 +1216,15 @@ class _StudentDashboardState extends State<StudentDashboard>
                 }
               }
             }
+            
+            // Save fetched details to SharedPreferences to prevent placeholders on next app launch
+            SharedPreferences.getInstance().then((prefs) {
+              prefs.setString('studentName', _studentName);
+              prefs.setString('studentYear', _studentYear);
+              prefs.setString('studentDept', _studentDept);
+              prefs.setString('profilePicUrl', _profilePicUrl);
+              prefs.setString('studentBusNo', _studentBusNo);
+            });
           });
         }
       } else {
@@ -1786,6 +1820,10 @@ class _StudentDashboardState extends State<StudentDashboard>
               final bool isLive = (status == 'tracking' || status == 'broken') && !isStale;
               final bool isCompleted = status == 'completed';
 
+              final bool justCameOnline = !_wasBusOnline && isLive;
+              final bool justCompleted = _wasBusOnline && isCompleted;
+              final bool justWentOffline = _wasBusOnline && (!isLive && !isCompleted);
+
               if (data == null || (!isLive && !isCompleted)) {
                 setState(() {
                   _wasBusOnline = false;
@@ -1793,11 +1831,17 @@ class _StudentDashboardState extends State<StudentDashboard>
                   _busStatus = "offline";
                   _hasAlertedApproachingRadius = false;
                 });
+                
+                if (justWentOffline) {
+                  _showInAppNotification(
+                    "Bus Offline",
+                    "Bus $targetBusId has stopped tracking and is now offline.",
+                    "🚫",
+                    durationMs: 5000,
+                  );
+                }
                 return;
               }
-
-              final bool justCameOnline = !_wasBusOnline && isLive;
-              final bool justCompleted = _wasBusOnline && isCompleted;
 
               setState(() {
                 _busIsOnline = isLive;
@@ -1838,7 +1882,14 @@ class _StudentDashboardState extends State<StudentDashboard>
                 }
               });
 
-              if (justCameOnline) {
+              bool ignoreTripStart = false;
+              if (justCameOnline && _lastBreakdownClearTime != null) {
+                if (DateTime.now().difference(_lastBreakdownClearTime!).inMinutes < 2) {
+                  ignoreTripStart = true;
+                }
+              }
+
+              if (justCameOnline && !ignoreTripStart) {
                 _showInAppNotification(
                   "🚌 Trip has started",
                   "Bus $targetBusId has started its route. Live GPS tracking is now active. Get ready to board!",
@@ -1953,6 +2004,9 @@ class _StudentDashboardState extends State<StudentDashboard>
             (event) {
               final data = event.snapshot.value as Map?;
               if (data == null) {
+                if (_breakdownActive) {
+                  _lastBreakdownClearTime = DateTime.now();
+                }
                 setState(() {
                   _breakdownActive = false;
                   _replacementBus = "";
@@ -5092,7 +5146,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                   borderRadius: BorderRadius.circular(30),
                 ),
               ),
-              onPressed: _showSimulatedFilePicker,
+              onPressed: _pickAndUploadFile,
               icon: const Icon(Icons.upload_file, size: 16),
               label: const Text(
                 "Select & Upload Letter",
@@ -5213,7 +5267,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                 side: const BorderSide(color: Color(0xFFCBD5E1)),
                 padding: const EdgeInsets.symmetric(vertical: 8),
               ),
-              onPressed: _showSimulatedFilePicker,
+              onPressed: _pickAndUploadFile,
               child: const Text(
                 "Upload Another Document",
                 style: TextStyle(
@@ -5229,7 +5283,7 @@ class _StudentDashboardState extends State<StudentDashboard>
     );
   }
 
-  Future<void> _showSimulatedFilePicker() async {
+  Future<void> _pickAndUploadFile() async {
     try {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
@@ -5278,26 +5332,39 @@ class _StudentDashboardState extends State<StudentDashboard>
     );
 
     try {
-      final storageRef = FirebaseStorage.instance.ref().child(
-        'pickup_letters/$_studentId/${DateTime.now().millisecondsSinceEpoch}_${file.name}',
-      );
-
-      String downloadUrl = "";
-      if (file.path != null) {
-        final uploadTask = storageRef.putFile(File(file.path!));
-        final snapshot = await uploadTask;
-        downloadUrl = await snapshot.ref.getDownloadURL();
-      } else if (file.bytes != null) {
-        final uploadTask = storageRef.putData(file.bytes!);
-        final snapshot = await uploadTask;
-        downloadUrl = await snapshot.ref.getDownloadURL();
+      String base64Data = "";
+      if (file.bytes != null) {
+        base64Data = base64Encode(file.bytes!);
+      } else if (file.path != null) {
+        final bytes = await File(file.path!).readAsBytes();
+        base64Data = base64Encode(bytes);
       }
 
-      if (downloadUrl.isEmpty) {
-        throw Exception(
-          "Failed to get document URL. Are you running on web without a hard restart?",
-        );
+      if (base64Data.isEmpty) {
+        throw Exception("Failed to read file data.");
       }
+
+      String mimeType = "application/octet-stream";
+      if (file.name.toLowerCase().endsWith(".pdf")) mimeType = "application/pdf";
+      else if (file.name.toLowerCase().endsWith(".png")) mimeType = "image/png";
+      else if (file.name.toLowerCase().endsWith(".jpg") || file.name.toLowerCase().endsWith(".jpeg")) mimeType = "image/jpeg";
+
+      final docRef = FirebaseDatabase.instance.ref('documents').push();
+      final docId = docRef.key;
+
+      if (docId == null) {
+        throw Exception("Failed to generate document ID from Firebase.");
+      }
+
+      await docRef.set({
+        'fileName': file.name,
+        'mimeType': mimeType,
+        'fileBase64': base64Data,
+        'timestamp': DateTime.now().toIso8601String(),
+      });
+
+      // No downloadUrl needed if we fetch from RTDB directly, but we can store the ID
+      String downloadUrl = docId;
 
       if (mounted) {
         Navigator.pop(context); // Close dialog
@@ -5707,7 +5774,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                                   ),
                                 ] else ...[
                                   Text(
-                                    msg['msg'] ?? '',
+                                    t(msg['msg'] ?? ''),
                                     style: const TextStyle(
                                       fontSize: 11,
                                       fontWeight: FontWeight.w600,
