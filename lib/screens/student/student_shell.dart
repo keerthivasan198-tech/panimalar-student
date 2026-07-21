@@ -426,7 +426,7 @@ class _StudentDashboardState extends State<StudentDashboard>
 
   Future<void> _fetchLatestAnnouncement() async {
     try {
-      final String baseUrl = kIsWeb ? 'http://127.0.0.1:5001' : 'http://10.0.2.2:5001';
+      final String baseUrl = 'https://panimalr-bus.onrender.com';
       final response = await http.get(Uri.parse('$baseUrl/api/announcements/latest'));
       if (response.statusCode == 200) {
         if (mounted) {
