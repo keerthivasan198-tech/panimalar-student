@@ -53,6 +53,8 @@ dependencies:
   image_picker: ^1.2.3
   syncfusion_flutter_pdfviewer: ^33.2.13
   marquee: ^2.3.0
+  speech_to_text: ^7.4.0
+  translator: ^1.0.4+1
 
 dev_dependencies:
   flutter_test:

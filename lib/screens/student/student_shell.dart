@@ -11,14 +11,27 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:firebase_database/firebase_database.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:firebase_storage/firebase_storage.dart';
+import 'dart:convert';
+import 'dart:io';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:http/http.dart' as http;
-import 'dart:io';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:record/record.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
+import 'package:marquee/marquee.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:translator/translator.dart';
+
+
 import 'package:flutter_tts/flutter_tts.dart';
 
 import '../../models/campus_point.dart';
@@ -185,6 +198,16 @@ class _StudentDashboardState extends State<StudentDashboard>
   }
 
   int _currentIndex = 0;
+  bool _isLoading = true;
+
+  // ─── STT & Translator Variables ───
+  stt.SpeechToText _speech = stt.SpeechToText();
+  bool _isListeningSTT = false;
+  String _recognizedEnglishText = "";
+  String _translatedTamilReason = "";
+  final GoogleTranslator _translator = GoogleTranslator();
+
+  // ─── DATA VARIABLES ───
   bool _isEditingProfile = false;
   String _profilePicUrl = "";
   MemoryImage? _cachedProfileImage; // cached to prevent blinking
@@ -374,6 +397,8 @@ class _StudentDashboardState extends State<StudentDashboard>
   }
 
   List<Map<String, dynamic>> _adminNotifications = [];
+  List<Map<String, dynamic>> _specialBuses = [];
+  StreamSubscription? _specialBusesSub;
 
   List<Map<String, dynamic>> get _filteredNotifications {
     return _adminNotifications.where((n) {
@@ -399,6 +424,7 @@ class _StudentDashboardState extends State<StudentDashboard>
   StreamSubscription? _allBusesSub;
 
   final MapController _mapController = MapController();
+  final MapController _campusMapController = MapController();
 
   Map<String, dynamic>? _latestAnnouncement;
 
@@ -452,6 +478,7 @@ class _StudentDashboardState extends State<StudentDashboard>
     _allBusesSub?.cancel();
     _studentLocationSub?.cancel();
     _notifSub?.cancel();
+    _specialBusesSub?.cancel();
     _studentProfileSub?.cancel();
     _studentIntercomSub?.cancel();
     _recordingTimer?.cancel();
@@ -784,6 +811,25 @@ class _StudentDashboardState extends State<StudentDashboard>
               }
             }
           });
+
+      _specialBusesSub = FirebaseDatabase.instance
+          .ref('special_buses')
+          .onValue
+          .listen((event) {
+        final data = event.snapshot.value as Map?;
+        final List<Map<String, dynamic>> loaded = [];
+        if (data != null) {
+          data.forEach((k, v) {
+            if (v is Map) {
+              loaded.add({...Map<String, dynamic>.from(v), 'id': k});
+            }
+          });
+        }
+        if (!mounted) return;
+        setState(() {
+          _specialBuses = loaded;
+        });
+      });
     } catch (e) {
       debugPrint("Notification listener error: $e");
     }
@@ -2178,19 +2224,33 @@ class _StudentDashboardState extends State<StudentDashboard>
   }
 
   int _getNearestStopIndex(double lat, double lng) {
-    int idx = 0;
+    if (_routeStops.isEmpty) return 0;
+    
+    final displayStops = _busDirection == 'To Home'
+        ? _routeStops.reversed.toList()
+        : _routeStops;
+        
+    int minIdx = 0;
     double minD = double.infinity;
-    for (int i = 0; i < _routeStops.length; i++) {
-      final stopName = _routeStops[i];
+    for (int i = 0; i < displayStops.length; i++) {
+      final stopName = displayStops[i];
       final stopCoord = _coords[stopName];
       if (stopCoord == null) continue;
       final d = _haversineKm(lat, lng, stopCoord.latitude, stopCoord.longitude);
       if (d < minD) {
         minD = d;
-        idx = i;
+        minIdx = i;
       }
     }
-    return idx;
+    
+    int nextIdx = minIdx;
+    if (minD < 0.1 && minIdx < displayStops.length - 1) {
+      nextIdx = minIdx + 1;
+    }
+    
+    final nextStopName = displayStops[nextIdx];
+    final originalIdx = _routeStops.indexOf(nextStopName);
+    return originalIdx != -1 ? originalIdx : 0;
   }
 
   int? _calculateEtaMinutes(int nearestIdx) {
@@ -2620,16 +2680,22 @@ class _StudentDashboardState extends State<StudentDashboard>
         decoration: const BoxDecoration(
           border: Border(top: BorderSide(color: Color(0xFFE2E8F0), width: 1.2)),
         ),
-        child: NavigationBar(
-          backgroundColor: Colors.white,
-          indicatorColor: const Color(0xFFEFF6FF),
-          selectedIndex: _currentIndex,
-          onDestinationSelected: (idx) {
-            setState(() {
-              _currentIndex = idx;
-            });
-          },
-          destinations: [
+        child: NavigationBarTheme(
+          data: NavigationBarThemeData(
+            labelTextStyle: MaterialStateProperty.all(
+              const TextStyle(fontSize: 10, overflow: TextOverflow.ellipsis),
+            ),
+          ),
+          child: NavigationBar(
+            backgroundColor: Colors.white,
+            indicatorColor: const Color(0xFFEFF6FF),
+            selectedIndex: _currentIndex,
+            onDestinationSelected: (idx) {
+              setState(() {
+                _currentIndex = idx;
+              });
+            },
+            destinations: [
             NavigationDestination(
               icon: const Icon(Icons.home_outlined, color: Color(0xFF64748B)),
               selectedIcon: const Icon(Icons.home, color: Color(0xFF2563EB)),
@@ -2651,6 +2717,7 @@ class _StudentDashboardState extends State<StudentDashboard>
               label: t('student_profile'),
             ),
           ],
+          ),
         ),
       ),
     );
@@ -2671,6 +2738,7 @@ class _StudentDashboardState extends State<StudentDashboard>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (_breakdownActive && !_breakdownDismissed) _buildBreakdownBanner(),
+          _buildSpecialBusBanner(),
           _buildHeroBanner(),
 
           Padding(
@@ -3359,6 +3427,72 @@ class _StudentDashboardState extends State<StudentDashboard>
     );
   }
 
+  Widget _buildSpecialBusBanner() {
+    if (_specialBuses.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+      child: Column(
+        children: _specialBuses.map((sb) {
+          final List<dynamic> busesList = sb['buses'] ?? [];
+          List<String> displayBuses = [];
+          for (var b in busesList) {
+            if (b is String) {
+              displayBuses.add(b); // Legacy fallback
+            } else if (b is Map) {
+              String place = b['place']?.toString() ?? '';
+              place = place.replaceAll(RegExp(r'^Route\s+.*?-\s*', caseSensitive: false), '');
+              displayBuses.add('${b['bus']} ($place)');
+            }
+          }
+          
+          return Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFFFEF3C7), Color(0xFFFDE68A)],
+              ),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFFCD34D)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.directions_bus, color: Color(0xFFD97706), size: 28),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'SPECIAL BUS SCHEDULE - ${sb['time']}',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 13,
+                          color: Color(0xFF92400E),
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Operating Buses: ${displayBuses.join(", ")}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFFB45309),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
   Widget _buildHeroBanner() {
     return Container(
       width: double.infinity,
@@ -3597,56 +3731,6 @@ class _StudentDashboardState extends State<StudentDashboard>
       );
     }
 
-    // Parked buses markers
-    _allBusesLocations.forEach((busId, data) {
-      if (data['status'] == 'parked' && data['lat'] != null && data['lng'] != null) {
-        markers.add(
-          Marker(
-            point: LatLng(data['lat'], data['lng']),
-            width: 64,
-            height: 64,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(4),
-                  decoration: BoxDecoration(
-                    color: Colors.orange,
-                    shape: BoxShape.circle,
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Colors.black26,
-                        blurRadius: 4,
-                      ),
-                    ],
-                    border: Border.all(color: Colors.white, width: 2),
-                  ),
-                  child: const Icon(Icons.directions_bus, color: Colors.white, size: 20),
-                ),
-                const SizedBox(height: 2),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(4),
-                    border: Border.all(color: Colors.grey.shade300, width: 0.5),
-                  ),
-                  child: Text(
-                    "Bus $busId",
-                    style: const TextStyle(
-                      fontSize: 8,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black87,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      }
-    });
-
     // --- Live Bus Icon (only when bus is online and has location) ---
     if (_busLat != null && _busLng != null) {
       final currentLat = _renderLat ?? _busLat!;
@@ -3732,9 +3816,20 @@ class _StudentDashboardState extends State<StudentDashboard>
       }
     }
 
-    final String nearestStopName = _busIsOnline && _routeStops.isNotEmpty
-        ? _routeStops[nearestIdx]
-        : "Searching…";
+    String nearestStopName = "Searching…";
+    if (_busIsOnline && _routeStops.isNotEmpty) {
+      nearestStopName = _routeStops[nearestIdx];
+      final displayStops = _busDirection == 'To Home' ? _routeStops.reversed.toList() : _routeStops;
+      if (nearestStopName == displayStops.last && _busLat != null && _busLng != null) {
+        final lastCoord = _coords[nearestStopName];
+        if (lastCoord != null) {
+          final dist = _haversineKm(_busLat!, _busLng!, lastCoord.latitude, lastCoord.longitude);
+          if (dist < 0.15) { // within 150m of final stop
+            nearestStopName = "Arrived at Destination";
+          }
+        }
+      }
+    }
 
     return Stack(
       children: [
@@ -3940,7 +4035,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Text(
-                            "NEAREST STOP",
+                            "NEXT STOP",
                             style: TextStyle(
                               fontSize: 9,
                               color: Color(0xFF64748B),
@@ -4265,15 +4360,15 @@ class _StudentDashboardState extends State<StudentDashboard>
     return Stack(
       children: [
         FlutterMap(
-          mapController: _mapController,
+          mapController: _campusMapController,
           options: MapOptions(
             initialCenter: const LatLng(13.049, 80.075),
             initialZoom: 16.5,
             maxZoom: 22.0,
             cameraConstraint: CameraConstraint.contain(
               bounds: LatLngBounds(
-                const LatLng(13.035, 80.060), // SouthWest bound (campus area)
-                const LatLng(13.065, 80.090), // NorthEast bound (campus area)
+                const LatLng(13.035, 80.060),
+                const LatLng(13.062, 80.090),
               ),
             ),
           ),
@@ -5492,13 +5587,135 @@ class _StudentDashboardState extends State<StudentDashboard>
       if (result != null && result.files.isNotEmpty) {
         final file = result.files.first;
         if (!mounted) return;
-        _uploadPickedFile(file);
+        _showVoiceReasonDialog(file);
       }
     } catch (e) {
       if (mounted) {
         _showSnackBar("❌ Could not open file picker: $e");
       }
     }
+  }
+
+  Future<void> _showVoiceReasonDialog(PlatformFile file) async {
+    setState(() {
+      _isListeningSTT = false;
+      _recognizedEnglishText = "";
+      _translatedTamilReason = "";
+    });
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setStateSB) {
+            void toggleListening() async {
+              if (!_isListeningSTT) {
+                bool available = await _speech.initialize(
+                  onStatus: (val) => debugPrint('onStatus: $val'),
+                  onError: (val) => debugPrint('onError: $val'),
+                );
+                if (available) {
+                  setStateSB(() => _isListeningSTT = true);
+                  _speech.listen(
+                    onResult: (val) async {
+                      setStateSB(() {
+                        _recognizedEnglishText = val.recognizedWords;
+                      });
+                      if (_recognizedEnglishText.isNotEmpty) {
+                        try {
+                          var translation = await _translator.translate(_recognizedEnglishText, from: 'en', to: 'ta');
+                          setStateSB(() {
+                            _translatedTamilReason = translation.text;
+                          });
+                        } catch (e) {
+                          debugPrint("Translation error: $e");
+                        }
+                      }
+                    },
+                  );
+                } else {
+                  _showSnackBar("Microphone permission denied.");
+                }
+              } else {
+                setStateSB(() => _isListeningSTT = false);
+                _speech.stop();
+              }
+            }
+
+            return Dialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text("Add a Voice Reason (Optional)", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    SizedBox(height: 16),
+                    GestureDetector(
+                      onTap: toggleListening,
+                      child: CircleAvatar(
+                        radius: 30,
+                        backgroundColor: _isListeningSTT ? Colors.red : Color(0xFF2563EB),
+                        child: Icon(_isListeningSTT ? Icons.mic : Icons.mic_none, color: Colors.white, size: 30),
+                      ),
+                    ),
+                    SizedBox(height: 16),
+                    Text(_isListeningSTT ? "Listening..." : "Tap to speak in English", style: TextStyle(color: Colors.grey)),
+                    if (_recognizedEnglishText.isNotEmpty) ...[
+                      SizedBox(height: 16),
+                      Text("English: $_recognizedEnglishText", style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic)),
+                      SizedBox(height: 8),
+                      Text("Tamil: $_translatedTamilReason", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.green)),
+                    ],
+                    SizedBox(height: 24),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        TextButton(
+                          onPressed: () {
+                            _speech.stop();
+                            _translatedTamilReason = ""; // explicitly clear
+                            _recognizedEnglishText = "";
+                            Navigator.pop(ctx);
+                            _uploadPickedFile(file); // proceed without reason
+                          },
+                          child: Text("Skip"),
+                        ),
+                        ElevatedButton(
+                          onPressed: () async {
+                            _speech.stop();
+                            if (_recognizedEnglishText.isEmpty) {
+                              _showSnackBar("⚠️ No speech detected. Please try again or press Skip.");
+                              return;
+                            }
+                            
+                            // Ensure translation is complete
+                            if (_translatedTamilReason.isEmpty && _recognizedEnglishText.isNotEmpty) {
+                              try {
+                                var translation = await _translator.translate(_recognizedEnglishText, from: 'en', to: 'ta');
+                                _translatedTamilReason = translation.text;
+                              } catch (e) {
+                                debugPrint("Translation error at confirm: $e");
+                                _translatedTamilReason = _recognizedEnglishText; // fallback
+                              }
+                            }
+                            
+                            Navigator.pop(ctx);
+                            _uploadPickedFile(file); // proceed with reason
+                          },
+                          child: Text("Confirm & Upload"),
+                        ),
+                      ],
+                    )
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   Future<void> _uploadPickedFile(PlatformFile file) async {
@@ -5591,11 +5808,16 @@ class _StudentDashboardState extends State<StudentDashboard>
         'studentBus': _profileBusCtrl.text.trim().toUpperCase(),
         'documentName': fileName,
         'documentUrl': downloadUrl,
+        'voiceReasonTamil': _translatedTamilReason, // Added translated reason
         'status': 'pending',
         'timestamp': DateTime.now().millisecondsSinceEpoch,
         'savedStop': _savedStop.isNotEmpty ? _savedStop : "Not Selected",
       });
       _showSnackBar("📨 Request sent to Admin successfully!");
+      setState(() {
+        _translatedTamilReason = "";
+        _recognizedEnglishText = "";
+      });
     } catch (e) {
       _showSnackBar("❌ Error sending request: $e");
     }
