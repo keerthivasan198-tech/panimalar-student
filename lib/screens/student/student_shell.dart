@@ -53,6 +53,7 @@ import 'package:http/http.dart' as http;
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
+import 'qr_scanner_screen.dart';
 
 class MainShell extends StatefulWidget {
   final VoidCallback onSwitchRole;
@@ -1275,57 +1276,57 @@ class _StudentDashboardState extends State<StudentDashboard>
     });
 
     try {
-      final response = await http.get(
-        Uri.parse(
-          'https://panimalr-bus.onrender.com/api/students/${widget.studentRollNo}',
-        ),
-      );
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        if (mounted) {
-          setState(() {
-            _studentName = data['name'] ?? _studentName;
-            _studentYear = data['year'] ?? _studentYear;
-            _studentDept = data['department'] ?? _studentDept;
-            _profileBusCtrl.text = data['busNo'] ?? _profileBusCtrl.text;
-            _studentBusNo = data['busNo'] ?? _studentBusNo;
-            _savedStop = data['boardingStop'] ?? _savedStop;
-            // Keep edit controllers in sync with latest fetched values
-            _profileNameCtrl.text = _studentName;
-            _profileTempYear = _studentYear;
-            if (data['profilePicBase64'] != null &&
-                data['profilePicBase64'].isNotEmpty) {
-              _profilePicUrl = data['profilePicBase64'];
-              if (_profilePicUrl.startsWith('base64:')) {
-                try {
-                  _cachedProfileImage = MemoryImage(
-                    base64Decode(_profilePicUrl.substring(7)),
-                  );
-                } catch (_) {
-                  _cachedProfileImage = null;
+      if (Firebase.apps.isNotEmpty) {
+        final snapshot = await FirebaseDatabase.instance
+            .ref('students/${widget.studentRollNo}')
+            .get();
+        if (snapshot.exists && snapshot.value != null) {
+          final data = snapshot.value as Map<dynamic, dynamic>;
+          if (mounted) {
+            setState(() {
+              _studentName = data['name'] ?? _studentName;
+              _studentYear = data['year'] ?? _studentYear;
+              _studentDept = data['department'] ?? _studentDept;
+              _profileBusCtrl.text = data['busNo'] ?? _profileBusCtrl.text;
+              _studentBusNo = data['busNo'] ?? _studentBusNo;
+              _savedStop = data['boardingStop'] ?? _savedStop;
+              // Keep edit controllers in sync with latest fetched values
+              _profileNameCtrl.text = _studentName;
+              _profileTempYear = _studentYear;
+              if (data['profilePicBase64'] != null &&
+                  data['profilePicBase64'].toString().isNotEmpty) {
+                _profilePicUrl = data['profilePicBase64'];
+                if (_profilePicUrl.startsWith('base64:')) {
+                  try {
+                    _cachedProfileImage = MemoryImage(
+                      base64Decode(_profilePicUrl.substring(7)),
+                    );
+                  } catch (_) {
+                    _cachedProfileImage = null;
+                  }
                 }
               }
-            }
-            
-            // Save fetched details to SharedPreferences to prevent placeholders on next app launch
-            SharedPreferences.getInstance().then((prefs) {
-              prefs.setString('studentName', _studentName);
-              prefs.setString('studentYear', _studentYear);
-              prefs.setString('studentDept', _studentDept);
-              prefs.setString('profilePicUrl', _profilePicUrl);
-              prefs.setString('studentBusNo', _studentBusNo);
+              
+              // Save fetched details to SharedPreferences to prevent placeholders on next app launch
+              SharedPreferences.getInstance().then((prefs) {
+                prefs.setString('studentName', _studentName);
+                prefs.setString('studentYear', _studentYear);
+                prefs.setString('studentDept', _studentDept);
+                prefs.setString('profilePicUrl', _profilePicUrl);
+                prefs.setString('studentBusNo', _studentBusNo);
+              });
             });
-          });
-        }
-      } else {
-        if (mounted) {
-          setState(() {
-            _isEditingProfile = true;
-          });
+          }
+        } else {
+          if (mounted) {
+            setState(() {
+              _isEditingProfile = true;
+            });
+          }
         }
       }
     } catch (e) {
-      debugPrint("Failed to fetch profile from MongoDB: $e");
+      debugPrint("Failed to fetch profile from Firebase: $e");
     }
     // Check if the student has previously selected a route manually
     final savedRoute = prefs.getString('studentSelectedRoute');
@@ -1438,7 +1439,7 @@ class _StudentDashboardState extends State<StudentDashboard>
     if (Firebase.apps.isNotEmpty) {
       await FirebaseDatabase.instance.ref('students/$_studentId').update({
         'selectedRoute': routeKey,
-        'savedStop': '',
+        'boardingStop': '',
       });
     }
     final prefs = await SharedPreferences.getInstance();
@@ -1455,9 +1456,11 @@ class _StudentDashboardState extends State<StudentDashboard>
     });
     if (Firebase.apps.isNotEmpty) {
       await FirebaseDatabase.instance.ref('students/$_studentId').update({
-        'savedStop': stopName,
+        'boardingStop': stopName,
       });
     }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('studentSavedStop', stopName);
     _showSnackBar("⭐ Boarding stop saved: $stopName");
   }
 
@@ -1495,12 +1498,8 @@ class _StudentDashboardState extends State<StudentDashboard>
     });
 
     try {
-      final response = await http.post(
-        Uri.parse(
-          'https://panimalr-bus.onrender.com/api/students/$actualRollNo',
-        ),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
+      if (Firebase.apps.isNotEmpty) {
+        await FirebaseDatabase.instance.ref('students/$actualRollNo').update({
           'name': name,
           'year': year,
           'department': dept,
@@ -1509,13 +1508,10 @@ class _StudentDashboardState extends State<StudentDashboard>
           'profilePicBase64': _profilePicUrl.startsWith('base64:')
               ? _profilePicUrl
               : '',
-        }),
-      );
-      if (response.statusCode != 200) {
-        _showSnackBar("Warning: Failed to save to MongoDB");
+        });
       }
     } catch (e) {
-      _showSnackBar("Warning: Network error saving to MongoDB");
+      _showSnackBar("Warning: Network error saving to Firebase");
     }
 
     setState(() {
@@ -2542,6 +2538,20 @@ class _StudentDashboardState extends State<StudentDashboard>
     ];
 
     return Scaffold(
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => const QRScannerScreen(),
+            ),
+          );
+        },
+        backgroundColor: const Color(0xFF2563EB),
+        foregroundColor: Colors.white,
+        icon: const Icon(Icons.qr_code_scanner),
+        label: const Text('Scan Bus Pass', style: TextStyle(fontWeight: FontWeight.bold)),
+      ),
       appBar: AppBar(
         flexibleSpace: Container(
           decoration: BoxDecoration(
@@ -3231,18 +3241,44 @@ class _StudentDashboardState extends State<StudentDashboard>
                       ),
                     ],
                   ),
-                  child: Column(
-                    children: [
-                      for (int i = 0; i < displayStops.length; i++) ...[
-                        _buildStopRow(
-                          displayStops[i],
-                          isFirst: i == 0,
-                          isLast: i == displayStops.length - 1,
-                          isMyStop: _savedStop == displayStops[i],
-                        ),
-                        if (i < displayStops.length - 1) _buildStopConnector(),
-                      ],
-                    ],
+                  child: Builder(
+                    builder: (context) {
+                      String? closestStopToBus;
+                      if (_allBusesLocations.containsKey(_busFirebaseId)) {
+                        final busData = _allBusesLocations[_busFirebaseId];
+                        if (busData != null && busData['lat'] != null && busData['lng'] != null) {
+                          double minDistance = double.infinity;
+                          for (String stop in displayStops) {
+                            if (coordsConfig.containsKey(stop)) {
+                              double dist = _haversineM(
+                                busData['lat'],
+                                busData['lng'],
+                                coordsConfig[stop]!.latitude,
+                                coordsConfig[stop]!.longitude,
+                              );
+                              if (dist < minDistance) {
+                                minDistance = dist;
+                                closestStopToBus = stop;
+                              }
+                            }
+                          }
+                        }
+                      }
+                      return Column(
+                        children: [
+                          for (int i = 0; i < displayStops.length; i++) ...[
+                            _buildStopRow(
+                              displayStops[i],
+                              isFirst: i == 0,
+                              isLast: i == displayStops.length - 1,
+                              isMyStop: _savedStop == displayStops[i],
+                              isBusHere: closestStopToBus == displayStops[i],
+                            ),
+                            if (i < displayStops.length - 1) _buildStopConnector(),
+                          ],
+                        ],
+                      );
+                    }
                   ),
                 ),
                 const SizedBox(height: 6),
@@ -3270,6 +3306,7 @@ class _StudentDashboardState extends State<StudentDashboard>
     bool isFirst = false,
     bool isLast = false,
     bool isMyStop = false,
+    bool isBusHere = false,
   }) {
     Color dotColor = const Color(0xFF94A3B8);
     double dotSize = 10.0;
@@ -3291,20 +3328,22 @@ class _StudentDashboardState extends State<StudentDashboard>
         Container(
           width: 20,
           alignment: Alignment.center,
-          child: Container(
-            width: dotSize,
-            height: dotSize,
-            decoration: BoxDecoration(
-              color: dotColor,
-              shape: BoxShape.circle,
-              border: isMyStop
-                  ? Border.all(color: Colors.white, width: 2)
-                  : null,
-              boxShadow: isMyStop
-                  ? const [BoxShadow(color: Colors.black26, blurRadius: 4)]
-                  : null,
-            ),
-          ),
+          child: isBusHere
+              ? const _BlinkingBusIcon()
+              : Container(
+                  width: dotSize,
+                  height: dotSize,
+                  decoration: BoxDecoration(
+                    color: dotColor,
+                    shape: BoxShape.circle,
+                    border: isMyStop
+                        ? Border.all(color: Colors.white, width: 2)
+                        : null,
+                    boxShadow: isMyStop
+                        ? const [BoxShadow(color: Colors.black26, blurRadius: 4)]
+                        : null,
+                  ),
+                ),
         ),
         const SizedBox(width: 12),
         Expanded(
@@ -3319,7 +3358,7 @@ class _StudentDashboardState extends State<StudentDashboard>
             ),
           ),
         ),
-        if (!isFirst && !isLast && _savedStop.isEmpty)
+        if (!isFirst && !isLast && !isMyStop)
           TextButton(
             style: TextButton.styleFrom(
               padding: EdgeInsets.zero,
@@ -6498,6 +6537,49 @@ class _FlashingRedDotState extends State<_FlashingRedDot> {
           color: Colors.red,
           shape: BoxShape.circle,
         ),
+      ),
+    );
+  }
+}
+
+class _BlinkingBusIcon extends StatefulWidget {
+  const _BlinkingBusIcon();
+
+  @override
+  State<_BlinkingBusIcon> createState() => _BlinkingBusIconState();
+}
+
+class _BlinkingBusIconState extends State<_BlinkingBusIcon> {
+  bool _visible = true;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+      if (mounted) {
+        setState(() {
+          _visible = !_visible;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedOpacity(
+      opacity: _visible ? 1.0 : 0.3,
+      duration: const Duration(milliseconds: 300),
+      child: const Text(
+        "🚌",
+        style: TextStyle(fontSize: 14),
+        textAlign: TextAlign.center,
       ),
     );
   }
