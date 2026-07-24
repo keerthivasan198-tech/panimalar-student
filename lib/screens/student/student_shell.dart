@@ -274,11 +274,11 @@ class _StudentDashboardState extends State<StudentDashboard>
   String? _recordPath;
 
   // Dynamic Route selections
-  String _selectedRoute = "route_1"; // default
+  late String _selectedRoute = widget.studentRollNo.toLowerCase() == 'guest' ? "" : "route_1"; // default
   List<String> _routeStops = [];
   Map<String, LatLng> _coords = {};
 
-  String _busFirebaseId = '1';
+  late String _busFirebaseId = widget.studentRollNo.toLowerCase() == 'guest' ? "" : "1";
   String get _displayBusId =>
       (_breakdownActive &&
           _replacementBus.isNotEmpty &&
@@ -1329,7 +1329,14 @@ class _StudentDashboardState extends State<StudentDashboard>
     }
     // Check if the student has previously selected a route manually
     final savedRoute = prefs.getString('studentSelectedRoute');
-    if (savedRoute != null && savedRoute.isNotEmpty) {
+    final isGuest = widget.studentRollNo.toLowerCase() == 'guest';
+
+    if (isGuest) {
+      setState(() {
+        _selectedRoute = "";
+      });
+      _updateRouteDetails(_selectedRoute, startListener: true);
+    } else if (savedRoute != null && savedRoute.isNotEmpty) {
       // Student manually selected a route before — use it directly, skip profile bus lookup
       setState(() {
         _selectedRoute = savedRoute;
@@ -2473,7 +2480,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        "PANIMALAR TRANSIT — BUS $_displayBusId",
+                        _displayBusId.isNotEmpty ? "PANIMALAR TRANSIT — BUS $_displayBusId" : "PANIMALAR TRANSIT",
                         style: const TextStyle(
                           fontSize: 9,
                           fontWeight: FontWeight.w800,
@@ -2526,11 +2533,12 @@ class _StudentDashboardState extends State<StudentDashboard>
 
   @override
   Widget build(BuildContext context) {
+    final bool isGuest = widget.studentRollNo.toLowerCase() == 'guest';
     final List<Widget> pages = [
       _buildHomeTab(),
       _buildTrackTab(),
       _buildCampusNavTab(),
-      _buildProfileTab(),
+      if (!isGuest) _buildProfileTab(),
     ];
 
     return Scaffold(
@@ -2656,6 +2664,12 @@ class _StudentDashboardState extends State<StudentDashboard>
                 ),
             ],
           ),
+          if (isGuest)
+            IconButton(
+              icon: const Icon(Icons.exit_to_app, color: Colors.black54),
+              onPressed: widget.onLogout,
+              tooltip: 'Exit Guest Mode',
+            ),
         ],
       ),
       body: Stack(
@@ -2711,11 +2725,12 @@ class _StudentDashboardState extends State<StudentDashboard>
               selectedIcon: const Icon(Icons.domain, color: Color(0xFF2563EB)),
               label: t('student_campus_map'),
             ),
-            NavigationDestination(
-              icon: const Icon(Icons.person_outline, color: Color(0xFF64748B)),
-              selectedIcon: const Icon(Icons.person, color: Color(0xFF2563EB)),
-              label: t('student_profile'),
-            ),
+            if (!isGuest)
+              NavigationDestination(
+                icon: const Icon(Icons.person_outline, color: Color(0xFF64748B)),
+                selectedIcon: const Icon(Icons.person, color: Color(0xFF2563EB)),
+                label: t('student_profile'),
+              ),
           ],
           ),
         ),
@@ -3664,7 +3679,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    "${routeLabelsConfig[_selectedRoute]} • Live Tracker",
+                    "${routeLabelsConfig[_selectedRoute] ?? 'No Route Selected'} • Live Tracker",
                     style: TextStyle(
                       fontSize: 11,
                       color: Colors.white.withValues(alpha: 0.85),
@@ -3988,7 +4003,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          "BUS $_displayBusId DETAILS",
+                          _displayBusId.isNotEmpty ? "BUS $_displayBusId DETAILS" : "ROUTE DETAILS",
                           style: TextStyle(
                             fontSize: 10,
                             fontWeight: FontWeight.w800,
@@ -3998,7 +4013,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          routeLabelsConfig[_selectedRoute] ?? "Manali Route",
+                          routeLabelsConfig[_selectedRoute] ?? "No Route Selected",
                           style: const TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w900,
