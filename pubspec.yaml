@@ -55,6 +55,7 @@ dependencies:
   marquee: ^2.3.0
   speech_to_text: ^7.4.0
   translator: ^1.0.4+1
+  mobile_scanner: ^7.4.0
 
 dev_dependencies:
   flutter_test:
