@@ -426,6 +426,12 @@ class _StudentDashboardState extends State<StudentDashboard>
 
   final MapController _mapController = MapController();
   final MapController _campusMapController = MapController();
+  final MapController _homeMapController = MapController();
+  LatLng _homeScanCenter = const LatLng(13.04890, 80.07546);
+  Map<String, dynamic>? _selectedHomeBusDetails;
+  bool _showNearbyCircle = false;
+
+
 
   Map<String, dynamic>? _latestAnnouncement;
 
@@ -505,6 +511,7 @@ class _StudentDashboardState extends State<StudentDashboard>
               'lat': value['lat'],
               'lng': value['lng'],
               'status': value['status'],
+              'updatedAt': value['updatedAt'],
               'busId': key.toString(),
             };
           }
@@ -1912,7 +1919,7 @@ class _StudentDashboardState extends State<StudentDashboard>
 
               // Only mark online when driver has explicitly started tracking and data is fresh
               final bool isLive = (status == 'tracking' || status == 'broken') && !isStale;
-              final bool isCompleted = status == 'completed';
+              final bool isCompleted = status == 'completed' || status == 'arrived';
 
               final bool justCameOnline = !_wasBusOnline && isLive;
               final bool justCompleted = _wasBusOnline && isCompleted;
@@ -3211,9 +3218,9 @@ class _StudentDashboardState extends State<StudentDashboard>
                     ),
                   ],
                 ),
+                const SizedBox(height: 16),
+                _buildNearby1KmMapCard(),
                 const SizedBox(height: 20),
-
-
 
                 const Text(
                   "Route Stops Sequence",
@@ -3399,6 +3406,577 @@ class _StudentDashboardState extends State<StudentDashboard>
         const SizedBox(width: 12),
         const Spacer(),
       ],
+    );
+  }
+
+  Map<String, dynamic>? _getLiveBusData(Map<String, dynamic> b) {
+    final possibleKeys = [
+      b['id']?.toString().toLowerCase().trim(),
+      b['id']?.toString().replaceAll(RegExp(r'^[Bb]'), '').toLowerCase().trim(),
+      b['bus']?.toString().toLowerCase().trim(),
+      b['bus']?.toString().replaceAll(RegExp(r'^[Bb]us\s+'), '').toLowerCase().trim(),
+      b['route']?.toString().toLowerCase().trim(),
+      b['route']?.toString().replaceAll('route_', '').toLowerCase().trim(),
+    ];
+
+    for (final key in possibleKeys) {
+      if (key != null) {
+        for (final entryKey in _allBusesLocations.keys) {
+          if (entryKey.toLowerCase().trim() == key) {
+            final liveData = _allBusesLocations[entryKey]!;
+            final liveStatus = liveData['status'] as String? ?? 'offline';
+            final rawUpdatedAt = liveData['updatedAt'] as String?;
+            bool isStale = false;
+            if (rawUpdatedAt != null) {
+              try {
+                final dt = DateTime.parse(rawUpdatedAt).toLocal();
+                if (DateTime.now().difference(dt).inMinutes > 5) {
+                  isStale = true;
+                }
+              } catch (_) {}
+            }
+
+            if (liveStatus != 'offline' && !isStale) {
+              if (liveData['lat'] != null && liveData['lng'] != null) {
+                return liveData;
+              }
+            }
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  Widget _buildNearby1KmMapCard() {
+    final LatLng userLoc;
+    if (_studentLat != null && _studentLng != null) {
+      final distFromCollege = Geolocator.distanceBetween(
+        13.04890,
+        80.07546,
+        _studentLat!,
+        _studentLng!,
+      );
+      if (distFromCollege < 100000.0) {
+        userLoc = LatLng(_studentLat!, _studentLng!);
+      } else {
+        userLoc = _coords[_savedStop] ?? const LatLng(13.04890, 80.07546);
+      }
+    } else {
+      userLoc = _coords[_savedStop] ?? const LatLng(13.04890, 80.07546);
+    }
+
+    final List<Map<String, dynamic>> combinedBuses = [];
+
+    _allBusesLocations.forEach((busKey, liveData) {
+      final liveStatus = liveData['status'] as String? ?? 'offline';
+      if (liveStatus == 'offline') return;
+
+      final cleanKey = busKey.toLowerCase()
+          .replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '')
+          .replaceAll('route_', '')
+          .trim();
+
+      final alreadyExists = combinedBuses.any((b) {
+        final bClean = (b['id'] as String).toLowerCase()
+            .replaceAll(RegExp(r'^[Bb]'), '')
+            .trim();
+        return bClean == cleanKey;
+      });
+
+      if (!alreadyExists) {
+        String matchedRouteKey = 'route_$cleanKey';
+        for (final rKey in routeLabelsConfig.keys) {
+          final cleanRKey = rKey.replaceAll('route_', '');
+          if (cleanRKey == cleanKey) {
+            matchedRouteKey = rKey;
+            break;
+          }
+        }
+        final routeName = routeLabelsConfig[matchedRouteKey] ?? 'Route $cleanKey';
+
+        combinedBuses.add({
+          'id': 'B$cleanKey',
+          'bus': 'Bus $cleanKey',
+          'driver': 'College Driver',
+          'contact': 'N/A',
+          'route': matchedRouteKey,
+          'routeName': routeName,
+          'lat': (liveData['lat'] as num?)?.toDouble() ?? 13.04890,
+          'lng': (liveData['lng'] as num?)?.toDouble() ?? 80.07546,
+        });
+      }
+    });
+
+    final List<Map<String, dynamic>> nearbyBuses = [];
+    for (final b in combinedBuses) {
+      final liveData = _getLiveBusData(b);
+      if (liveData == null) {
+        continue; // Only show online buses!
+      }
+
+      final lat = (liveData['lat'] as num).toDouble();
+      final lng = (liveData['lng'] as num).toDouble();
+
+      final distMeters = Geolocator.distanceBetween(
+        _homeScanCenter.latitude,
+        _homeScanCenter.longitude,
+        lat,
+        lng,
+      );
+
+      if (_showNearbyCircle && distMeters <= 1000.0) {
+        nearbyBuses.add({
+          ...b,
+          'lat': lat,
+          'lng': lng,
+          'isOnline': true,
+          'distMeters': distMeters.round(),
+        });
+      }
+    }
+
+    final busesIn1KmCount = nearbyBuses.where((b) => b['distMeters'] <= 1000).length;
+    final totalOnlineCount = combinedBuses.where((b) => _getLiveBusData(b) != null).length;
+
+    // Check if a searched bus matches selected route and is online
+    Map<String, dynamic>? searchedBus;
+    for (final b in combinedBuses) {
+      if (b['route'] == _selectedRoute) {
+        final liveData = _getLiveBusData(b);
+        if (liveData != null) {
+          final lat = (liveData['lat'] as num).toDouble();
+          final lng = (liveData['lng'] as num).toDouble();
+          final distMeters = Geolocator.distanceBetween(
+            userLoc.latitude,
+            userLoc.longitude,
+            lat,
+            lng,
+          );
+          searchedBus = {
+            ...b,
+            'lat': lat,
+            'lng': lng,
+            'isOnline': true,
+            'distMeters': distMeters.round(),
+          };
+        }
+        break;
+      }
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                "Nearby Transit Map",
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w900,
+                  color: Color(0xFF64748B),
+                  letterSpacing: 0.5,
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFDBEAFE),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  _showNearbyCircle
+                      ? "${busesIn1KmCount} Bus${busesIn1KmCount == 1 ? '' : 'es'} in 1 km"
+                      : "${totalOnlineCount} Online Bus${totalOnlineCount == 1 ? '' : 'es'}",
+                  style: const TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF2563EB),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            "Showing your location. Click 'Nearby Buses' to scan 1 km surroundings.",
+            style: TextStyle(
+              fontSize: 11,
+              color: Color(0xFF64748B),
+            ),
+          ),
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(16),
+            child: Container(
+              height: 220,
+              width: double.infinity,
+              decoration: BoxDecoration(
+                border: Border.all(color: const Color(0xFFE2E8F0)),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Stack(
+                children: [
+                  FlutterMap(
+                    mapController: _homeMapController,
+                    options: MapOptions(
+                      initialCenter: userLoc,
+                      initialZoom: 13.5,
+                      maxZoom: 18.0,
+                      onTap: (tapPosition, point) {
+                        setState(() {
+                          _homeScanCenter = point;
+                          _showNearbyCircle = true;
+                        });
+                        _homeMapController.move(point, _homeMapController.camera.zoom);
+                      },
+                    ),
+                    children: [
+                      TileLayer(
+                        urlTemplate: 'https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',
+                        userAgentPackageName: 'com.panimalar.bus',
+                        maxNativeZoom: 19,
+                        maxZoom: 22.0,
+                      ),
+                      if (_showNearbyCircle)
+                        CircleLayer(
+                          circles: [
+                            CircleMarker(
+                              point: _homeScanCenter,
+                              radius: 1000.0,
+                              useRadiusInMeter: true,
+                              color: const Color(0xFF2563EB).withValues(alpha: 0.12),
+                              borderColor: const Color(0xFF2563EB),
+                              borderStrokeWidth: 2.0,
+                            ),
+                          ],
+                        ),
+                      MarkerLayer(
+                        markers: [
+                          // User Location Marker
+                          Marker(
+                            point: userLoc,
+                            width: 32,
+                            height: 32,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: Colors.blue,
+                                shape: BoxShape.circle,
+                                border: Border.all(color: Colors.white, width: 3),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.blue.withValues(alpha: 0.4),
+                                    blurRadius: 10,
+                                    spreadRadius: 3,
+                                  ),
+                                ],
+                              ),
+                              child: const Icon(
+                                Icons.my_location,
+                                color: Colors.white,
+                                size: 16,
+                              ),
+                            ),
+                          ),
+                          // Center Scan Pin if dragged away from user loc
+                          if (_showNearbyCircle &&
+                              ((_homeScanCenter.latitude - userLoc.latitude).abs() > 0.001 ||
+                              (_homeScanCenter.longitude - userLoc.longitude).abs() > 0.001))
+                            Marker(
+                              point: _homeScanCenter,
+                              width: 32,
+                              height: 32,
+                              child: const Icon(
+                                Icons.location_on,
+                                color: Colors.red,
+                                size: 32,
+                              ),
+                            ),
+                          // Nearby Bus Markers (Online only)
+                          ...nearbyBuses.map((b) {
+                            final lat = (b['lat'] as num).toDouble();
+                            final lng = (b['lng'] as num).toDouble();
+                            final isSelected = _selectedHomeBusDetails?['id'] == b['id'] ||
+                                (_selectedRoute == b['route']);
+                            final isOnline = b['isOnline'] == true;
+
+                            return Marker(
+                              point: LatLng(lat, lng),
+                              width: 40,
+                              height: 40,
+                              child: GestureDetector(
+                                onTap: () {
+                                  setState(() {
+                                    if (_selectedHomeBusDetails?['id'] == b['id']) {
+                                      _selectedHomeBusDetails = null;
+                                    } else {
+                                      _selectedHomeBusDetails = b;
+                                    }
+                                  });
+                                },
+                                child: Stack(
+                                  clipBehavior: Clip.none,
+                                  children: [
+                                    Container(
+                                      decoration: BoxDecoration(
+                                        color: isSelected ? const Color(0xFF2563EB) : Colors.white,
+                                        shape: BoxShape.circle,
+                                        border: Border.all(
+                                          color: isSelected
+                                              ? Colors.amber
+                                              : (isOnline ? const Color(0xFF22C55E) : const Color(0xFF2563EB)),
+                                          width: 2.5,
+                                        ),
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color: Colors.black.withValues(alpha: 0.25),
+                                            blurRadius: 6,
+                                          ),
+                                        ],
+                                      ),
+                                      child: const Center(
+                                        child: Text(
+                                          "🚌",
+                                          style: TextStyle(fontSize: 14),
+                                        ),
+                                      ),
+                                    ),
+                                    if (isOnline)
+                                      Positioned(
+                                        top: -2,
+                                        right: -2,
+                                        child: Container(
+                                          width: 10,
+                                          height: 10,
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFF22C55E),
+                                            shape: BoxShape.circle,
+                                            border: Border.all(color: Colors.white, width: 1.5),
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          }),
+                        ],
+                      ),
+                    ],
+                  ),
+                  // Expand Button in Top-Right Overlay
+                  Positioned(
+                    top: 10,
+                    right: 10,
+                    child: GestureDetector(
+                      onTap: () {
+                        setState(() {
+                          _currentIndex = 1; // Switch to Live Track tab
+                        });
+                        if (_showNearbyCircle) {
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            _mapController.move(_homeScanCenter, 14.5);
+                          });
+                        }
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0F172A).withValues(alpha: 0.8),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.open_in_full_rounded, color: Colors.white, size: 13),
+                            SizedBox(width: 4),
+                            Text(
+                              "Expand Map",
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          // "Nearby Buses" Button
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF2563EB),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    elevation: 0,
+                  ),
+                  icon: const Icon(Icons.radar_rounded, size: 18),
+                  label: Text(
+                    _showNearbyCircle ? "Nearby Buses (${busesIn1KmCount})" : "Nearby Buses",
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800),
+                  ),
+                  onPressed: () {
+                    setState(() {
+                      if (_showNearbyCircle) {
+                        _showNearbyCircle = false;
+                        _selectedHomeBusDetails = null;
+                      } else {
+                        _homeScanCenter = userLoc;
+                        _showNearbyCircle = true;
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          _homeMapController.move(userLoc, 14.5);
+                        });
+                      }
+                    });
+                    if (_showNearbyCircle) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text("Scanned 1 km surroundings. Found ${busesIn1KmCount} nearby buses!"),
+                          duration: const Duration(seconds: 2),
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                    } else {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text("Nearby scan cleared. Showing normal map."),
+                          duration: Duration(seconds: 1),
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                    }
+                  },
+                ),
+              ),
+            ],
+          ),
+
+          // Selected Bus or Searched Bus Details Card
+          if (_selectedHomeBusDetails != null || (searchedBus != null && searchedBus['isOnline'] == true)) ...[
+            const SizedBox(height: 12),
+            Builder(builder: (ctx) {
+              final activeBus = _selectedHomeBusDetails ?? searchedBus!;
+              final distM = (activeBus['distMeters'] as num?)?.toInt() ??
+                  Geolocator.distanceBetween(
+                    userLoc.latitude,
+                    userLoc.longitude,
+                    (activeBus['lat'] as num).toDouble(),
+                    (activeBus['lng'] as num).toDouble(),
+                  ).round();
+
+              return Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFFE2E8F0)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            "${activeBus['bus']} — ${activeBus['routeName']}",
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w900,
+                              fontSize: 13,
+                              color: Color(0xFF1E3A8A),
+                            ),
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: activeBus['isOnline'] == true ? const Color(0xFFDCFCE7) : const Color(0xFFF1F5F9),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            activeBus['isOnline'] == true ? "${distM}m away (Live)" : "${distM}m away",
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                              color: activeBus['isOnline'] == true ? const Color(0xFF15803D) : const Color(0xFF475569),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      "👨‍✈️ Driver: ${activeBus['driver']} | 📞 ${activeBus['contact']}",
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF475569),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF2563EB),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                        ),
+                        icon: const Icon(Icons.navigation_rounded, size: 16),
+                        label: const Text(
+                          "Track Bus Live",
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                        ),
+                        onPressed: () {
+                          final routeKey = activeBus['route'] as String?;
+                          if (routeKey != null) {
+                            _changeSelectedRoute(routeKey);
+                          }
+                          setState(() {
+                            _currentIndex = 1; // Switch to Live Track tab
+                          });
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+          ],
+        ],
+      ),
     );
   }
 
@@ -3742,6 +4320,136 @@ class _StudentDashboardState extends State<StudentDashboard>
 
     final List<Marker> markers = [];
 
+    // --- Nearby active online bus markers (if circle active on home) ---
+    if (_showNearbyCircle) {
+      final List<Map<String, dynamic>> combinedBuses = [];
+      _allBusesLocations.forEach((busKey, liveData) {
+        final liveStatus = liveData['status'] as String? ?? 'offline';
+        if (liveStatus == 'offline') return;
+
+        final cleanKey = busKey.toLowerCase()
+            .replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '')
+            .replaceAll('route_', '')
+            .trim();
+
+        final alreadyExists = combinedBuses.any((b) {
+          final bClean = (b['id'] as String).toLowerCase()
+              .replaceAll(RegExp(r'^[Bb]'), '')
+              .trim();
+          return bClean == cleanKey;
+        });
+
+        if (!alreadyExists) {
+          String matchedRouteKey = 'route_$cleanKey';
+          for (final rKey in routeLabelsConfig.keys) {
+            final cleanRKey = rKey.replaceAll('route_', '');
+            if (cleanRKey == cleanKey) {
+              matchedRouteKey = rKey;
+              break;
+            }
+          }
+          final routeName = routeLabelsConfig[matchedRouteKey] ?? 'Route $cleanKey';
+
+          combinedBuses.add({
+            'id': 'B$cleanKey',
+            'bus': 'Bus $cleanKey',
+            'driver': 'College Driver',
+            'contact': 'N/A',
+            'route': matchedRouteKey,
+            'routeName': routeName,
+            'lat': (liveData['lat'] as num?)?.toDouble() ?? 13.04890,
+            'lng': (liveData['lng'] as num?)?.toDouble() ?? 80.07546,
+          });
+        }
+      });
+
+      for (final b in combinedBuses) {
+        final liveData = _getLiveBusData(b);
+        if (liveData == null) continue;
+
+        final lat = (liveData['lat'] as num).toDouble();
+        final lng = (liveData['lng'] as num).toDouble();
+
+        final distMeters = Geolocator.distanceBetween(
+          _homeScanCenter.latitude,
+          _homeScanCenter.longitude,
+          lat,
+          lng,
+        );
+
+        if (distMeters <= 1000.0) {
+          markers.add(
+            Marker(
+              point: LatLng(lat, lng),
+              width: 40,
+              height: 40,
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: const Color(0xFF22C55E),
+                        width: 2.5,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.25),
+                          blurRadius: 6,
+                        ),
+                      ],
+                    ),
+                    child: const Center(
+                      child: Text(
+                        "🚌",
+                        style: TextStyle(fontSize: 14),
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    top: -2,
+                    right: -2,
+                    child: Container(
+                      width: 10,
+                      height: 10,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF22C55E),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 1.5),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+      }
+
+      // Add center scan pin marker on Live Track map if dragged away from user loc
+      final userLoc = (_studentLat != null && _studentLng != null)
+          ? LatLng(_studentLat!, _studentLng!)
+          : (_coords[_savedStop] ?? const LatLng(13.04890, 80.07546));
+      
+      if ((_homeScanCenter.latitude - userLoc.latitude).abs() > 0.001 ||
+          (_homeScanCenter.longitude - userLoc.longitude).abs() > 0.001) {
+        markers.add(
+          Marker(
+            point: _homeScanCenter,
+            width: 32,
+            height: 32,
+            child: const Icon(
+              Icons.location_on,
+              color: Colors.red,
+              size: 32,
+            ),
+          ),
+        );
+      }
+    }
+
     // --- All Route Stop Markers (always visible) ---
     for (var stopName in _routeStops) {
       final coord = _coords[stopName];
@@ -3930,6 +4638,20 @@ class _StudentDashboardState extends State<StudentDashboard>
                     borderStrokeWidth: 1.5,
                     useRadiusInMeter: true,
                     radius: (_busAccuracy! < 50 ? _busAccuracy! : 50),
+                  ),
+                ],
+              ),
+
+            if (_showNearbyCircle)
+              CircleLayer(
+                circles: [
+                  CircleMarker(
+                    point: _homeScanCenter,
+                    radius: 1000.0,
+                    useRadiusInMeter: true,
+                    color: const Color(0xFF2563EB).withValues(alpha: 0.12),
+                    borderColor: const Color(0xFF2563EB),
+                    borderStrokeWidth: 2.0,
                   ),
                 ],
               ),
