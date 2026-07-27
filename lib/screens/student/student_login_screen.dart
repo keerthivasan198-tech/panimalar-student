@@ -1,6 +1,8 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_database/firebase_database.dart';
 
 class StudentLoginScreen extends StatefulWidget {
   final Function(String) onLogin;
@@ -70,9 +72,34 @@ class _StudentLoginScreenState extends State<StudentLoginScreen> with SingleTick
       _isLoading = true;
     });
 
-    // Login instantly. StudentShell will fetch the profile in the background 
-    // and prompt to create a new profile if it doesn't exist.
-    widget.onLogin(rollNo);
+    if (rollNo.toLowerCase() == 'guest') {
+      widget.onLogin(rollNo);
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+      return;
+    }
+
+    try {
+      if (Firebase.apps.isNotEmpty) {
+        final snapshot = await FirebaseDatabase.instance.ref('students/$rollNo').get();
+        if (snapshot.exists && snapshot.value != null) {
+          // Profile exists, log in
+          widget.onLogin(rollNo);
+        } else {
+          // Profile not found, prompt to create
+          widget.onCreateProfile();
+        }
+      } else {
+        // Fallback if Firebase isn't initialized
+        widget.onLogin(rollNo);
+      }
+    } catch (e) {
+      debugPrint("Firebase check failed: $e");
+      widget.onLogin(rollNo); // Fallback on error
+    }
 
     if (mounted) {
       setState(() {

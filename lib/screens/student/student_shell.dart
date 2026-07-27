@@ -139,7 +139,6 @@ class _MainShellState extends State<MainShell> {
       studentRollNo: _studentRollNo,
       isFirstTimeSignup: _showCreateProfile,
       onFirstTimeSave: (savedRollNo) {
-        _login(savedRollNo);
         setState(() {
           _showCreateProfile = false;
         });
@@ -275,11 +274,11 @@ class _StudentDashboardState extends State<StudentDashboard>
   String? _recordPath;
 
   // Dynamic Route selections
-  late String _selectedRoute = widget.studentRollNo.toLowerCase() == 'guest' ? "" : "route_1"; // default
+  String _selectedRoute = ""; 
   List<String> _routeStops = [];
   Map<String, LatLng> _coords = {};
 
-  late String _busFirebaseId = widget.studentRollNo.toLowerCase() == 'guest' ? "" : "1";
+  String _busFirebaseId = "";
   String get _displayBusId =>
       (_breakdownActive &&
           _replacementBus.isNotEmpty &&
@@ -1258,13 +1257,15 @@ class _StudentDashboardState extends State<StudentDashboard>
     }
 
     final prefs = await SharedPreferences.getInstance();
+    final isNewUser = widget.isFirstTimeSignup || prefs.getString('studentRollNo') != widget.studentRollNo;
+    
     setState(() {
-      _studentName = prefs.getString('studentName') ?? "";
-      _studentYear = prefs.getString('studentYear') ?? "3rd Year";
-      _studentDept = prefs.getString('studentDept') ?? "Computer Science (CSE)";
-      _profilePicUrl = prefs.getString('profilePicUrl') ?? "";
-      _studentBusNo = prefs.getString('studentBusNo') ?? "";
-      _savedStop = prefs.getString('studentSavedStop') ?? "";
+      _studentName = isNewUser ? "" : (prefs.getString('studentName') ?? "");
+      _studentYear = isNewUser ? "3rd Year" : (prefs.getString('studentYear') ?? "3rd Year");
+      _studentDept = isNewUser ? "Computer Science (CSE)" : (prefs.getString('studentDept') ?? "Computer Science (CSE)");
+      _profilePicUrl = isNewUser ? "" : (prefs.getString('profilePicUrl') ?? "");
+      _studentBusNo = isNewUser ? "" : (prefs.getString('studentBusNo') ?? "");
+      _savedStop = isNewUser ? "" : (prefs.getString('studentSavedStop') ?? "");
       _studentId = widget.studentRollNo;
       // Pre-fill all edit controllers with existing values
       _profileRollNoCtrl.text = widget.studentRollNo;
@@ -2545,20 +2546,6 @@ class _StudentDashboardState extends State<StudentDashboard>
     ];
 
     return Scaffold(
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => const QRScannerScreen(),
-            ),
-          );
-        },
-        backgroundColor: const Color(0xFF2563EB),
-        foregroundColor: Colors.white,
-        icon: const Icon(Icons.qr_code_scanner),
-        label: const Text('Scan Bus Pass', style: TextStyle(fontWeight: FontWeight.bold)),
-      ),
       appBar: AppBar(
         flexibleSpace: Container(
           decoration: BoxDecoration(
@@ -2799,8 +2786,34 @@ class _StudentDashboardState extends State<StudentDashboard>
                 const SizedBox(height: 20),
 
                 // Selected Route Status
-                Container(
-                  padding: const EdgeInsets.symmetric(
+                if (_selectedRoute.isEmpty)
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.info_outline, color: Color(0xFF64748B)),
+                        SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            "Please complete your profile and select a route to view bus details and trip status.",
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Color(0xFF64748B),
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  Container(
+                    padding: const EdgeInsets.symmetric(
                     horizontal: 16,
                     vertical: 14,
                   ),
