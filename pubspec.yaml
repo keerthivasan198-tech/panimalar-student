@@ -85,6 +85,8 @@ flutter:
     - assets/images/panimalar_bus2.jpeg
     - assets/images/panimalar_logo.png
     - assets/images/red_bus_bg.png
+    - assets/images/bus52_qr.png
+    - assets/images/bus15_qr.png
     - .env
 
   # An image asset can refer to one or more resolution-specific "variants", see

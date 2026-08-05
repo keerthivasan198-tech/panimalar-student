@@ -53,7 +53,6 @@ import 'package:http/http.dart' as http;
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
-import 'qr_scanner_screen.dart';
 
 class MainShell extends StatefulWidget {
   final VoidCallback onSwitchRole;
@@ -74,6 +73,7 @@ class _MainShellState extends State<MainShell> {
   bool _isLoggedIn = false;
   bool _showCreateProfile = false;
   String _studentRollNo = "";
+  bool _isFacultyLogin = false;
 
   @override
   void initState() {
@@ -85,15 +85,18 @@ class _MainShellState extends State<MainShell> {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _studentRollNo = prefs.getString("studentRollNo") ?? "";
+      _isFacultyLogin = prefs.getBool("isFacultyLogin") ?? false;
       _isLoggedIn = _studentRollNo.isNotEmpty;
     });
   }
 
-  void _login(String rollNo) async {
+  void _login(String rollNo, bool isFaculty) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString("studentRollNo", rollNo);
+    await prefs.setBool("isFacultyLogin", isFaculty);
     setState(() {
       _studentRollNo = rollNo;
+      _isFacultyLogin = isFaculty;
       _isLoggedIn = true;
     });
   }
@@ -114,6 +117,7 @@ class _MainShellState extends State<MainShell> {
       _studentRollNo = "";
       _isLoggedIn = false;
       _showCreateProfile = false;
+      _isFacultyLogin = false;
     });
 
     widget.onSwitchRole();
@@ -127,9 +131,10 @@ class _MainShellState extends State<MainShell> {
         currentLang: widget.currentLang,
         onLanguageChanged: widget.onLanguageChanged,
         onSwitchRole: widget.onSwitchRole,
-        onCreateProfile: () {
+        onCreateProfile: (bool isFaculty) {
           setState(() {
             _showCreateProfile = true;
+            _isFacultyLogin = isFaculty;
           });
         },
       );
@@ -138,6 +143,7 @@ class _MainShellState extends State<MainShell> {
     return StudentDashboard(
       studentRollNo: _studentRollNo,
       isFirstTimeSignup: _showCreateProfile,
+      isFaculty: _isFacultyLogin,
       onFirstTimeSave: (savedRollNo) {
         setState(() {
           _showCreateProfile = false;
@@ -154,6 +160,7 @@ class _MainShellState extends State<MainShell> {
 class StudentDashboard extends StatefulWidget {
   final String studentRollNo;
   final bool isFirstTimeSignup;
+  final bool isFaculty;
   final Function(String)? onFirstTimeSave;
   final VoidCallback onLogout;
   final VoidCallback onSwitchRole;
@@ -163,6 +170,7 @@ class StudentDashboard extends StatefulWidget {
     super.key,
     required this.studentRollNo,
     this.isFirstTimeSignup = false,
+    this.isFaculty = false,
     this.onFirstTimeSave,
     required this.onLogout,
     required this.onSwitchRole,
@@ -401,8 +409,18 @@ class _StudentDashboardState extends State<StudentDashboard>
   StreamSubscription? _specialBusesSub;
 
   List<Map<String, dynamic>> get _filteredNotifications {
+    final nowIst = DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30));
     return _adminNotifications.where((n) {
       if (_hiddenNotifIds.contains(n['id'].toString())) return false;
+      
+      final idDouble = double.tryParse(n['id'].toString()) ?? 0.0;
+      if (idDouble > 0) {
+        final notifTimeIst = DateTime.fromMillisecondsSinceEpoch(idDouble.toInt()).toUtc().add(const Duration(hours: 5, minutes: 30));
+        if (notifTimeIst.year != nowIst.year || notifTimeIst.month != nowIst.month || notifTimeIst.day != nowIst.day) {
+          return false;
+        }
+      }
+
       final target = n['bus']?.toString().toLowerCase().trim() ?? 'all';
       if (target == 'all') return false; // Strict filter as requested
       final myBusStr = _busFirebaseId.toLowerCase().trim();
@@ -909,6 +927,18 @@ class _StudentDashboardState extends State<StudentDashboard>
                           ),
                         ),
                       ),
+                      if (_busFirebaseId == '52' || _busFirebaseId == '15')
+                        TextButton.icon(
+                          onPressed: () {
+                            Navigator.pop(ctx); // Close the sheet
+                            _showQRScannerDialog(context, _busFirebaseId!);
+                          },
+                          icon: const Icon(Icons.qr_code_scanner, size: 18),
+                          label: const Text("Join"),
+                          style: TextButton.styleFrom(
+                            foregroundColor: const Color(0xFF2563EB),
+                          ),
+                        ),
                       if (_filteredNotifications.isNotEmpty)
                         TextButton(
                           onPressed: () => Navigator.pop(ctx),
@@ -962,12 +992,28 @@ class _StudentDashboardState extends State<StudentDashboard>
                               const SizedBox(height: 8),
                             ],
                             ..._filteredNotifications.map(
-                              (n) => Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  _buildNotifTile(n, setModalState),
-                                  const Divider(height: 1, indent: 56),
-                                ],
+                              (n) => Dismissible(
+                                key: Key(n['id'].toString()),
+                                direction: DismissDirection.endToStart,
+                                onDismissed: (direction) {
+                                  setState(() {
+                                    _hiddenNotifIds.add(n['id'].toString());
+                                  });
+                                  setModalState(() {});
+                                },
+                                background: Container(
+                                  alignment: Alignment.centerRight,
+                                  padding: const EdgeInsets.only(right: 20),
+                                  color: Colors.red.shade400,
+                                  child: const Icon(Icons.delete_outline, color: Colors.white),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                                  children: [
+                                    _buildNotifTile(n, setModalState),
+                                    const Divider(height: 1, indent: 56),
+                                  ],
+                                ),
                               ),
                             ),
                           ],
@@ -977,6 +1023,64 @@ class _StudentDashboardState extends State<StudentDashboard>
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  void _showQRScannerDialog(BuildContext context, String busId) {
+    final String groupLink = busId == '52' 
+        ? 'https://t.me/+LIlH9Jbi1oo3MWY1' 
+        : 'https://t.me/+6WxXOvRSzz9iMTM1';
+    final String imageAsset = busId == '52' 
+        ? 'assets/images/bus52_qr.png' 
+        : 'assets/images/bus15_qr.png';
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Join Bus $busId Group', textAlign: TextAlign.center),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              "Show this QR code to others, or tap 'Join Group' below to instantly join the Telegram group.",
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 14),
+            ),
+            const SizedBox(height: 16),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.asset(
+                imageAsset,
+                width: 250,
+                height: 250,
+                fit: BoxFit.contain, // Show full QR code without cropping
+              ),
+            ),
+          ],
+        ),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          ElevatedButton.icon(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final Uri url = Uri.parse(groupLink);
+              if (await canLaunchUrl(url)) {
+                await launchUrl(url, mode: LaunchMode.externalApplication);
+              }
+            },
+            icon: const Icon(Icons.telegram),
+            label: const Text('Join Group'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF2563EB),
+              foregroundColor: Colors.white,
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          )
+        ],
       ),
     );
   }
@@ -1261,14 +1365,14 @@ class _StudentDashboardState extends State<StudentDashboard>
     
     setState(() {
       _studentName = isNewUser ? "" : (prefs.getString('studentName') ?? "");
-      _studentYear = isNewUser ? "3rd Year" : (prefs.getString('studentYear') ?? "3rd Year");
-      _studentDept = isNewUser ? "Computer Science (CSE)" : (prefs.getString('studentDept') ?? "Computer Science (CSE)");
+      _studentYear = isNewUser ? "" : (prefs.getString('studentYear') ?? "3rd Year");
+      _studentDept = isNewUser ? "" : (prefs.getString('studentDept') ?? "Computer Science (CSE)");
       _profilePicUrl = isNewUser ? "" : (prefs.getString('profilePicUrl') ?? "");
       _studentBusNo = isNewUser ? "" : (prefs.getString('studentBusNo') ?? "");
       _savedStop = isNewUser ? "" : (prefs.getString('studentSavedStop') ?? "");
-      _studentId = widget.studentRollNo;
+      _studentId = isNewUser ? "" : widget.studentRollNo;
       // Pre-fill all edit controllers with existing values
-      _profileRollNoCtrl.text = widget.studentRollNo;
+      _profileRollNoCtrl.text = isNewUser ? "" : widget.studentRollNo;
       _profileNameCtrl.text = _studentName;
       _profileTempYear = _studentYear;
       _profileBusCtrl.text = _studentBusNo;
@@ -1284,9 +1388,10 @@ class _StudentDashboardState extends State<StudentDashboard>
     });
 
     try {
-      if (Firebase.apps.isNotEmpty) {
+      if (Firebase.apps.isNotEmpty && widget.studentRollNo.isNotEmpty) {
+        final node = widget.isFaculty ? 'faculty' : 'students';
         final snapshot = await FirebaseDatabase.instance
-            .ref('students/${widget.studentRollNo}')
+            .ref('$node/${widget.studentRollNo}')
             .get();
         if (snapshot.exists && snapshot.value != null) {
           final data = snapshot.value as Map<dynamic, dynamic>;
@@ -1472,6 +1577,19 @@ class _StudentDashboardState extends State<StudentDashboard>
     _showSnackBar("⭐ Boarding stop saved: $stopName");
   }
 
+  String _deptToShortForm(String dept) {
+    if (dept.contains('(CSE)')) return 'CSE';
+    if (dept.contains('(AIDS)')) return 'AIDS';
+    if (dept.contains('(CSBS)')) return 'CSBS';
+    if (dept.contains('(ECE)')) return 'ECE';
+    if (dept.contains('(EEE)')) return 'EEE';
+    if (dept.contains('(IT)')) return 'IT';
+    if (dept.contains('(MECH)')) return 'MECH';
+    if (dept.contains('(CIVIL)')) return 'CIVIL';
+    if (dept == 'MBA') return 'MBA';
+    return dept.substring(0, min(3, dept.length)).toUpperCase();
+  }
+
   void _saveProfile(
     String name,
     String year,
@@ -1480,9 +1598,55 @@ class _StudentDashboardState extends State<StudentDashboard>
     String boardingStop = '',
     String rollNo = '',
   }) async {
-    final actualRollNo = rollNo.isNotEmpty ? rollNo : widget.studentRollNo;
+    String actualRollNo = rollNo.isNotEmpty ? rollNo : widget.studentRollNo;
+
+    if (widget.isFaculty && widget.isFirstTimeSignup) {
+      if (Firebase.apps.isNotEmpty) {
+        final shortDept = _deptToShortForm(dept);
+        final snapshot = await FirebaseDatabase.instance.ref('faculty').get();
+        int maxId = 0;
+        if (snapshot.exists && snapshot.value != null) {
+          final data = snapshot.value as Map<dynamic, dynamic>;
+          for (final key in data.keys) {
+            final keyStr = key.toString();
+            if (keyStr.startsWith(shortDept)) {
+              final numStr = keyStr.substring(shortDept.length);
+              final idInt = int.tryParse(numStr) ?? 0;
+              if (idInt > maxId) maxId = idInt;
+            }
+          }
+        }
+        maxId++;
+        final generatedIdStr = maxId.toString().padLeft(3, '0');
+        actualRollNo = '$shortDept$generatedIdStr';
+        
+        // Show an alert dialog to tell the faculty their ID
+        if (mounted) {
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (ctx) => AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: const Text('Profile Created 🎉', style: TextStyle(fontWeight: FontWeight.bold)),
+              content: Text(
+                'Your generated Faculty ID is:\n\n$actualRollNo\n\nPlease save this ID for future logins.',
+                style: const TextStyle(fontSize: 16),
+                textAlign: TextAlign.center,
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('OK', style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ],
+            ),
+          );
+        }
+      }
+    }
+
     if (actualRollNo.trim().isEmpty) {
-      _showSnackBar("Roll No is required");
+      _showSnackBar(widget.isFaculty ? "Faculty ID generation failed" : "Roll No is required");
       return;
     }
 
@@ -1507,9 +1671,10 @@ class _StudentDashboardState extends State<StudentDashboard>
 
     try {
       if (Firebase.apps.isNotEmpty) {
-        await FirebaseDatabase.instance.ref('students/$actualRollNo').update({
+        final node = widget.isFaculty ? 'faculty' : 'students';
+        await FirebaseDatabase.instance.ref('$node/$actualRollNo').update({
           'name': name,
-          'year': year,
+          'year': widget.isFaculty ? '' : year,
           'department': dept,
           'busNo': busNo,
           'boardingStop': boardingStop,
@@ -2241,22 +2406,50 @@ class _StudentDashboardState extends State<StudentDashboard>
         ? _routeStops.reversed.toList()
         : _routeStops;
         
-    int minIdx = 0;
+    if (displayStops.length == 1) return 0;
+
+    double cosLat = cos(lat * pi / 180);
+    double px = lng * cosLat;
+    double py = lat;
+
+    int bestSegment = 0;
     double minD = double.infinity;
-    for (int i = 0; i < displayStops.length; i++) {
-      final stopName = displayStops[i];
-      final stopCoord = _coords[stopName];
-      if (stopCoord == null) continue;
-      final d = _haversineKm(lat, lng, stopCoord.latitude, stopCoord.longitude);
+
+    for (int i = 0; i < displayStops.length - 1; i++) {
+      final c1 = _coords[displayStops[i]];
+      final c2 = _coords[displayStops[i+1]];
+      if (c1 == null || c2 == null) continue;
+
+      double x1 = c1.longitude * cosLat;
+      double y1 = c1.latitude;
+      double x2 = c2.longitude * cosLat;
+      double y2 = c2.latitude;
+
+      double l2 = (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1);
+      double d;
+      if (l2 == 0) {
+        d = (px - x1) * (px - x1) + (py - y1) * (py - y1);
+      } else {
+        double t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / l2;
+        t = max(0.0, min(1.0, t));
+        double projX = x1 + t * (x2 - x1);
+        double projY = y1 + t * (y2 - y1);
+        d = (px - projX) * (px - projX) + (py - projY) * (py - projY);
+      }
+
       if (d < minD) {
         minD = d;
-        minIdx = i;
+        bestSegment = i;
       }
     }
-    
-    int nextIdx = minIdx;
-    if (minD < 0.1 && minIdx < displayStops.length - 1) {
-      nextIdx = minIdx + 1;
+
+    int nextIdx = bestSegment + 1;
+
+    final lastStop = _coords[displayStops.last];
+    if (lastStop != null) {
+      if (_haversineKm(lat, lng, lastStop.latitude, lastStop.longitude) < 0.1) {
+        nextIdx = displayStops.length - 1;
+      }
     }
     
     final nextStopName = displayStops[nextIdx];
@@ -2459,10 +2652,18 @@ class _StudentDashboardState extends State<StudentDashboard>
   }
 
   Widget _buildInAppNotificationWidget() {
-    return Material(
-      color: Colors.transparent,
-      elevation: 8,
-      borderRadius: BorderRadius.circular(18),
+    return Dismissible(
+      key: const Key('in_app_notification'),
+      direction: DismissDirection.horizontal,
+      onDismissed: (_) {
+        setState(() {
+          _showNotification = false;
+        });
+      },
+      child: Material(
+        color: Colors.transparent,
+        elevation: 8,
+        borderRadius: BorderRadius.circular(18),
       child: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
@@ -2532,6 +2733,7 @@ class _StudentDashboardState extends State<StudentDashboard>
           ],
         ),
       ),
+    ),
     );
   }
 
@@ -5569,7 +5771,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  _studentName.isEmpty ? "Student Name" : _studentName,
+                  _studentName.isEmpty ? (widget.isFaculty ? "Faculty Name" : "Student Name") : _studentName,
                   style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w800,
@@ -5605,9 +5807,9 @@ class _StudentDashboardState extends State<StudentDashboard>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text(
-                  "STUDENT DETAILS",
-                  style: TextStyle(
+                Text(
+                  widget.isFaculty ? "FACULTY DETAILS" : "STUDENT DETAILS",
+                  style: const TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.w800,
                     color: Color(0xFF64748B),
@@ -5617,10 +5819,10 @@ class _StudentDashboardState extends State<StudentDashboard>
                 const SizedBox(height: 16),
 
                 if (_isEditingProfile) ...[
-                  if (_isEditingProfile) ...[
-                    const Text(
-                      "ROLL NO",
-                      style: TextStyle(
+                  if (_isEditingProfile && !(widget.isFaculty && widget.isFirstTimeSignup)) ...[
+                    Text(
+                      widget.isFaculty ? "FACULTY ID" : "ROLL NO",
+                      style: const TextStyle(
                         fontSize: 10,
                         fontWeight: FontWeight.w800,
                         color: Color(0xFF64748B),
@@ -5630,7 +5832,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                     TextField(
                       controller: _profileRollNoCtrl,
                       decoration: InputDecoration(
-                        hintText: "Enter your Roll No",
+                        hintText: widget.isFaculty ? "Enter your Faculty ID" : "Enter your Roll No",
                         hintStyle: const TextStyle(
                           color: Color(0xFFCBD5E1),
                           fontSize: 13,
@@ -5705,15 +5907,16 @@ class _StudentDashboardState extends State<StudentDashboard>
                   ),
                   const SizedBox(height: 16),
 
-                  // ── Year of Study ──────────────────────────────────────────
-                  const Text(
-                    "YEAR OF STUDY",
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w800,
-                      color: Color(0xFF64748B),
+                  if (!widget.isFaculty) ...[
+                    // ── Year of Study ──────────────────────────────────────────
+                    const Text(
+                      "YEAR OF STUDY",
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF64748B),
+                      ),
                     ),
-                  ),
                   const SizedBox(height: 6),
                   DropdownButtonFormField<String>(
                     initialValue: _profileTempYear.isNotEmpty
@@ -5766,11 +5969,12 @@ class _StudentDashboardState extends State<StudentDashboard>
                         child: Text("4th Year"),
                       ),
                     ],
-                    onChanged: (val) {
-                      if (val != null) setState(() => _profileTempYear = val);
-                    },
-                  ),
-                  const SizedBox(height: 16),
+                      onChanged: (val) {
+                        if (val != null) setState(() => _profileTempYear = val);
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                  ],
 
                   // ── Department dropdown (not free-text) ────────────────────
                   const Text(
@@ -6065,12 +6269,14 @@ class _StudentDashboardState extends State<StudentDashboard>
                   // ── View Mode ──────────────────────────────────────────────
                   _buildProfileRow("FULL NAME", _studentName),
                   const SizedBox(height: 12),
-                  _buildProfileRow("YEAR OF STUDY", _studentYear),
-                  const SizedBox(height: 12),
+                  if (!widget.isFaculty) ...[
+                    _buildProfileRow("YEAR OF STUDY", _studentYear),
+                    const SizedBox(height: 12),
+                  ],
                   _buildProfileRow("DEPARTMENT", _studentDept),
                   const SizedBox(height: 12),
                   _buildProfileRow(
-                    "ROLL NO",
+                    widget.isFaculty ? "FACULTY ID" : "ROLL NO",
                     widget.studentRollNo.isEmpty ? "-" : widget.studentRollNo,
                   ),
                   const SizedBox(height: 12),
@@ -6111,7 +6317,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                       ),
                     ),
                   ),
-                  if (widget.studentRollNo.toLowerCase() != 'guest') ...[
+                  if (widget.studentRollNo.toLowerCase() != 'guest' && !widget.isFaculty) ...[
                     const SizedBox(height: 16),
                     const Divider(),
                     const SizedBox(height: 12),

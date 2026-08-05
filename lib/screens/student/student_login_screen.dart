@@ -5,11 +5,11 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 
 class StudentLoginScreen extends StatefulWidget {
-  final Function(String) onLogin;
+  final Function(String, bool) onLogin;
   final String currentLang;
   final Function(String) onLanguageChanged;
   final VoidCallback onSwitchRole;
-  final VoidCallback onCreateProfile;
+  final Function(bool) onCreateProfile;
 
   const StudentLoginScreen({
     super.key,
@@ -27,6 +27,7 @@ class StudentLoginScreen extends StatefulWidget {
 class _StudentLoginScreenState extends State<StudentLoginScreen> with SingleTickerProviderStateMixin {
   final _rollNoController = TextEditingController();
   bool _isLoading = false;
+  bool _isFacultyLogin = false;
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
   late Animation<Offset> _slideAnimation;
@@ -59,7 +60,7 @@ class _StudentLoginScreenState extends State<StudentLoginScreen> with SingleTick
     if (rollNo.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Text('Please enter your Roll Number', style: TextStyle(color: Colors.white)),
+          content: Text(_isFacultyLogin ? 'Please enter your Faculty ID' : 'Please enter your Roll Number', style: const TextStyle(color: Colors.white)),
           backgroundColor: Colors.redAccent,
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
@@ -73,7 +74,7 @@ class _StudentLoginScreenState extends State<StudentLoginScreen> with SingleTick
     });
 
     if (rollNo.toLowerCase() == 'guest') {
-      widget.onLogin(rollNo);
+      widget.onLogin(rollNo, false);
       if (mounted) {
         setState(() {
           _isLoading = false;
@@ -84,21 +85,22 @@ class _StudentLoginScreenState extends State<StudentLoginScreen> with SingleTick
 
     try {
       if (Firebase.apps.isNotEmpty) {
-        final snapshot = await FirebaseDatabase.instance.ref('students/$rollNo').get();
+        final node = _isFacultyLogin ? 'faculty' : 'students';
+        final snapshot = await FirebaseDatabase.instance.ref('$node/$rollNo').get();
         if (snapshot.exists && snapshot.value != null) {
           // Profile exists, log in
-          widget.onLogin(rollNo);
+          widget.onLogin(rollNo, _isFacultyLogin);
         } else {
           // Profile not found, prompt to create
-          widget.onCreateProfile();
+          widget.onCreateProfile(_isFacultyLogin);
         }
       } else {
         // Fallback if Firebase isn't initialized
-        widget.onLogin(rollNo);
+        widget.onLogin(rollNo, _isFacultyLogin);
       }
     } catch (e) {
       debugPrint("Firebase check failed: $e");
-      widget.onLogin(rollNo); // Fallback on error
+      widget.onLogin(rollNo, _isFacultyLogin); // Fallback on error
     }
 
     if (mounted) {
@@ -190,9 +192,61 @@ class _StudentLoginScreenState extends State<StudentLoginScreen> with SingleTick
                               child: const Icon(Icons.school_rounded, size: 64, color: Colors.white),
                             ),
                             const SizedBox(height: 24),
-                            const Text(
-                              'Student Portal',
-                              style: TextStyle(
+                            // Toggle for Student / Faculty
+                            Container(
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: GestureDetector(
+                                      onTap: () => setState(() => _isFacultyLogin = false),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(vertical: 12),
+                                        decoration: BoxDecoration(
+                                          color: !_isFacultyLogin ? Colors.white : Colors.transparent,
+                                          borderRadius: BorderRadius.circular(12),
+                                        ),
+                                        alignment: Alignment.center,
+                                        child: Text(
+                                          'Student',
+                                          style: TextStyle(
+                                            color: !_isFacultyLogin ? const Color(0xFF1E3A8A) : Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  Expanded(
+                                    child: GestureDetector(
+                                      onTap: () => setState(() => _isFacultyLogin = true),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(vertical: 12),
+                                        decoration: BoxDecoration(
+                                          color: _isFacultyLogin ? Colors.white : Colors.transparent,
+                                          borderRadius: BorderRadius.circular(12),
+                                        ),
+                                        alignment: Alignment.center,
+                                        child: Text(
+                                          'Faculty',
+                                          style: TextStyle(
+                                            color: _isFacultyLogin ? const Color(0xFF1E3A8A) : Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 24),
+                            Text(
+                              _isFacultyLogin ? 'Faculty Portal' : 'Student Portal',
+                              style: const TextStyle(
                                 fontSize: 32,
                                 fontWeight: FontWeight.bold,
                                 color: Colors.white,
@@ -201,7 +255,7 @@ class _StudentLoginScreenState extends State<StudentLoginScreen> with SingleTick
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              'Enter your Roll Number to continue',
+                              _isFacultyLogin ? 'Enter your Faculty ID (e.g. CSE/001)' : 'Enter your Roll Number to continue',
                               style: TextStyle(fontSize: 14, color: Colors.white.withValues(alpha: 0.85)),
                             ),
                             const SizedBox(height: 40),
@@ -213,7 +267,7 @@ class _StudentLoginScreenState extends State<StudentLoginScreen> with SingleTick
                               style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
                               cursorColor: Colors.white,
                               decoration: InputDecoration(
-                                labelText: 'Roll Number',
+                                labelText: _isFacultyLogin ? 'Faculty ID' : 'Roll Number',
                                 labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.7)),
                                 prefixIcon: Icon(Icons.badge_outlined, color: Colors.white.withValues(alpha: 0.8)),
                                 filled: true,
@@ -260,7 +314,7 @@ class _StudentLoginScreenState extends State<StudentLoginScreen> with SingleTick
                             
                             // Create Profile
                             TextButton(
-                              onPressed: widget.onCreateProfile,
+                              onPressed: () => widget.onCreateProfile(_isFacultyLogin),
                               child: const Text(
                                 'Create new profile',
                                 style: TextStyle(
@@ -276,7 +330,7 @@ class _StudentLoginScreenState extends State<StudentLoginScreen> with SingleTick
                             
                             // Guest Login
                             TextButton(
-                              onPressed: () => widget.onLogin('Guest'),
+                              onPressed: () => widget.onLogin('Guest', false),
                               style: TextButton.styleFrom(
                                 padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                                 shape: RoundedRectangleBorder(
