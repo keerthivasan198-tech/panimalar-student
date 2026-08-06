@@ -1,9 +1,14 @@
+const dns = require('dns');
+if (dns.setDefaultResultOrder) {
+  dns.setDefaultResultOrder('ipv4first'); // Force IPv4 to fix Telegram EFATAL error
+}
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 
 const app = express();
 app.use(cors());
+require('./telegram_bot'); // Start the Telegram Bot alongside the Express server
 app.use(express.json({ limit: '50mb' }));
 
 mongoose.connect('mongodb+srv://panimalar:panimalar1234@panimalar.binwh1b.mongodb.net/?appName=panimalar')
@@ -132,7 +137,7 @@ app.get('/api/documents/:id', async (req, res) => {
   }
 });
 
-const PORT = 5000;
-app.listen(PORT, () => {
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });

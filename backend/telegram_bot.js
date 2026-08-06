@@ -1,4 +1,12 @@
 require('dotenv').config();
+const dns = require('dns');
+if (dns.setDefaultResultOrder) {
+  dns.setDefaultResultOrder('ipv4first'); // Force IPv4 to fix Telegram EFATAL error
+}
+process.env.NTBA_FIX_319 = 1;
+process.env.NTBA_FIX_350 = 1;
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 const TelegramBot = require('node-telegram-bot-api').default || require('node-telegram-bot-api');
 const { initializeApp } = require('firebase/app');
 const { getDatabase, ref, onValue, onChildAdded, get } = require('firebase/database');
@@ -7,7 +15,15 @@ const path = require('path');
 
 // Telegram token
 const token = process.env.TELEGRAM_TOKEN || '8887004131:AAEM7TMtPSBrFNyiE2Ws4bHPd99O0vB4U9E';
-const bot = new TelegramBot(token, { polling: true });
+const bot = new TelegramBot(token, { 
+  polling: true,
+  request: {
+    agentOptions: {
+      keepAlive: true,
+      family: 4
+    }
+  }
+});
 
 // Firebase configuration from Flutter app
 const firebaseConfig = {
