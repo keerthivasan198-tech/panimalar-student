@@ -37,38 +37,33 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-const SUBSCRIBERS_FILE = path.join(__dirname, 'subscribers.json');
+const { set } = require('firebase/database');
 
-function getSubscribers() {
-  if (!fs.existsSync(SUBSCRIBERS_FILE)) {
-    return {};
+async function saveSubscriber(chatId, busId = "all") {
+  try {
+    await set(ref(db, `telegram_subscribers/${chatId}`), busId);
+    return true;
+  } catch (err) {
+    console.error('Failed to save subscriber:', err);
+    return false;
   }
-  const data = JSON.parse(fs.readFileSync(SUBSCRIBERS_FILE, 'utf8'));
-  if (Array.isArray(data)) {
-    const newData = {};
-    data.forEach(id => newData[id] = "all");
-    return newData;
-  }
-  return data;
 }
 
-function saveSubscriber(chatId, busId = "all") {
-  const subs = getSubscribers();
-  subs[chatId] = busId;
-  fs.writeFileSync(SUBSCRIBERS_FILE, JSON.stringify(subs, null, 2));
-  return true;
-}
-
-function sendToBus(targetBus, message) {
-  const subs = getSubscribers();
-  Object.keys(subs).forEach(chatId => {
-    const assignedBus = subs[chatId];
-    if (assignedBus === 'all' || assignedBus === targetBus || targetBus === 'all') {
-      bot.sendMessage(chatId, message, { parse_mode: 'Markdown' }).catch(err => {
-        console.error(`Error sending message to ${chatId}:`, err.message);
-      });
-    }
-  });
+async function sendToBus(targetBus, message) {
+  try {
+    const snapshot = await get(ref(db, 'telegram_subscribers'));
+    const subs = snapshot.val() || {};
+    Object.keys(subs).forEach(chatId => {
+      const assignedBus = subs[chatId];
+      if (assignedBus === 'all' || assignedBus === targetBus || targetBus === 'all') {
+        bot.sendMessage(chatId, message, { parse_mode: 'Markdown' }).catch(err => {
+          console.error(`Error sending message to ${chatId}:`, err.message);
+        });
+      }
+    });
+  } catch (err) {
+    console.error('Failed to fetch subscribers:', err);
+  }
 }
 
 // Telegram commands
