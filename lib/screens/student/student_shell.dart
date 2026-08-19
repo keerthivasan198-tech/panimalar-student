@@ -304,30 +304,121 @@ class _StudentDashboardState extends State<StudentDashboard>
   List<String> _routeStops = [];
   Map<String, LatLng> _coords = {};
 
+  String _extractBusNumber(String input) {
+    if (input.isEmpty) return '';
+    final match = RegExp(r'(?:[Rr]oute|[Bb]us)?\s*[-_]?\s*(\d+)').firstMatch(input);
+    if (match != null && match.group(1) != null) {
+      return match.group(1)!;
+    }
+    return input
+        .toLowerCase()
+        .replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '')
+        .replaceAll(RegExp(r'^[Rr]oute_?'), '')
+        .split(RegExp(r'[-_\s]'))[0]
+        .trim();
+  }
+
+  void _callDriver() async {
+    if (Firebase.apps.isEmpty) return;
+
+    final busSearchTarget = _displayBusId.isNotEmpty ? _displayBusId : _selectedRoute;
+    final numTarget = _extractBusNumber(busSearchTarget);
+    final cleanTarget = busSearchTarget.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+
+    try {
+      final snap = await FirebaseDatabase.instance.ref('drivers').get();
+      if (!snap.exists || snap.value == null) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Driver not found in registry")));
+        return;
+      }
+
+      final data = snap.value;
+      List driversList = [];
+      if (data is List) {
+        driversList = data;
+      } else if (data is Map) {
+        driversList = data.values.toList();
+      }
+
+      Map? matchedDriver;
+      for (var item in driversList) {
+        if (item is Map) {
+          final dbBus = item['bus']?.toString().trim().toUpperCase() ?? '';
+          final dbRoute = item['route']?.toString().trim().toUpperCase() ?? '';
+          final dbBusNum = _extractBusNumber(dbBus);
+          final dbRouteNum = _extractBusNumber(dbRoute);
+
+          if ((numTarget.isNotEmpty && (dbBusNum == numTarget || dbRouteNum == numTarget)) ||
+              (cleanTarget.isNotEmpty && (dbBus.toLowerCase() == cleanTarget || dbRoute.toLowerCase() == cleanTarget)) ||
+              (dbBus == busSearchTarget.toUpperCase())) {
+            matchedDriver = item;
+            break;
+          }
+        }
+      }
+
+      if (matchedDriver == null) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Driver not found in registry")));
+        return;
+      }
+
+      final phone = matchedDriver['contact']?.toString().trim() ??
+                    matchedDriver['phone']?.toString().trim() ??
+                    matchedDriver['mobile']?.toString().trim() ?? '';
+
+      if (phone.isEmpty) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("No phone number found for this driver")));
+        return;
+      }
+
+      final Uri phoneUri = Uri(scheme: 'tel', path: phone);
+      if (await canLaunchUrl(phoneUri)) {
+        await launchUrl(phoneUri);
+      } else {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Cannot launch phone dialer")));
+      }
+    } catch (e) {
+      debugPrint("Error launching driver call: $e");
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error fetching driver info: $e")));
+    }
+  }
+
   String _busFirebaseId = "";
-  String get _displayBusId =>
-      (_breakdownActive &&
-          _replacementBus.isNotEmpty &&
-          _replacementBus != 'Unknown')
-      ? _replacementBus
-      : _busFirebaseId;
+  String get _displayBusId {
+    if (_breakdownActive &&
+        _replacementBus.isNotEmpty &&
+        _replacementBus != 'Unknown') {
+      return _replacementBus;
+    }
+    if (_busFirebaseId.isNotEmpty) {
+      return _busFirebaseId;
+    }
+    final num = _extractBusNumber(_selectedRoute);
+    if (num.isNotEmpty) return num;
+    return _selectedRoute;
+  }
 
   String get _effectiveRouteKey {
     if (_breakdownActive && _replacementBus.isNotEmpty && _replacementBus != 'Unknown') {
+      final repNum = _extractBusNumber(_replacementBus);
       final cleanRep = _replacementBus.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+
       for (final entry in _driverBusToRouteMap.entries) {
         final cleanBus = entry.key.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').trim();
-        if (cleanBus == cleanRep && entry.value.isNotEmpty) {
+        final busNum = _extractBusNumber(entry.key);
+        if ((cleanBus == cleanRep || (repNum.isNotEmpty && busNum == repNum)) && entry.value.isNotEmpty) {
           return entry.value;
         }
       }
       for (final key in _dynamicRouteLabels.keys) {
         final cleanKey = key.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
-        if (cleanKey == cleanRep) return key;
+        final keyNum = _extractBusNumber(key);
+        if (cleanKey == cleanRep || (repNum.isNotEmpty && keyNum == repNum)) return key;
       }
       for (final key in _dynamicRouteStops.keys) {
         final cleanKey = key.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
-        if (cleanKey == cleanRep) return key;
+        final keyNum = _extractBusNumber(key);
+        if (cleanKey == cleanRep || (repNum.isNotEmpty && keyNum == repNum)) return key;
       }
       return 'route_$cleanRep';
     }
@@ -347,8 +438,9 @@ class _StudentDashboardState extends State<StudentDashboard>
       }
     }
     if (_breakdownActive && _replacementBus.isNotEmpty && _replacementBus != 'Unknown') {
-      final cleanRep = _replacementBus.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
-      return "Bus $cleanRep Route";
+      final repNum = _extractBusNumber(_replacementBus);
+      final displayRep = repNum.isNotEmpty ? repNum : _replacementBus;
+      return "Bus $displayRep";
     }
     return _dynamicRouteLabels[_selectedRoute] ?? "No Route Selected";
   }
@@ -534,9 +626,27 @@ class _StudentDashboardState extends State<StudentDashboard>
       }
 
       final target = n['bus']?.toString().toLowerCase().trim() ?? 'all';
-      if (target == 'all') return false; // Strict filter as requested
-      final myBusStr = _displayBusId.toLowerCase().trim();
-      return target == myBusStr;
+      if (target == 'all') return true;
+
+      final originalBusNum = _extractBusNumber(_selectedRoute);
+      final displayBusNum = _extractBusNumber(_displayBusId);
+      final replacementNum = _breakdownActive ? _extractBusNumber(_replacementBus) : "";
+      final targetNum = _extractBusNumber(target);
+
+      if (targetNum.isNotEmpty) {
+        if (originalBusNum.isNotEmpty && targetNum == originalBusNum) return true;
+        if (displayBusNum.isNotEmpty && targetNum == displayBusNum) return true;
+        if (replacementNum.isNotEmpty && targetNum == replacementNum) return true;
+      }
+
+      final myRouteClean = _selectedRoute.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+      final targetClean = target.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+
+      if (myRouteClean.isNotEmpty && targetClean.isNotEmpty && (myRouteClean == targetClean || targetClean.contains(myRouteClean) || myRouteClean.contains(targetClean))) {
+        return true;
+      }
+
+      return false;
     }).toList();
   }
 
@@ -598,6 +708,7 @@ class _StudentDashboardState extends State<StudentDashboard>
         Map<String, String> newColors = {};
         
         void processRoute(String fallbackKey, Map val) {
+          if (val['deleted'] == true || val['isDeleted'] == true || val['status'] == 'deleted') return;
           final key = (val['key'] != null && val['key'].toString().isNotEmpty)
               ? val['key'].toString()
               : fallbackKey;
@@ -629,11 +740,23 @@ class _StudentDashboardState extends State<StudentDashboard>
             _dynamicRouteLabels = newLabels;
             _dynamicRouteStops = newStops;
             _dynamicRouteColors = newColors;
+
+            // If student's currently selected route was deleted by admin, switch to first active route or clear
+            if (_selectedRoute.isNotEmpty && !newLabels.containsKey(_selectedRoute)) {
+              if (newLabels.isNotEmpty) {
+                _selectedRoute = newLabels.keys.first;
+              } else {
+                _selectedRoute = '';
+              }
+            }
+
             // Also need to re-evaluate current active route stops
-            if (_selectedRoute.isNotEmpty) {
+            if (_selectedRoute.isNotEmpty && newLabels.containsKey(_selectedRoute)) {
                _updateRouteDetails(_selectedRoute, startListener: false);
-            } else if (_fetchedRouteKey != null) {
+            } else if (_fetchedRouteKey != null && newLabels.containsKey(_fetchedRouteKey)) {
                _updateRouteDetails(_fetchedRouteKey!, startListener: false);
+            } else {
+               _routeStops = [];
             }
           });
         }
@@ -1099,16 +1222,48 @@ class _StudentDashboardState extends State<StudentDashboard>
 
   void _showNotificationsPanel() {
     _markAllNotificationsRead();
+    _showNotificationsSheet(context);
+  }
+
+  void _showNotificationsSheet(BuildContext context) {
+    final cleanBusNo = _displayBusId.replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+    final bool isBus39 = _displayBusId.contains('39') ||
+        _busFirebaseId.contains('39') ||
+        _studentBusNo.contains('39') ||
+        _selectedRoute.contains('39') ||
+        cleanBusNo.startsWith('39');
+    final bool isBus84 = _displayBusId.contains('84') ||
+        _busFirebaseId.contains('84') ||
+        _studentBusNo.contains('84') ||
+        _selectedRoute.contains('84') ||
+        cleanBusNo.startsWith('84');
+    final bool isBus111 = _displayBusId.contains('111') ||
+        _busFirebaseId.contains('111') ||
+        _studentBusNo.contains('111') ||
+        _selectedRoute.contains('111') ||
+        cleanBusNo.startsWith('111');
+    final bool isBus138 = _displayBusId.contains('138') ||
+        _busFirebaseId.contains('138') ||
+        _studentBusNo.contains('138') ||
+        _selectedRoute.contains('138') ||
+        cleanBusNo.startsWith('138');
+    final bool isBus104 = _displayBusId.contains('104') ||
+        _busFirebaseId.contains('104') ||
+        _studentBusNo.contains('104') ||
+        _selectedRoute.contains('104') ||
+        cleanBusNo.startsWith('104');
+    final bool hasGroupQR = isBus39 || isBus84 || isBus111 || isBus138 || isBus104;
+    final String activeBusId = isBus104 ? '104' : (isBus138 ? '138' : (isBus111 ? '111' : (isBus84 ? '84' : '39')));
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModalState) => DraggableScrollableSheet(
-          initialChildSize: 0.75,
+          initialChildSize: 0.7,
           minChildSize: 0.4,
-          maxChildSize: 0.95,
-          expand: false,
+          maxChildSize: 0.92,
           builder: (_, scrollCtrl) => Container(
             decoration: const BoxDecoration(
               color: Colors.white,
@@ -1117,22 +1272,28 @@ class _StudentDashboardState extends State<StudentDashboard>
             child: Column(
               children: [
                 // Handle bar
-                Container(
-                  margin: const EdgeInsets.only(top: 12, bottom: 4),
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade300,
-                    borderRadius: BorderRadius.circular(2),
+                Center(
+                  child: Container(
+                    margin: const EdgeInsets.only(top: 10, bottom: 6),
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade300,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
                   ),
                 ),
+
                 // Header
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
                   child: Row(
                     children: [
                       const Icon(
-                        Icons.notifications_rounded,
+                        Icons.notifications_active_rounded,
                         color: Color(0xFF2563EB),
                         size: 22,
                       ),
@@ -1147,14 +1308,14 @@ class _StudentDashboardState extends State<StudentDashboard>
                           ),
                         ),
                       ),
-                      if (_busFirebaseId == '52' || _busFirebaseId == '15')
+                      if (hasGroupQR)
                         TextButton.icon(
                           onPressed: () {
                             Navigator.pop(ctx); // Close the sheet
-                            _showQRScannerDialog(context, _busFirebaseId!);
+                            _showQRScannerDialog(context, activeBusId);
                           },
                           icon: const Icon(Icons.qr_code_scanner, size: 18),
-                          label: const Text("Join"),
+                          label: const Text("Join Group"),
                           style: TextButton.styleFrom(
                             foregroundColor: const Color(0xFF2563EB),
                           ),
@@ -1174,70 +1335,45 @@ class _StudentDashboardState extends State<StudentDashboard>
                 const Divider(height: 1),
                 // Notifications list
                 Expanded(
-                  child: ((!_breakdownActive || _breakdownDismissed) && _filteredNotifications.isEmpty)
-                      ? const Center(
+                  child: ListView(
+                    controller: scrollCtrl,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    children: [
+                      if (hasGroupQR) _buildJoinGroupNotifTile(ctx, activeBusId),
+                      if (_breakdownActive && !_breakdownDismissed) ...[
+                        _buildStudentBreakdownNotifTile(ctx),
+                        const SizedBox(height: 8),
+                      ],
+                      ..._filteredNotifications.map(
+                        (n) => Dismissible(
+                          key: Key(n['id'].toString()),
+                          direction: DismissDirection.endToStart,
+                          onDismissed: (direction) {
+                            setState(() {
+                              _hiddenNotifIds.add(n['id'].toString());
+                            });
+                            setModalState(() {});
+                          },
+                          background: Container(
+                            alignment: Alignment.centerRight,
+                            padding: const EdgeInsets.only(right: 20),
+                            color: Colors.red.shade400,
+                            child: const Icon(Icons.delete_outline, color: Colors.white),
+                          ),
                           child: Column(
-                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              Text("🔔", style: TextStyle(fontSize: 48)),
-                              SizedBox(height: 12),
-                              Text(
-                                "No notifications yet",
-                                style: TextStyle(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w700,
-                                  color: Color(0xFF64748B),
-                                ),
-                              ),
-                              SizedBox(height: 4),
-                              Text(
-                                "Admin alerts will appear here",
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.grey,
-                                ),
-                              ),
+                              _buildNotifTile(n, setModalState),
+                              const Divider(height: 1, indent: 56),
                             ],
                           ),
-                        )
-                      : ListView(
-                          controller: scrollCtrl,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 8,
-                          ),
-                          children: [
-                            if (_breakdownActive && !_breakdownDismissed) ...[
-                              _buildStudentBreakdownNotifTile(ctx),
-                              const SizedBox(height: 8),
-                            ],
-                            ..._filteredNotifications.map(
-                              (n) => Dismissible(
-                                key: Key(n['id'].toString()),
-                                direction: DismissDirection.endToStart,
-                                onDismissed: (direction) {
-                                  setState(() {
-                                    _hiddenNotifIds.add(n['id'].toString());
-                                  });
-                                  setModalState(() {});
-                                },
-                                background: Container(
-                                  alignment: Alignment.centerRight,
-                                  padding: const EdgeInsets.only(right: 20),
-                                  color: Colors.red.shade400,
-                                  child: const Icon(Icons.delete_outline, color: Colors.white),
-                                ),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                                  children: [
-                                    _buildNotifTile(n, setModalState),
-                                    const Divider(height: 1, indent: 56),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ],
                         ),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -1247,35 +1383,165 @@ class _StudentDashboardState extends State<StudentDashboard>
     );
   }
 
+  Widget _buildJoinGroupNotifTile(BuildContext ctx, String busId) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFFEFF6FF), Color(0xFFDBEAFE)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFBFDBFE)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF2563EB),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(
+              Icons.qr_code_2_rounded,
+              color: Colors.white,
+              size: 24,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  "Bus $busId Official Group",
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF1E3A8A),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                const Text(
+                  "Tap to view QR Code & join group",
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    color: Color(0xFF3B82F6),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _showQRScannerDialog(context, busId);
+            },
+            icon: const Icon(Icons.qr_code_scanner, size: 14),
+            label: const Text("Join", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF2563EB),
+              foregroundColor: Colors.white,
+              elevation: 0,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showQRScannerDialog(BuildContext context, String busId) {
-    final String groupLink = busId == '52' 
-        ? 'https://t.me/+LIlH9Jbi1oo3MWY1' 
-        : 'https://t.me/+6WxXOvRSzz9iMTM1';
-    final String imageAsset = busId == '52' 
-        ? 'assets/images/bus52_qr.png' 
-        : 'assets/images/bus15_qr.png';
+    final cleanId = busId.replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+    final bool is104 = cleanId.contains('104') || busId.contains('104');
+    final bool is138 = cleanId.contains('138') || busId.contains('138');
+    final bool is111 = cleanId.contains('111') || busId.contains('111');
+    final bool is84 = cleanId.contains('84') || busId.contains('84');
+
+    final String groupLink = is104
+        ? 'https://t.me/+pgoiVH2g1Yg3OWM1'
+        : (is138
+            ? 'https://t.me/+teQTSm1J4tk5MzY1'
+            : (is111
+                ? 'https://t.me/+Am-vc2hoeKw4MTU9'
+                : (is84 ? 'https://t.me/+5KzeX6aQCdsyY2Y1' : 'https://t.me/+hZmjz3T65PNkOGE1')));
+
+    final String imageAsset = is104
+        ? 'assets/images/bus104_qr.png'
+        : (is138
+            ? 'assets/images/bus138_qr.png'
+            : (is111
+                ? 'assets/images/bus111_qr.png'
+                : (is84 ? 'assets/images/bus84_qr.png' : 'assets/images/bus39_qr.png')));
+
+    final String targetBusNo = is104 ? '104' : (is138 ? '138' : (is111 ? '111' : (is84 ? '84' : '39')));
 
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('Join Bus $busId Group', textAlign: TextAlign.center),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text('Join Bus $targetBusNo Group', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
-              "Show this QR code to others, or tap 'Join Group' below to instantly join the Telegram group.",
+              "Show this QR code to others, or tap the QR code / 'Join Group' button to join the Telegram group.",
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 14),
+              style: TextStyle(fontSize: 13, color: Color(0xFF475569)),
             ),
             const SizedBox(height: 16),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Image.asset(
-                imageAsset,
-                width: 250,
-                height: 250,
-                fit: BoxFit.contain, // Show full QR code without cropping
+            GestureDetector(
+              onTap: () async {
+                Navigator.pop(ctx);
+                final Uri url = Uri.parse(groupLink);
+                if (await canLaunchUrl(url)) {
+                  await launchUrl(url, mode: LaunchMode.externalApplication);
+                }
+              },
+              child: ClipRRect(
+                borderRadius: const BorderRadius.all(Radius.circular(12)),
+                child: Image.asset(
+                  imageAsset,
+                  width: 240,
+                  height: 240,
+                  fit: BoxFit.contain,
+                  errorBuilder: (context, error, stackTrace) {
+                    return Container(
+                      width: 240,
+                      height: 240,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF1F5F9),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.qr_code_2_rounded, size: 80, color: Color(0xFF2563EB)),
+                          const SizedBox(height: 12),
+                          Text(
+                            "Bus $targetBusNo Official Group",
+                            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E3A8A)),
+                          ),
+                          const SizedBox(height: 4),
+                          const Text(
+                            "Tap to join Telegram Group",
+                            style: TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
               ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              "BUS $targetBusNo",
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900, letterSpacing: 1),
             ),
           ],
         ),
@@ -1289,17 +1555,15 @@ class _StudentDashboardState extends State<StudentDashboard>
                 await launchUrl(url, mode: LaunchMode.externalApplication);
               }
             },
-            icon: const Icon(Icons.telegram),
+            icon: const Icon(Icons.group_add),
             label: const Text('Join Group'),
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF2563EB),
               foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
             ),
           ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          )
         ],
       ),
     );
@@ -2237,6 +2501,7 @@ class _StudentDashboardState extends State<StudentDashboard>
       bool isInitialSnapshot = true;
 
       final cleanTarget = targetBusId.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+      final numTarget = _extractBusNumber(targetBusId);
 
       _locationSub = FirebaseDatabase.instance
           .ref('liveLocations')
@@ -2248,17 +2513,44 @@ class _StudentDashboardState extends State<StudentDashboard>
               Map? data;
               final rootMap = event.snapshot.value as Map?;
               if (rootMap != null) {
-                // First attempt exact key match
+                // 1. Direct match on key
                 if (rootMap.containsKey(targetBusId) && rootMap[targetBusId] is Map) {
                   data = rootMap[targetBusId] as Map;
-                } else if (rootMap.containsKey(cleanTarget) && rootMap[cleanTarget] is Map) {
+                } else if (numTarget.isNotEmpty && rootMap.containsKey(numTarget) && rootMap[numTarget] is Map) {
+                  data = rootMap[numTarget] as Map;
+                } else if (cleanTarget.isNotEmpty && rootMap.containsKey(cleanTarget) && rootMap[cleanTarget] is Map) {
                   data = rootMap[cleanTarget] as Map;
                 } else {
-                  // Flexible search across all liveLocations keys (handling 15, Bus 15, bus_15, route_15)
+                  // 2. Flexible search across all liveLocations keys and nested driver properties
                   Map? bestMatch;
                   for (final entry in rootMap.entries) {
-                    final k = entry.key.toString().toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
-                    if (k == cleanTarget && entry.value is Map) {
+                    final kStr = entry.key.toString();
+                    final kClean = kStr.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+                    final kNum = _extractBusNumber(kStr);
+
+                    bool matches = false;
+
+                    if (numTarget.isNotEmpty && kNum.isNotEmpty && numTarget == kNum) {
+                      matches = true;
+                    } else if (cleanTarget.isNotEmpty && (kClean == cleanTarget || kStr.toLowerCase().contains(cleanTarget))) {
+                      matches = true;
+                    }
+
+                    if (!matches && entry.value is Map) {
+                      final candidateMap = entry.value as Map;
+                      final bBus = candidateMap['bus']?.toString() ?? '';
+                      final bRoute = candidateMap['route']?.toString() ?? '';
+                      final bBusNum = _extractBusNumber(bBus);
+                      final bRouteNum = _extractBusNumber(bRoute);
+
+                      if (numTarget.isNotEmpty && (bBusNum == numTarget || bRouteNum == numTarget)) {
+                        matches = true;
+                      } else if (cleanTarget.isNotEmpty && (bRoute.toLowerCase().contains(cleanTarget) || bBus.toLowerCase().contains(cleanTarget))) {
+                        matches = true;
+                      }
+                    }
+
+                    if (matches && entry.value is Map) {
                       final candidateMap = entry.value as Map;
                       final st = (candidateMap['status'] as String? ?? 'offline').toLowerCase().trim();
                       if (st == 'tracking' || st == 'online' || st == 'broken' || st == 'active') {
@@ -2274,10 +2566,27 @@ class _StudentDashboardState extends State<StudentDashboard>
               }
 
               final rawStatus = (data?['status'] as String? ?? 'offline').toLowerCase().trim();
+              final rawUpdatedAt = data?['updatedAt']?.toString() ?? '';
 
-              // Only mark online when driver has explicitly started tracking
-              final bool isLive = rawStatus == 'tracking' || rawStatus == 'online' || rawStatus == 'broken' || rawStatus == 'active';
-              final bool isCompleted = rawStatus == 'completed' || rawStatus == 'arrived';
+              bool isStale = false;
+              if (rawUpdatedAt.isNotEmpty) {
+                try {
+                  final parsedTime = DateTime.tryParse(rawUpdatedAt);
+                  if (parsedTime != null) {
+                    final ageSeconds = DateTime.now().difference(parsedTime.toLocal()).inSeconds;
+                    if (ageSeconds > 300) { // 5 minutes stale threshold
+                      isStale = true;
+                    }
+                  }
+                } catch (_) {}
+              }
+
+              final repNum = _extractBusNumber(_replacementBus);
+              final isTrackingReplacement = _breakdownActive && repNum.isNotEmpty && numTarget.isNotEmpty && numTarget == repNum;
+
+              final bool isBroken = (rawStatus == 'broken' || (_breakdownActive && !isTrackingReplacement)) && _replacementBus.isEmpty;
+              final bool isLive = (rawStatus == 'tracking' || rawStatus == 'online' || rawStatus == 'active') && !isStale;
+              final bool isCompleted = (rawStatus == 'completed' || rawStatus == 'arrived');
 
               final bool justCameOnline = !isInitialSnapshot && !_wasBusOnline && isLive;
               final bool justCompleted = !isInitialSnapshot && _wasBusOnline && isCompleted;
@@ -2296,7 +2605,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                   setState(() {
                     _wasBusOnline = false;
                     _busIsOnline = false;
-                    _busStatus = "offline";
+                    _busStatus = isBroken ? "broken" : (isCompleted ? "completed" : "offline");
                     _hasAlertedApproachingRadius = false;
                   });
                 }
@@ -2466,14 +2775,46 @@ class _StudentDashboardState extends State<StudentDashboard>
     }
 
     try {
-      startLocationTracker(_busFirebaseId);
+      startLocationTracker(_selectedRoute.isNotEmpty ? _selectedRoute : _busFirebaseId);
 
       _breakdownSub = FirebaseDatabase.instance
-          .ref('breakdowns/$_busFirebaseId')
+          .ref('breakdowns')
           .onValue
           .listen(
             (event) {
-              final data = event.snapshot.value as Map?;
+              if (!mounted) return;
+              final rootMap = event.snapshot.value as Map?;
+
+              // Always use original selected route / bus ID to query breakdown status (NOT replacement bus ID)
+              final targetBusNum = _extractBusNumber(_selectedRoute.isNotEmpty ? _selectedRoute : _busFirebaseId);
+              final targetClean = _selectedRoute.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+
+              Map? data;
+              if (rootMap != null) {
+                // 1. Direct key match
+                if (_busFirebaseId.isNotEmpty && rootMap.containsKey(_busFirebaseId) && rootMap[_busFirebaseId] is Map) {
+                  data = rootMap[_busFirebaseId] as Map;
+                } else if (targetBusNum.isNotEmpty && rootMap.containsKey(targetBusNum) && rootMap[targetBusNum] is Map) {
+                  data = rootMap[targetBusNum] as Map;
+                } else {
+                  // 2. Flexible search across keys and nested objects
+                  for (final entry in rootMap.entries) {
+                    final kStr = entry.key.toString();
+                    final kNum = _extractBusNumber(kStr);
+                    if (entry.value is Map) {
+                      final valMap = entry.value as Map;
+                      final busVal = valMap['busId']?.toString() ?? valMap['bus']?.toString() ?? kStr;
+                      final busNum = _extractBusNumber(busVal);
+                      if ((targetBusNum.isNotEmpty && (kNum == targetBusNum || busNum == targetBusNum)) ||
+                          (targetClean.isNotEmpty && kStr.toLowerCase().contains(targetClean))) {
+                        data = valMap;
+                        break;
+                      }
+                    }
+                  }
+                }
+              }
+
               if (data == null) {
                 if (_breakdownActive) {
                   _lastBreakdownClearTime = DateTime.now();
@@ -2483,11 +2824,11 @@ class _StudentDashboardState extends State<StudentDashboard>
                   _replacementBus = "";
                   _processCoordinatesForCurrentRoute();
                 });
-                startLocationTracker(_busFirebaseId);
+                startLocationTracker(_selectedRoute.isNotEmpty ? _selectedRoute : _busFirebaseId);
                 return;
               }
 
-              final timestamp = data['timestamp'] as int? ?? 0;
+              final timestamp = (data['timestamp'] as num?)?.toInt() ?? 0;
               final now = DateTime.now().millisecondsSinceEpoch;
               if (now - timestamp > 12 * 60 * 60 * 1000) {
                 // Old breakdown from yesterday, ignore it
@@ -2496,7 +2837,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                   _replacementBus = "";
                   _processCoordinatesForCurrentRoute();
                 });
-                startLocationTracker(_busFirebaseId);
+                startLocationTracker(_selectedRoute.isNotEmpty ? _selectedRoute : _busFirebaseId);
                 return;
               }
 
@@ -2504,24 +2845,26 @@ class _StudentDashboardState extends State<StudentDashboard>
               final repBus = data['replacement'] as String? ?? "Unknown";
               setState(() {
                 _breakdownActive = true;
-                if (isNew) _breakdownDismissed = false; // Reset dismiss for new breakdowns
+                if (isNew) _breakdownDismissed = false;
                 _replacementBus = repBus;
                 _processCoordinatesForCurrentRoute();
               });
 
               if (isNew) {
                 _showInAppNotification(
-                  "Bus Breakdown Alert!",
-                  "Bus $_busFirebaseId has broken down. Replacement bus $_replacementBus is dispatched.",
+                  "⚠️ Bus Breakdown Alert",
+                  repBus != "Unknown" && repBus.isNotEmpty
+                      ? "Bus $targetBusNum breakdown reported. Replacement Bus $repBus dispatched to pick you up!"
+                      : "Bus $targetBusNum breakdown reported. Please wait for replacement bus update.",
                   "⚠️",
-                  durationMs: 4000,
+                  durationMs: 8000,
                 );
               }
 
               if (_replacementBus.isNotEmpty && _replacementBus != "Unknown") {
                 startLocationTracker(_replacementBus);
               } else {
-                startLocationTracker(_busFirebaseId);
+                startLocationTracker(_selectedRoute.isNotEmpty ? _selectedRoute : _busFirebaseId);
               }
             },
             onError: (e) {
@@ -3216,119 +3559,119 @@ class _StudentDashboardState extends State<StudentDashboard>
                 else
                   Container(
                     padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 14,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(
-                      color: _busIsOnline
-                          ? const Color(0xFFBBF7D0)
-                          : const Color(0xFFE2E8F0),
+                      horizontal: 16,
+                      vertical: 14,
                     ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.04),
-                        blurRadius: 10,
-                        offset: const Offset(0, 2),
+                    decoration: BoxDecoration(
+                      color: (_busStatus == 'broken' || _breakdownActive)
+                          ? const Color(0xFFFEF2F2)
+                          : Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: (_busStatus == 'broken' || _breakdownActive)
+                            ? const Color(0xFFFCA5A5)
+                            : (_busIsOnline
+                                ? const Color(0xFFBBF7D0)
+                                : const Color(0xFFE2E8F0)),
                       ),
-                    ],
-                  ),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 44,
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: _busIsOnline
-                              ? const Color(0xFFDCFCE7)
-                              : const Color(0xFFF1F5F9),
-                          borderRadius: BorderRadius.circular(13),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.04),
+                          blurRadius: 10,
+                          offset: const Offset(0, 2),
                         ),
-                        child: Icon(
-                          Icons.directions_bus_rounded,
-                          color: _busIsOnline
-                              ? const Color(0xFF16A34A)
-                              : const Color(0xFF94A3B8),
-                          size: 22,
-                        ),
-                      ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              _busIsOnline
-                                  ? "Bus $_displayBusId is online"
-                                  : "Bus $_displayBusId is offline",
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w800,
-                                color: _busIsOnline
+                      ],
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: (_busStatus == 'broken' || _breakdownActive)
+                                ? const Color(0xFFFEE2E2)
+                                : (_busIsOnline
+                                    ? const Color(0xFFDCFCE7)
+                                    : const Color(0xFFF1F5F9)),
+                            borderRadius: BorderRadius.circular(13),
+                          ),
+                          child: Icon(
+                            (_busStatus == 'broken' || _breakdownActive)
+                                ? Icons.warning_amber_rounded
+                                : Icons.directions_bus_rounded,
+                            color: (_busStatus == 'broken' || _breakdownActive)
+                                ? const Color(0xFFDC2626)
+                                : (_busIsOnline
                                     ? const Color(0xFF16A34A)
-                                    : const Color(0xFF64748B),
-                              ),
-                            ),
-                            const SizedBox(height: 3),
-                            Text(
-                              _busIsOnline
-                                  ? "Active • Updated $_busUpdatedAt"
-                                  : (_busStatus == 'completed'
-                                        ? "Trip is completed"
-                                        : "Trip not started"),
-                              style: const TextStyle(
-                                fontSize: 11,
-                                color: Color(0xFF94A3B8),
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
+                                    : const Color(0xFF94A3B8)),
+                            size: 22,
+                          ),
                         ),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.phone, color: Color(0xFF2563EB), size: 22),
-                        onPressed: () async {
-                          if (Firebase.apps.isNotEmpty && _displayBusId.isNotEmpty) {
-                            try {
-                              final snap = await FirebaseDatabase.instance.ref('drivers/$_displayBusId').get();
-                              if (snap.exists && snap.value != null) {
-                                final data = snap.value as Map;
-                                final contact = data['contact']?.toString() ?? '';
-                                if (contact.isNotEmpty) {
-                                  final Uri phoneUri = Uri(scheme: 'tel', path: contact);
-                                  if (await canLaunchUrl(phoneUri)) {
-                                    await launchUrl(phoneUri);
-                                  } else {
-                                    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Cannot launch dialer")));
-                                  }
-                                } else {
-                                  if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("No phone number found for this driver")));
-                                }
-                              } else {
-                                if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Driver not found in registry")));
-                              }
-                            } catch (e) {
-                              debugPrint("Error fetching driver phone: $e");
-                            }
-                          }
-                        },
-                        tooltip: "Call Driver",
-                      ),
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          color: _busIsOnline
-                              ? const Color(0xFF22C55E)
-                              : const Color(0xFFCBD5E1),
-                          shape: BoxShape.circle,
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                (_busStatus == 'broken' || _breakdownActive)
+                                    ? (_replacementBus.isNotEmpty && _replacementBus != 'Unknown'
+                                          ? "Replacement Bus ${_extractBusNumber(_replacementBus)} assigned"
+                                          : "Bus $_displayBusId Breakdown Reported")
+                                    : (_busIsOnline
+                                          ? "Bus $_displayBusId is online"
+                                          : "Bus $_displayBusId is offline"),
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w800,
+                                  color: (_busStatus == 'broken' || _breakdownActive)
+                                      ? const Color(0xFFDC2626)
+                                      : (_busIsOnline
+                                          ? const Color(0xFF16A34A)
+                                          : const Color(0xFF64748B)),
+                                ),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                (_busStatus == 'broken' || _breakdownActive)
+                                    ? (_replacementBus.isNotEmpty && _replacementBus != 'Unknown'
+                                          ? "Tracking Replacement Bus ${_extractBusNumber(_replacementBus)} for your route"
+                                          : "Replacement bus dispatch pending • Stay at your stop")
+                                    : (_busIsOnline
+                                          ? "Active • Updated $_busUpdatedAt"
+                                          : (_busStatus == 'completed'
+                                                ? "Trip is completed"
+                                                : "Trip not started")),
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: (_busStatus == 'broken' || _breakdownActive)
+                                      ? const Color(0xFF991B1B)
+                                      : const Color(0xFF94A3B8),
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
+                        IconButton(
+                          icon: const Icon(Icons.phone, color: Color(0xFF2563EB), size: 22),
+                          onPressed: _callDriver,
+                          tooltip: "Call Driver",
+                        ),
+                        Container(
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: (_busStatus == 'broken' || _breakdownActive)
+                                ? const Color(0xFFEF4444)
+                                : (_busIsOnline
+                                    ? const Color(0xFF22C55E)
+                                    : const Color(0xFFCBD5E1)),
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
                 const SizedBox(height: 12),
 
                 if (_savedStop.isNotEmpty) ...[
@@ -3601,7 +3944,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            "Selected: ${_dynamicRouteLabels[_selectedRoute] ?? _selectedRoute}",
+                            "Selected: $_effectiveRouteLabel",
                             style: const TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w800,

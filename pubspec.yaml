@@ -87,6 +87,12 @@ flutter:
     - assets/images/red_bus_bg.png
     - assets/images/bus52_qr.png
     - assets/images/bus15_qr.png
+    - assets/images/bus_qr.png
+    - assets/images/bus39_qr.png
+    - assets/images/bus84_qr.png
+    - assets/images/bus111_qr.png
+    - assets/images/bus138_qr.png
+    - assets/images/bus104_qr.png
     - .env
 
   # An image asset can refer to one or more resolution-specific "variants", see
