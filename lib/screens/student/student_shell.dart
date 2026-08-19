@@ -108,6 +108,8 @@ class _MainShellState extends State<MainShell> {
     await prefs.remove('studentRollNo');
     await prefs.remove('profilePicUrl');
     await prefs.remove('studentBusNo');
+    await prefs.remove('studentSelectedRoute');
+    await prefs.remove('studentSavedStop');
 
     try {
       await FirebaseAuth.instance.signOut();
@@ -205,7 +207,14 @@ class _StudentDashboardState extends State<StudentDashboard>
     return translated;
   }
 
-  int _currentIndex = 0;
+  String _formatStopName(String stop, {int index = -1}) {
+    if (stop.contains("(Lat:") && stop.contains("Lng:")) {
+      return stop.split("(Lat:")[0].trim();
+    } else if (stop.startsWith("Lat: ")) {
+      return index >= 0 ? "Stop ${index + 1}" : "Custom Stop";
+    }
+    return stop;
+  }  int _currentIndex = 0;
   bool _isLoading = true;
 
   // ─── STT & Translator Variables ───
@@ -216,6 +225,11 @@ class _StudentDashboardState extends State<StudentDashboard>
   final GoogleTranslator _translator = GoogleTranslator();
 
   // ─── DATA VARIABLES ───
+  // --- DYNAMIC ROUTES CONFIG ---
+  Map<String, String> _dynamicRouteLabels = {};
+  Map<String, List<String>> _dynamicRouteStops = {};
+  Map<String, String> _dynamicRouteColors = {};
+
   bool _isEditingProfile = false;
   String _profilePicUrl = "";
   MemoryImage? _cachedProfileImage; // cached to prevent blinking
@@ -246,6 +260,7 @@ class _StudentDashboardState extends State<StudentDashboard>
   bool _hasAlertedApproaching = false;
   bool _hasAlertedArrived = false;
   bool _hasAlertedApproachingRadius = false;
+  bool _hasAlertedTripCompleted = false;
   bool _wasBusOnline = false;
   String _busDirection = 'To College';
   final double _alertRadiusMeters = 1000.0;
@@ -267,6 +282,9 @@ class _StudentDashboardState extends State<StudentDashboard>
 
   // Firebase Student Profile & Intercom
   StreamSubscription? _studentProfileSub;
+  StreamSubscription? _driverBusRouteSub;
+
+
   List<Map<String, dynamic>> _studentIntercomMessages = [];
   StreamSubscription? _studentIntercomSub;
   bool _isRecordingVoice = false;
@@ -293,6 +311,75 @@ class _StudentDashboardState extends State<StudentDashboard>
           _replacementBus != 'Unknown')
       ? _replacementBus
       : _busFirebaseId;
+
+  String get _effectiveRouteKey {
+    if (_breakdownActive && _replacementBus.isNotEmpty && _replacementBus != 'Unknown') {
+      final cleanRep = _replacementBus.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+      for (final entry in _driverBusToRouteMap.entries) {
+        final cleanBus = entry.key.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').trim();
+        if (cleanBus == cleanRep && entry.value.isNotEmpty) {
+          return entry.value;
+        }
+      }
+      for (final key in _dynamicRouteLabels.keys) {
+        final cleanKey = key.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+        if (cleanKey == cleanRep) return key;
+      }
+      for (final key in _dynamicRouteStops.keys) {
+        final cleanKey = key.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+        if (cleanKey == cleanRep) return key;
+      }
+      return 'route_$cleanRep';
+    }
+    return _selectedRoute;
+  }
+
+  String get _effectiveRouteLabel {
+    final activeKey = _effectiveRouteKey;
+    if (_dynamicRouteLabels.containsKey(activeKey)) {
+      return _dynamicRouteLabels[activeKey]!;
+    }
+    final cleanKey = activeKey.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+    for (final entry in _dynamicRouteLabels.entries) {
+      final k = entry.key.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+      if (k == cleanKey) {
+        return entry.value;
+      }
+    }
+    if (_breakdownActive && _replacementBus.isNotEmpty && _replacementBus != 'Unknown') {
+      final cleanRep = _replacementBus.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+      return "Bus $cleanRep Route";
+    }
+    return _dynamicRouteLabels[_selectedRoute] ?? "No Route Selected";
+  }
+
+  List<String> get _effectiveDisplayStops {
+    final activeKey = _effectiveRouteKey;
+    List<String> stops = List<String>.from(_dynamicRouteStops[activeKey] ?? []);
+    if (stops.isEmpty) {
+      final cleanKey = activeKey.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+      for (final entry in _dynamicRouteStops.entries) {
+        final k = entry.key.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+        if (k == cleanKey) {
+          stops = List<String>.from(entry.value);
+          break;
+        }
+      }
+    }
+    if (!_breakdownActive && stops.isEmpty) {
+      stops = List<String>.from(_routeStops);
+    }
+    if (stops.isNotEmpty && stops.last != "COLLEGE" && stops.last != "Panimalar Engineering College") {
+      stops.add("COLLEGE");
+    } else if (stops.isEmpty && _breakdownActive) {
+      stops = ["COLLEGE"];
+    }
+    if (_busDirection.trim().toLowerCase() == 'to home' ||
+        _busDirection.trim().toLowerCase() == 'home') {
+      return stops.reversed.toList();
+    }
+    return stops;
+  }
   Color _routeColor = const Color(0xFF2563EB);
   String _studentBusNo = "";
 
@@ -397,11 +484,36 @@ class _StudentDashboardState extends State<StudentDashboard>
     }
   }
 
+  void _processCoordinatesForCurrentRoute() {
+    _coords.clear();
+    final activeStops = _effectiveDisplayStops;
+    for (var stop in activeStops) {
+      final match = RegExp(r'Lat:\s*([-\d.]+)\s*,\s*Lng:\s*([-\d.]+)').firstMatch(stop);
+      if (match != null) {
+        try {
+          final lat = double.parse(match.group(1)!);
+          final lng = double.parse(match.group(2)!);
+          _coords[stop] = LatLng(lat, lng);
+        } catch (_) {}
+      } else if (coordsConfig.containsKey(stop)) {
+        _coords[stop] = coordsConfig[stop]!;
+      }
+    }
+  }
+
   /// Returns the stops list for the bus number the student typed, or empty.
   List<String> get _profileBusStops {
+    final busNo = _profileBusCtrl.text.trim();
+    if (busNo.isEmpty) return [];
+
     final key = _fetchedRouteKey;
     if (key == null) return [];
-    return List<String>.from(routeStopsConfig[key] ?? []);
+    
+    final stops = List<String>.from(_dynamicRouteStops[key] ?? []);
+    if (stops.isNotEmpty && stops.last != "COLLEGE" && stops.last != "Panimalar Engineering College") {
+      stops.add("COLLEGE");
+    }
+    return stops;
   }
 
   List<Map<String, dynamic>> _adminNotifications = [];
@@ -423,7 +535,7 @@ class _StudentDashboardState extends State<StudentDashboard>
 
       final target = n['bus']?.toString().toLowerCase().trim() ?? 'all';
       if (target == 'all') return false; // Strict filter as requested
-      final myBusStr = _busFirebaseId.toLowerCase().trim();
+      final myBusStr = _displayBusId.toLowerCase().trim();
       return target == myBusStr;
     }).toList();
   }
@@ -440,6 +552,7 @@ class _StudentDashboardState extends State<StudentDashboard>
 
   Map<String, Map<String, dynamic>> _allBusesLocations = {};
   StreamSubscription? _allBusesSub;
+  StreamSubscription? _announcementSub;
 
   final MapController _mapController = MapController();
   final MapController _campusMapController = MapController();
@@ -455,7 +568,9 @@ class _StudentDashboardState extends State<StudentDashboard>
   @override
   void initState() {
     super.initState();
-    _fetchLatestAnnouncement();
+    _loadPreferences();
+    _listenForAnnouncements();
+    _listenForDynamicRoutes();
     // Profile controllers — empty initially; populated after prefs load
     _profileRollNoCtrl = TextEditingController();
     _profileNameCtrl = TextEditingController();
@@ -466,7 +581,6 @@ class _StudentDashboardState extends State<StudentDashboard>
     }
     _profileBusCtrl = TextEditingController();
     _profileTempYear = '';
-    _loadPreferences();
     _startLerpLoop();
     _listenForArrivalLogs();
     _listenToAllBuses();
@@ -474,20 +588,74 @@ class _StudentDashboardState extends State<StudentDashboard>
     _listenForAdminNotifications();
   }
 
-  Future<void> _fetchLatestAnnouncement() async {
-    try {
-      final String baseUrl = 'https://panimalr-bus.onrender.com';
-      final response = await http.get(Uri.parse('$baseUrl/api/announcements/latest'));
-      if (response.statusCode == 200) {
+  void _listenForDynamicRoutes() {
+    if (Firebase.apps.isEmpty) return;
+    
+    FirebaseDatabase.instance.ref('routes').onValue.listen((event) {
+      if (event.snapshot.exists && event.snapshot.value != null) {
+        Map<String, String> newLabels = {};
+        Map<String, List<String>> newStops = {};
+        Map<String, String> newColors = {};
+        
+        void processRoute(String fallbackKey, Map val) {
+          final key = (val['key'] != null && val['key'].toString().isNotEmpty)
+              ? val['key'].toString()
+              : fallbackKey;
+          if (key.isEmpty) return;
+          
+          if (val['name'] != null) {
+            newLabels[key] = val['name'].toString();
+            newLabels[fallbackKey] = val['name'].toString();
+          }
+          if (val['color'] != null) {
+            newColors[key] = val['color'].toString();
+            newColors[fallbackKey] = val['color'].toString();
+          }
+          if (val['stops'] != null && val['stops'] is List) {
+            final stops = List<String>.from(val['stops'].map((e) => e.toString()));
+            newStops[key] = stops;
+            newStops[fallbackKey] = stops;
+          }
+        }
+
+        for (final child in event.snapshot.children) {
+          final childKey = child.key?.toString() ?? '';
+          final val = child.value;
+          if (val is Map) processRoute(childKey, val);
+        }
+        
         if (mounted) {
           setState(() {
-            _latestAnnouncement = jsonDecode(response.body);
+            _dynamicRouteLabels = newLabels;
+            _dynamicRouteStops = newStops;
+            _dynamicRouteColors = newColors;
+            // Also need to re-evaluate current active route stops
+            if (_selectedRoute.isNotEmpty) {
+               _updateRouteDetails(_selectedRoute, startListener: false);
+            } else if (_fetchedRouteKey != null) {
+               _updateRouteDetails(_fetchedRouteKey!, startListener: false);
+            }
           });
         }
       }
-    } catch (e) {
-      debugPrint("Error fetching announcement: $e");
-    }
+    });
+  }
+
+  void _listenForAnnouncements() {
+    _announcementSub = FirebaseDatabase.instance
+        .ref('announcements/active')
+        .onValue
+        .listen((event) {
+      if (!mounted) return;
+      final data = event.snapshot.value as Map?;
+      setState(() {
+        if (data != null) {
+          _latestAnnouncement = Map<String, dynamic>.from(data);
+        } else {
+          _latestAnnouncement = null;
+        }
+      });
+    });
   }
 
   @override
@@ -498,13 +666,14 @@ class _StudentDashboardState extends State<StudentDashboard>
     _breakdownSub?.cancel();
     _locationSub?.cancel();
     _pickupRequestSub?.cancel();
-    _logsSub?.cancel();
-    _allBusesSub?.cancel();
-    _studentLocationSub?.cancel();
-    _notifSub?.cancel();
-    _specialBusesSub?.cancel();
     _studentProfileSub?.cancel();
     _studentIntercomSub?.cancel();
+    _studentLocationSub?.cancel();
+    _specialBusesSub?.cancel();
+    _notifSub?.cancel();
+    _logsSub?.cancel();
+    _allBusesSub?.cancel();
+    _announcementSub?.cancel();
     _recordingTimer?.cancel();
     _playbackTimer?.cancel();
     _profileRollNoCtrl.dispose();
@@ -512,6 +681,49 @@ class _StudentDashboardState extends State<StudentDashboard>
     _profileBusCtrl.dispose();
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  Map<String, String> _driverBusToRouteMap = {};
+
+  void _listenToDriverRoute() {
+    _driverBusRouteSub?.cancel();
+    if (Firebase.apps.isNotEmpty) {
+      _driverBusRouteSub = FirebaseDatabase.instance.ref('drivers').onValue.listen((event) {
+        if (!mounted) return;
+        if (event.snapshot.exists && event.snapshot.value != null) {
+          String? foundRoute;
+          Map<String, String> newDriverMap = {};
+          final cleanStudentB = _studentBusNo.trim().toUpperCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').trim();
+          for (final child in event.snapshot.children) {
+            final val = child.value;
+            if (val is Map) {
+              final b = (val['bus']?.toString() ?? '').trim().toUpperCase();
+              final cleanB = b.replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').trim();
+              final r = val['route']?.toString();
+              if (b.isNotEmpty && r != null && r.isNotEmpty) {
+                newDriverMap[b] = r;
+                newDriverMap[cleanB] = r;
+              }
+              if (_studentBusNo.isNotEmpty && (b == _studentBusNo.trim().toUpperCase() || (cleanB.isNotEmpty && cleanB == cleanStudentB))) {
+                foundRoute = r;
+              }
+            }
+          }
+          setState(() {
+            _driverBusToRouteMap = newDriverMap;
+            if (foundRoute != null && !_breakdownActive) {
+              _selectedRoute = foundRoute;
+              _updateRouteDetails(_selectedRoute, startListener: true);
+            }
+          });
+          if (foundRoute != null) {
+            SharedPreferences.getInstance().then(
+              (p) => p.setString('studentSelectedRoute', foundRoute!),
+            );
+          }
+        }
+      });
+    }
   }
 
   void _listenToAllBuses() {
@@ -524,17 +736,25 @@ class _StudentDashboardState extends State<StudentDashboard>
         final Map<String, Map<String, dynamic>> updatedBuses = {};
         data.forEach((key, value) {
           if (value is Map) {
+            final dir = value['direction']?.toString() ?? value['tripType']?.toString() ?? 'To College';
             updatedBuses[key.toString()] = {
               'lat': value['lat'],
               'lng': value['lng'],
               'status': value['status'],
               'updatedAt': value['updatedAt'],
               'busId': key.toString(),
+              'direction': dir,
             };
           }
         });
         setState(() {
           _allBusesLocations = updatedBuses;
+          if (_studentBusNo.isNotEmpty && updatedBuses.containsKey(_studentBusNo)) {
+            final dir = updatedBuses[_studentBusNo]?['direction']?.toString();
+            if (dir != null && dir.isNotEmpty) {
+              _busDirection = dir;
+            }
+          }
         });
       });
     } catch (e) {
@@ -1445,51 +1665,21 @@ class _StudentDashboardState extends State<StudentDashboard>
     final savedRoute = prefs.getString('studentSelectedRoute');
     final isGuest = widget.studentRollNo.toLowerCase() == 'guest';
 
-    if (isGuest) {
-      setState(() {
-        _selectedRoute = "";
-      });
-      _updateRouteDetails(_selectedRoute, startListener: true);
-    } else if (savedRoute != null && savedRoute.isNotEmpty) {
-      // Student manually selected a route before — use it directly, skip profile bus lookup
+    if (savedRoute != null && savedRoute.isNotEmpty) {
+      // User manually selected a route before — use it directly
       setState(() {
         _selectedRoute = savedRoute;
       });
       _updateRouteDetails(_selectedRoute, startListener: true);
     } else if (_studentBusNo.isNotEmpty && Firebase.apps.isNotEmpty) {
-      // No saved route — fall back to finding the route from the student's profile bus number
-      final initialRoute = _selectedRoute;
-      FirebaseDatabase.instance
-          .ref('drivers')
-          .get()
-          .then((snap) {
-            if (snap.exists) {
-              String? foundRoute;
-              for (final child in snap.children) {
-                final val = child.value;
-                if (val is Map) {
-                  final b = (val['bus']?.toString() ?? '').trim().toUpperCase();
-                  if (b == _studentBusNo.trim().toUpperCase()) {
-                    foundRoute = val['route'] as String?;
-                    break;
-                  }
-                }
-              }
-              if (foundRoute != null && mounted) {
-                if (_selectedRoute == initialRoute) {
-                  setState(() {
-                    _selectedRoute = foundRoute!;
-                  });
-                  _updateRouteDetails(_selectedRoute, startListener: true);
-                  return;
-                }
-              }
-            }
-            _updateRouteDetails(_selectedRoute, startListener: true);
-          })
-          .catchError((_) {
-            _updateRouteDetails(_selectedRoute, startListener: true);
-          });
+      // No saved route — listen dynamically to the drivers node for this bus
+      _listenToDriverRoute();
+      _updateRouteDetails(_selectedRoute, startListener: true);
+    } else if (isGuest) {
+      setState(() {
+        _selectedRoute = "";
+      });
+      _updateRouteDetails(_selectedRoute, startListener: true);
     } else {
       _updateRouteDetails(_selectedRoute, startListener: true);
     }
@@ -1499,13 +1689,14 @@ class _StudentDashboardState extends State<StudentDashboard>
   }
 
   void _updateRouteDetails(String routeKey, {bool startListener = true}) {
-    _routeStops = routeStopsConfig[routeKey] ?? [];
-    _coords = {};
-    for (var stop in _routeStops) {
-      if (coordsConfig.containsKey(stop)) {
-        _coords[stop] = coordsConfig[stop]!;
-      }
+    _routeStops = List<String>.from(_dynamicRouteStops[routeKey] ?? []);
+    if (_routeStops.isNotEmpty && _routeStops.last != "COLLEGE" && _routeStops.last != "Panimalar Engineering College") {
+      _routeStops.add("COLLEGE");
     }
+    if (_savedStop.isNotEmpty && !_routeStops.contains(_savedStop)) {
+      _savedStop = "";
+    }
+    _processCoordinatesForCurrentRoute();
 
     final match = RegExp(r'route_(\d+)').firstMatch(routeKey);
     if (match != null) {
@@ -1516,9 +1707,9 @@ class _StudentDashboardState extends State<StudentDashboard>
 
     _routeColor = const Color(0xFF2563EB);
     try {
-      if (routeColorsConfig.containsKey(routeKey)) {
+      if (_dynamicRouteColors.containsKey(routeKey)) {
         _routeColor = Color(
-          int.parse(routeColorsConfig[routeKey]!.replaceFirst('#', '0xFF')),
+          int.parse(_dynamicRouteColors[routeKey]!.replaceFirst('#', '0xFF')),
         );
       }
     } catch (_) {}
@@ -1558,7 +1749,7 @@ class _StudentDashboardState extends State<StudentDashboard>
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('studentSelectedRoute', routeKey);
     await prefs.setString('studentSavedStop', '');
-    _showSnackBar("Route switched to ${routeLabelsConfig[routeKey]}");
+    _showSnackBar("Route switched to ${_dynamicRouteLabels[routeKey]}");
   }
 
   void _saveStop(String stopName) async {
@@ -1574,7 +1765,7 @@ class _StudentDashboardState extends State<StudentDashboard>
     }
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('studentSavedStop', stopName);
-    _showSnackBar("⭐ Boarding stop saved: $stopName");
+    _showSnackBar("⭐ Boarding stop saved: ${_formatStopName(stopName)}");
   }
 
   String _deptToShortForm(String dept) {
@@ -1664,9 +1855,15 @@ class _StudentDashboardState extends State<StudentDashboard>
       _studentName = name;
       _studentYear = year;
       _studentDept = dept;
+      
+      bool busChanged = _studentBusNo != busNo;
       _studentBusNo = busNo;
       _savedStop = boardingStop;
       _studentId = actualRollNo;
+      
+      if (busChanged) {
+        _listenToDriverRoute();
+      }
     });
 
     try {
@@ -1693,34 +1890,7 @@ class _StudentDashboardState extends State<StudentDashboard>
           _selectedRoute = _fetchedRouteKey!;
           _updateRouteDetails(_selectedRoute, startListener: true);
         } else {
-          if (Firebase.apps.isNotEmpty) {
-            FirebaseDatabase.instance.ref('drivers').get().then((snap) {
-              if (snap.exists) {
-                String? foundRoute;
-                for (final child in snap.children) {
-                  final val = child.value;
-                  if (val is Map) {
-                    final b = (val['bus']?.toString() ?? '')
-                        .trim()
-                        .toUpperCase();
-                    if (b == busNo.trim().toUpperCase()) {
-                      foundRoute = val['route'] as String?;
-                      break;
-                    }
-                  }
-                }
-                if (foundRoute != null && mounted) {
-                  setState(() {
-                    _selectedRoute = foundRoute!;
-                    _updateRouteDetails(_selectedRoute, startListener: true);
-                  });
-                  SharedPreferences.getInstance().then(
-                    (p) => p.setString('studentSelectedRoute', foundRoute!),
-                  );
-                }
-              }
-            });
-          }
+          _updateRouteDetails(_selectedRoute, startListener: true);
         }
       } else {
         SharedPreferences.getInstance().then(
@@ -2064,91 +2234,123 @@ class _StudentDashboardState extends State<StudentDashboard>
 
     void startLocationTracker(String targetBusId) {
       _locationSub?.cancel();
+      bool isInitialSnapshot = true;
+
+      final cleanTarget = targetBusId.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+
       _locationSub = FirebaseDatabase.instance
-          .ref('liveLocations/$targetBusId')
+          .ref('liveLocations')
           .onValue
           .listen(
             (event) {
-              final data = event.snapshot.value as Map?;
-              final status = data?['status'] as String? ?? 'offline';
+              if (!mounted) return;
 
-              final rawUpdatedAt = data?['updatedAt'] as String?;
-              bool isStale = false;
-              if (rawUpdatedAt != null) {
-                try {
-                  final dt = DateTime.parse(rawUpdatedAt).toLocal();
-                  if (DateTime.now().difference(dt).inMinutes > 5) {
-                    isStale = true;
+              Map? data;
+              final rootMap = event.snapshot.value as Map?;
+              if (rootMap != null) {
+                // First attempt exact key match
+                if (rootMap.containsKey(targetBusId) && rootMap[targetBusId] is Map) {
+                  data = rootMap[targetBusId] as Map;
+                } else if (rootMap.containsKey(cleanTarget) && rootMap[cleanTarget] is Map) {
+                  data = rootMap[cleanTarget] as Map;
+                } else {
+                  // Flexible search across all liveLocations keys (handling 15, Bus 15, bus_15, route_15)
+                  Map? bestMatch;
+                  for (final entry in rootMap.entries) {
+                    final k = entry.key.toString().toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+                    if (k == cleanTarget && entry.value is Map) {
+                      final candidateMap = entry.value as Map;
+                      final st = (candidateMap['status'] as String? ?? 'offline').toLowerCase().trim();
+                      if (st == 'tracking' || st == 'online' || st == 'broken' || st == 'active') {
+                        bestMatch = candidateMap;
+                        break;
+                      } else {
+                        bestMatch ??= candidateMap;
+                      }
+                    }
                   }
-                } catch (_) {}
+                  data = bestMatch;
+                }
               }
 
-              // Only mark online when driver has explicitly started tracking and data is fresh
-              final bool isLive = (status == 'tracking' || status == 'broken') && !isStale;
-              final bool isCompleted = status == 'completed' || status == 'arrived';
+              final rawStatus = (data?['status'] as String? ?? 'offline').toLowerCase().trim();
 
-              final bool justCameOnline = !_wasBusOnline && isLive;
-              final bool justCompleted = _wasBusOnline && isCompleted;
-              final bool justWentOffline = _wasBusOnline && (!isLive && !isCompleted);
+              // Only mark online when driver has explicitly started tracking
+              final bool isLive = rawStatus == 'tracking' || rawStatus == 'online' || rawStatus == 'broken' || rawStatus == 'active';
+              final bool isCompleted = rawStatus == 'completed' || rawStatus == 'arrived';
+
+              final bool justCameOnline = !isInitialSnapshot && !_wasBusOnline && isLive;
+              final bool justCompleted = !isInitialSnapshot && _wasBusOnline && isCompleted;
+
+              if (isLive) {
+                _hasAlertedTripCompleted = false;
+              }
+
+              if (isInitialSnapshot) {
+                isInitialSnapshot = false;
+                _hasAlertedTripCompleted = true;
+              }
 
               if (data == null || (!isLive && !isCompleted)) {
-                setState(() {
-                  _wasBusOnline = false;
-                  _busIsOnline = false;
-                  _busStatus = "offline";
-                  _hasAlertedApproachingRadius = false;
-                });
+                if (mounted) {
+                  setState(() {
+                    _wasBusOnline = false;
+                    _busIsOnline = false;
+                    _busStatus = "offline";
+                    _hasAlertedApproachingRadius = false;
+                  });
+                }
                 
-                if (justWentOffline) {
+                if (justCompleted && !_hasAlertedTripCompleted) {
+                  _hasAlertedTripCompleted = true;
                   _showInAppNotification(
-                    "Bus Offline",
-                    "Bus $targetBusId has stopped tracking and is now offline.",
-                    "🚫",
-                    durationMs: 5000,
+                    "🏁 Trip Completed",
+                    "Bus $_displayBusId has completed its trip.",
+                    "🏁",
+                    durationMs: 8000,
                   );
                 }
                 return;
               }
 
-              setState(() {
-                _busIsOnline = isLive;
-                _wasBusOnline =
-                    isLive ||
-                    isCompleted; // keep it true if completed so we don't re-trigger
-                final rawLat = (data['lat'] as num).toDouble();
-                final rawLng = (data['lng'] as num).toDouble();
+              if (mounted) {
+                setState(() {
+                  _busIsOnline = isLive;
+                  _wasBusOnline = isLive;
+                  final rawLat = (data?['lat'] as num?)?.toDouble() ?? 0.0;
+                  final rawLng = (data?['lng'] as num?)?.toDouble() ?? 0.0;
 
-                if (rawLat == 0.0 && rawLng == 0.0) {
-                  return; // Ignore invalid GPS coordinate
-                }
+                  if (rawLat != 0.0 || rawLng != 0.0) {
+                    _busLat = rawLat;
+                    _busLng = rawLng;
+                  }
 
-                _busLat = rawLat;
-                _busLng = rawLng;
-                _busAccuracy =
-                    (data['acc'] as num?)?.toDouble() ??
-                    (data['accuracy'] as num?)?.toDouble() ??
-                    10.0;
-                _busStatus = status;
-                _busDirection = data['direction'] as String? ?? "To College";
+                  _busAccuracy =
+                      (data?['acc'] as num?)?.toDouble() ??
+                      (data?['accuracy'] as num?)?.toDouble() ??
+                      10.0;
+                  _busStatus = rawStatus;
+                  _busDirection = data?['direction'] as String? ?? data?['tripType'] as String? ?? "To College";
 
-                final rawUpdatedAt = data['updatedAt'] as String?;
-                if (rawUpdatedAt != null) {
-                  try {
-                    final dt = DateTime.parse(rawUpdatedAt).toLocal();
-                    _busUpdatedAt =
-                        "${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}";
-                  } catch (_) {
+                  final rawUpdatedAt = data?['updatedAt'] as String?;
+                  if (rawUpdatedAt != null) {
+                    try {
+                      final dt = DateTime.parse(rawUpdatedAt).toLocal();
+                      _busUpdatedAt =
+                          "${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}";
+                    } catch (_) {
+                      _busUpdatedAt = "--:--";
+                    }
+                  } else {
                     _busUpdatedAt = "--:--";
                   }
-                } else {
-                  _busUpdatedAt = "--:--";
-                }
 
-                if (_renderLat == null || _renderLng == null) {
-                  _renderLat = _busLat;
-                  _renderLng = _busLng;
-                }
-              });
+                  if (_renderLat == null || _renderLng == null) {
+                    _renderLat = _busLat;
+                    _renderLng = _busLng;
+                  }
+                });
+              }
 
               bool ignoreTripStart = false;
               if (justCameOnline && _lastBreakdownClearTime != null) {
@@ -2159,14 +2361,16 @@ class _StudentDashboardState extends State<StudentDashboard>
 
               if (justCameOnline && !ignoreTripStart) {
                 _showInAppNotification(
-                  "🚌 Trip has started",
-                  "Bus $targetBusId has started its route. Live GPS tracking is now active. Get ready to board!",
+                  "🚌 Bus Started",
+                  "Bus $_displayBusId has started tracking. Live GPS is now active.",
                   "✅",
                   durationMs: 10000,
                 );
-                setState(() {
-                  _isFollowingBus = true;
-                });
+                if (mounted) {
+                  setState(() {
+                    _isFollowingBus = true;
+                  });
+                }
                 // Auto-pan to bus location when it comes online
                 if (_busLat != null && _busLng != null) {
                   Future.delayed(const Duration(milliseconds: 300), () {
@@ -2175,12 +2379,13 @@ class _StudentDashboardState extends State<StudentDashboard>
                     }
                   });
                 }
-              } else if (justCompleted) {
+              } else if (justCompleted && !_hasAlertedTripCompleted) {
+                _hasAlertedTripCompleted = true;
                 _showInAppNotification(
-                  "🏁 Trip is completed",
-                  "Bus $targetBusId has successfully completed its trip.",
+                  "🏁 Trip Completed",
+                  "Bus $_displayBusId has completed its trip.",
                   "🏁",
-                  durationMs: 10000,
+                  durationMs: 8000,
                 );
               }
 
@@ -2198,14 +2403,12 @@ class _StudentDashboardState extends State<StudentDashboard>
                 } catch (_) {}
               }
 
-              if (_savedStop.isNotEmpty && _busLat != null && _busLng != null) {
+              if (_savedStop.isNotEmpty && _busLat != null && _busLng != null && _routeStops.isNotEmpty) {
                 final nearestIdx = _getNearestStopIndex(_busLat!, _busLng!);
-                final displayStops = _busDirection == 'To Home'
-                    ? _routeStops.reversed.toList()
-                    : _routeStops;
+                final displayStops = _effectiveDisplayStops;
                 final myStopIdx = displayStops.indexOf(_savedStop);
                 final logicalNearestIdx = displayStops.indexOf(
-                  _routeStops[nearestIdx],
+                  displayStops[nearestIdx < displayStops.length ? nearestIdx : 0],
                 );
 
                 if (logicalNearestIdx == 0) {
@@ -2219,7 +2422,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                     _hasAlertedApproaching = true;
                     _showInAppNotification(
                       "Bus $targetBusId is approaching!",
-                      "Bus $targetBusId is at ${displayStops[logicalNearestIdx]}, which is 1 stop away from $_savedStop.",
+                      "Bus $targetBusId is at ${_formatStopName(displayStops[logicalNearestIdx])}, which is 1 stop away from ${_formatStopName(_savedStop)}.",
                       "🔔",
                     );
                   } else if (logicalNearestIdx == myStopIdx &&
@@ -2227,7 +2430,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                     _hasAlertedArrived = true;
                     _showInAppNotification(
                       "Bus $targetBusId has arrived!",
-                      "Bus $targetBusId is now at your boarding stop: $_savedStop. Get ready to board!",
+                      "Bus $targetBusId is now at your boarding stop: ${_formatStopName(_savedStop)}. Get ready to board!",
                       "🚏",
                     );
                   }
@@ -2278,6 +2481,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                 setState(() {
                   _breakdownActive = false;
                   _replacementBus = "";
+                  _processCoordinatesForCurrentRoute();
                 });
                 startLocationTracker(_busFirebaseId);
                 return;
@@ -2290,16 +2494,19 @@ class _StudentDashboardState extends State<StudentDashboard>
                 setState(() {
                   _breakdownActive = false;
                   _replacementBus = "";
+                  _processCoordinatesForCurrentRoute();
                 });
                 startLocationTracker(_busFirebaseId);
                 return;
               }
 
               final isNew = !_breakdownActive;
+              final repBus = data['replacement'] as String? ?? "Unknown";
               setState(() {
                 _breakdownActive = true;
                 if (isNew) _breakdownDismissed = false; // Reset dismiss for new breakdowns
-                _replacementBus = data['replacement'] as String? ?? "Unknown";
+                _replacementBus = repBus;
+                _processCoordinatesForCurrentRoute();
               });
 
               if (isNew) {
@@ -2400,11 +2607,8 @@ class _StudentDashboardState extends State<StudentDashboard>
   }
 
   int _getNearestStopIndex(double lat, double lng) {
-    if (_routeStops.isEmpty) return 0;
-    
-    final displayStops = _busDirection == 'To Home'
-        ? _routeStops.reversed.toList()
-        : _routeStops;
+    final displayStops = _effectiveDisplayStops;
+    if (displayStops.isEmpty) return 0;
         
     if (displayStops.length == 1) return 0;
 
@@ -2453,12 +2657,13 @@ class _StudentDashboardState extends State<StudentDashboard>
     }
     
     final nextStopName = displayStops[nextIdx];
-    final originalIdx = _routeStops.indexOf(nextStopName);
+    final originalIdx = _effectiveDisplayStops.indexOf(nextStopName);
     return originalIdx != -1 ? originalIdx : 0;
   }
 
   int? _calculateEtaMinutes(int nearestIdx) {
-    if (!_busIsOnline ||
+    if (_effectiveDisplayStops.isEmpty ||
+        !_busIsOnline ||
         _busLat == null ||
         _busLng == null ||
         _savedStop.isEmpty) {
@@ -2466,11 +2671,9 @@ class _StudentDashboardState extends State<StudentDashboard>
     }
     if (_busLat == 0.0 && _busLng == 0.0) return null;
 
-    final displayStops = _busDirection == 'To Home'
-        ? _routeStops.reversed.toList()
-        : _routeStops;
+    final displayStops = _effectiveDisplayStops;
     final myStopIdx = displayStops.indexOf(_savedStop);
-    final logicalNearestIdx = displayStops.indexOf(_routeStops[nearestIdx]);
+    final logicalNearestIdx = displayStops.indexOf(_effectiveDisplayStops[nearestIdx < _effectiveDisplayStops.length ? nearestIdx : 0]);
 
     if (myStopIdx == -1 || logicalNearestIdx > myStopIdx) return null;
 
@@ -2589,7 +2792,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  _savedStop,
+                  _effectiveDisplayStops.isEmpty ? "Coming Soon" : (_savedStop.isEmpty ? "Not set" : _formatStopName(_savedStop)),
                   style: const TextStyle(
                     fontSize: 14,
                     color: Colors.white,
@@ -2598,7 +2801,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                 ),
                 const SizedBox(height: 4),
                 GestureDetector(
-                  onTap: () {
+                  onTap: _effectiveDisplayStops.isEmpty ? null : () {
                     setState(() {
                       _savedStop = "";
                     });
@@ -2609,9 +2812,9 @@ class _StudentDashboardState extends State<StudentDashboard>
                     }
                     _showSnackBar("⭐ Boarding stop cleared");
                   },
-                  child: const Text(
-                    "Change stop",
-                    style: TextStyle(
+                  child: Text(
+                    _effectiveDisplayStops.isEmpty ? "--" : "Change stop",
+                    style: const TextStyle(
                       fontSize: 11,
                       color: Color(0xFF93C5FD),
                       decoration: TextDecoration.underline,
@@ -2627,7 +2830,7 @@ class _StudentDashboardState extends State<StudentDashboard>
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                _busIsOnline ? (eta != null ? "$eta" : "Passed") : "—",
+                _effectiveDisplayStops.isEmpty ? "-" : (_busIsOnline ? (eta != null ? "$eta" : "Passed") : "-"),
                 style: const TextStyle(
                   fontSize: 26,
                   fontWeight: FontWeight.w900,
@@ -2949,9 +3152,6 @@ class _StudentDashboardState extends State<StudentDashboard>
         ? _getNearestStopIndex(_busLat!, _busLng!)
         : 0;
     final int? eta = _calculateEtaMinutes(nearestIdx);
-    final displayStops = _busDirection == 'To Home'
-        ? _routeStops.reversed.toList()
-        : _routeStops;
 
     return SingleChildScrollView(
       padding: EdgeInsets.zero,
@@ -3182,7 +3382,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                _savedStop,
+                                _effectiveDisplayStops.isEmpty ? "--" : (_savedStop.isEmpty ? "Not set" : _formatStopName(_savedStop)),
                                 style: const TextStyle(
                                   fontSize: 13,
                                   fontWeight: FontWeight.w800,
@@ -3193,7 +3393,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                               ),
                               const SizedBox(height: 4),
                               GestureDetector(
-                                onTap: () {
+                                onTap: _routeStops.isEmpty ? null : () {
                                   setState(() => _savedStop = "");
                                   if (Firebase.apps.isNotEmpty) {
                                     FirebaseDatabase.instance
@@ -3201,8 +3401,8 @@ class _StudentDashboardState extends State<StudentDashboard>
                                         .update({'savedStop': ''});
                                   }
                                 },
-                                child: const Text(
-                                  "Change stop",
+                                child: Text(
+                                  _routeStops.isEmpty ? "--" : "Change stop",
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.bold,
@@ -3230,9 +3430,11 @@ class _StudentDashboardState extends State<StudentDashboard>
                               ),
                             ),
                             Text(
-                              _busIsOnline
-                                  ? (eta != null ? "min away" : "Passed")
-                                  : "offline",
+                              _routeStops.isEmpty 
+                                  ? "--"
+                                  : (_busIsOnline
+                                      ? (eta != null ? "min away" : "Passed")
+                                      : "offline"),
                               style: const TextStyle(
                                 fontSize: 9,
                                 fontWeight: FontWeight.bold,
@@ -3322,10 +3524,10 @@ class _StudentDashboardState extends State<StudentDashboard>
                     child: Builder(
                       builder: (context) {
                         final query = _routeSearchQuery.toLowerCase();
-                        final matches = routeLabelsConfig.keys.where((key) {
+                        final matches = _dynamicRouteLabels.keys.where((key) {
                           final label =
-                              routeLabelsConfig[key]?.toLowerCase() ?? '';
-                          final stops = routeStopsConfig[key] ?? [];
+                              _dynamicRouteLabels[key]?.toLowerCase() ?? '';
+                          final stops = _dynamicRouteStops[key] ?? [];
                           final stopsMatch = stops.any(
                             (s) => s.toLowerCase().contains(query),
                           );
@@ -3348,7 +3550,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                           separatorBuilder: (_, _) => const Divider(height: 1),
                           itemBuilder: (ctx, idx) {
                             final key = matches[idx];
-                            final label = routeLabelsConfig[key] ?? key;
+                            final label = _dynamicRouteLabels[key] ?? key;
                             return Material(
                               color: Colors.transparent,
                               child: ListTile(
@@ -3399,7 +3601,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            "Selected: ${routeLabelsConfig[_selectedRoute] ?? _selectedRoute}",
+                            "Selected: ${_dynamicRouteLabels[_selectedRoute] ?? _selectedRoute}",
                             style: const TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w800,
@@ -3465,18 +3667,19 @@ class _StudentDashboardState extends State<StudentDashboard>
                   ),
                   child: Builder(
                     builder: (context) {
+                      final displayStops = _effectiveDisplayStops;
                       String? closestStopToBus;
-                      if (_allBusesLocations.containsKey(_busFirebaseId)) {
-                        final busData = _allBusesLocations[_busFirebaseId];
+                      if (_allBusesLocations.containsKey(_displayBusId)) {
+                        final busData = _allBusesLocations[_displayBusId];
                         if (busData != null && busData['lat'] != null && busData['lng'] != null) {
                           double minDistance = double.infinity;
                           for (String stop in displayStops) {
-                            if (coordsConfig.containsKey(stop)) {
+                            if (_coords.containsKey(stop)) {
                               double dist = _haversineM(
                                 busData['lat'],
                                 busData['lng'],
-                                coordsConfig[stop]!.latitude,
-                                coordsConfig[stop]!.longitude,
+                                _coords[stop]!.latitude,
+                                _coords[stop]!.longitude,
                               );
                               if (dist < minDistance) {
                                 minDistance = dist;
@@ -3491,6 +3694,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                           for (int i = 0; i < displayStops.length; i++) ...[
                             _buildStopRow(
                               displayStops[i],
+                              index: i,
                               isFirst: i == 0,
                               isLast: i == displayStops.length - 1,
                               isMyStop: _savedStop == displayStops[i],
@@ -3504,16 +3708,31 @@ class _StudentDashboardState extends State<StudentDashboard>
                   ),
                 ),
                 const SizedBox(height: 6),
-                Center(
-                  child: Text(
-                    "Showing ${displayStops.length} of ${displayStops.length} stops",
-                    style: const TextStyle(
-                      fontSize: 10,
-                      color: Color(0xFFCBD5E1),
-                      fontWeight: FontWeight.bold,
+                if (_effectiveDisplayStops.isNotEmpty)
+                  Center(
+                    child: Text(
+                      "Showing ${_effectiveDisplayStops.length} of ${_effectiveDisplayStops.length} stops",
+                      style: const TextStyle(
+                        fontSize: 10,
+                        color: Color(0xFFCBD5E1),
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  )
+                else
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8.0),
+                    child: Center(
+                      child: Text(
+                        "Route stops coming soon...",
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.redAccent,
+                        ),
+                      ),
                     ),
                   ),
-                ),
                 const SizedBox(height: 20),
               ],
             ),
@@ -3525,6 +3744,7 @@ class _StudentDashboardState extends State<StudentDashboard>
 
   Widget _buildStopRow(
     String stopName, {
+    int index = -1,
     bool isFirst = false,
     bool isLast = false,
     bool isMyStop = false,
@@ -3570,17 +3790,15 @@ class _StudentDashboardState extends State<StudentDashboard>
         const SizedBox(width: 12),
         Expanded(
           child: Text(
-            stopName,
+            _formatStopName(stopName, index: index),
             style: TextStyle(
               fontSize: 12.5,
               fontWeight: fWeight,
-              color: isMyStop
-                  ? const Color(0xFF2563EB)
-                  : const Color(0xFF1E293B),
+              color: const Color(0xFF1E293B),
             ),
           ),
         ),
-        if (!isFirst && !isLast && !isMyStop)
+        if (!isLast && !isMyStop)
           TextButton(
             style: TextButton.styleFrom(
               padding: EdgeInsets.zero,
@@ -3701,14 +3919,14 @@ class _StudentDashboardState extends State<StudentDashboard>
 
       if (!alreadyExists) {
         String matchedRouteKey = 'route_$cleanKey';
-        for (final rKey in routeLabelsConfig.keys) {
+        for (final rKey in _dynamicRouteLabels.keys) {
           final cleanRKey = rKey.replaceAll('route_', '');
           if (cleanRKey == cleanKey) {
             matchedRouteKey = rKey;
             break;
           }
         }
-        final routeName = routeLabelsConfig[matchedRouteKey] ?? 'Route $cleanKey';
+        final routeName = _dynamicRouteLabels[matchedRouteKey] ?? 'Route $cleanKey';
 
         combinedBuses.add({
           'id': 'B$cleanKey',
@@ -3757,7 +3975,11 @@ class _StudentDashboardState extends State<StudentDashboard>
     // Check if a searched bus matches selected route and is online
     Map<String, dynamic>? searchedBus;
     for (final b in combinedBuses) {
-      if (b['route'] == _selectedRoute) {
+      final bRoute = b['route']?.toString().toLowerCase().replaceAll('route_', '').trim();
+      final effKey = _effectiveRouteKey.toLowerCase().replaceAll('route_', '').trim();
+      final bBus = b['bus']?.toString().toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').trim();
+      final dispBus = _displayBusId.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').trim();
+      if (bRoute == effKey || bBus == dispBus) {
         final liveData = _getLiveBusData(b);
         if (liveData != null) {
           final lat = (liveData['lat'] as num).toDouble();
@@ -3770,6 +3992,8 @@ class _StudentDashboardState extends State<StudentDashboard>
           );
           searchedBus = {
             ...b,
+            'bus': "Bus $_displayBusId",
+            'routeName': _effectiveRouteLabel,
             'lat': lat,
             'lng': lng,
             'isOnline': true,
@@ -4511,7 +4735,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    "${routeLabelsConfig[_selectedRoute] ?? 'No Route Selected'} • Live Tracker",
+                    "${_effectiveRouteLabel} • Live Tracker",
                     style: TextStyle(
                       fontSize: 11,
                       color: Colors.white.withValues(alpha: 0.85),
@@ -4556,14 +4780,14 @@ class _StudentDashboardState extends State<StudentDashboard>
 
         if (!alreadyExists) {
           String matchedRouteKey = 'route_$cleanKey';
-          for (final rKey in routeLabelsConfig.keys) {
+          for (final rKey in _dynamicRouteLabels.keys) {
             final cleanRKey = rKey.replaceAll('route_', '');
             if (cleanRKey == cleanKey) {
               matchedRouteKey = rKey;
               break;
             }
           }
-          final routeName = routeLabelsConfig[matchedRouteKey] ?? 'Route $cleanKey';
+          final routeName = _dynamicRouteLabels[matchedRouteKey] ?? 'Route $cleanKey';
 
           combinedBuses.add({
             'id': 'B$cleanKey',
@@ -4666,12 +4890,16 @@ class _StudentDashboardState extends State<StudentDashboard>
     }
 
     // --- All Route Stop Markers (always visible) ---
-    for (var stopName in _routeStops) {
+    bool collegeAdded = false;
+    for (var stopName in _effectiveDisplayStops) {
       final coord = _coords[stopName];
       if (coord == null) continue;
 
       final isCollege =
           stopName == "COLLEGE" || stopName == "Panimalar Engineering College";
+      
+      if (isCollege) collegeAdded = true;
+
       markers.add(
         Marker(
           point: coord,
@@ -4679,7 +4907,7 @@ class _StudentDashboardState extends State<StudentDashboard>
           height: isCollege ? 40 : 30,
           alignment: Alignment.center,
           child: Tooltip(
-            message: stopName,
+            message: _formatStopName(stopName),
             child: Container(
               decoration: BoxDecoration(
                 color: isCollege ? const Color(0xFF1B5E20) : _routeColor,
@@ -4701,6 +4929,37 @@ class _StudentDashboardState extends State<StudentDashboard>
                         color: Colors.white,
                         size: 16,
                       ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (!collegeAdded) {
+      markers.add(
+        Marker(
+          point: const LatLng(13.04890, 80.07546), // College default coordinate
+          width: 40,
+          height: 40,
+          alignment: Alignment.center,
+          child: Tooltip(
+            message: "COLLEGE",
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF1B5E20),
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 2),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Colors.black26,
+                    blurRadius: 4,
+                    offset: Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: const Center(
+                child: Text("🏫", style: TextStyle(fontSize: 16)),
               ),
             ),
           ),
@@ -4754,7 +5013,9 @@ class _StudentDashboardState extends State<StudentDashboard>
 
     // --- Nearest Stop Label (when bus is live) ---
     if (_busIsOnline && _routeStops.isNotEmpty) {
-      final nearStop = _routeStops[nearestIdx];
+      final displayStops = _effectiveDisplayStops;
+      final safeIdx = nearestIdx < displayStops.length ? nearestIdx : 0;
+      final nearStop = displayStops[safeIdx];
       final nearCoord = _coords[nearStop];
       if (nearCoord != null) {
         markers.add(
@@ -4776,16 +5037,22 @@ class _StudentDashboardState extends State<StudentDashboard>
                   ),
                 ],
               ),
-              child: Text(
-                "Next: $nearStop",
-                style: const TextStyle(
-                  fontSize: 8,
-                  fontWeight: FontWeight.w900,
-                  color: Colors.white,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
+              child: Builder(
+                builder: (context) {
+                  int idx = _effectiveDisplayStops.indexOf(nearStop);
+                  String displayName = _formatStopName(nearStop, index: idx);
+                  return Text(
+                    "Next: $displayName",
+                    style: const TextStyle(
+                      fontSize: 8,
+                      fontWeight: FontWeight.w900,
+                      color: Colors.white,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                  );
+                },
               ),
             ),
           ),
@@ -4793,10 +5060,11 @@ class _StudentDashboardState extends State<StudentDashboard>
       }
     }
 
-    String nearestStopName = "Searching…";
-    if (_busIsOnline && _routeStops.isNotEmpty) {
-      nearestStopName = _routeStops[nearestIdx];
-      final displayStops = _busDirection == 'To Home' ? _routeStops.reversed.toList() : _routeStops;
+    String nearestStopName = _busIsOnline ? "Searching…" : "--";
+    if (_busIsOnline && _effectiveDisplayStops.isNotEmpty) {
+      final displayStops = _effectiveDisplayStops;
+      final safeIdx = nearestIdx < displayStops.length ? nearestIdx : 0;
+      nearestStopName = displayStops[safeIdx];
       if (nearestStopName == displayStops.last && _busLat != null && _busLng != null) {
         final lastCoord = _coords[nearestStopName];
         if (lastCoord != null) {
@@ -4989,7 +5257,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          routeLabelsConfig[_selectedRoute] ?? "No Route Selected",
+                          _effectiveRouteLabel,
                           style: const TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w900,
@@ -5034,15 +5302,31 @@ class _StudentDashboardState extends State<StudentDashboard>
                             ),
                           ),
                           const SizedBox(height: 4),
-                          Text(
-                            nearestStopName,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w800,
-                              color: Color(0xFF1E293B),
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                          Builder(
+                            builder: (context) {
+                              if (_routeStops.isEmpty) {
+                                return const Text(
+                                  "--",
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w800,
+                                    color: Color(0xFF1E293B),
+                                  ),
+                                );
+                              }
+                              int idx = _effectiveDisplayStops.indexOf(nearestStopName);
+                              String displayName = _formatStopName(nearestStopName, index: idx);
+                              return Text(
+                                displayName,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w800,
+                                  color: Color(0xFF1E293B),
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              );
+                            },
                           ),
                         ],
                       ),
@@ -5110,7 +5394,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                _savedStop,
+                                _routeStops.isEmpty ? "--" : _formatStopName(_savedStop),
                                 style: const TextStyle(
                                   fontSize: 11,
                                   fontWeight: FontWeight.bold,
@@ -5122,9 +5406,11 @@ class _StudentDashboardState extends State<StudentDashboard>
                           ),
                         ),
                         Text(
-                          _busIsOnline
-                              ? (eta != null ? "$eta min" : "Passed")
-                              : "offline",
+                          _effectiveDisplayStops.isEmpty 
+                              ? "Coming Soon" 
+                              : (_busIsOnline
+                                  ? (eta != null ? "$eta min" : "Passed")
+                                  : "offline"),
                           style: const TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w900,
@@ -6134,7 +6420,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                         if (_isFetchingRoute) return 'Checking bus number...';
                         final key = _fetchedRouteKey;
                         if (key == null) return null;
-                        return '✓  ${routeLabelsConfig[key] ?? ''}';
+                        return '✓  ${_dynamicRouteLabels[key] ?? ''}';
                       }(),
                       helperStyle: TextStyle(
                         color: _isFetchingRoute
@@ -6213,10 +6499,12 @@ class _StudentDashboardState extends State<StudentDashboard>
                       ),
                       isExpanded: true,
                       items: _profileBusStops
+                          .asMap()
+                          .entries
                           .map(
-                            (stop) => DropdownMenuItem(
-                              value: stop,
-                              child: Text(stop),
+                            (entry) => DropdownMenuItem(
+                              value: entry.value,
+                              child: Text(_formatStopName(entry.value, index: entry.key)),
                             ),
                           )
                           .toList(),
@@ -6287,7 +6575,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                   const SizedBox(height: 12),
                   _buildProfileRow(
                     "BOARDING STOP",
-                    _savedStop.isEmpty ? "-" : _savedStop,
+                    _savedStop.isEmpty ? "-" : _formatStopName(_savedStop),
                   ),
                   const SizedBox(height: 24),
                   OutlinedButton.icon(
@@ -6592,6 +6880,8 @@ class _StudentDashboardState extends State<StudentDashboard>
   }
 
   Future<void> _showVoiceReasonDialog(PlatformFile file) async {
+    final TextEditingController _documentDescCtrl = TextEditingController();
+    
     setState(() {
       _isListeningSTT = false;
       _recognizedEnglishText = "";
@@ -6645,7 +6935,16 @@ class _StudentDashboardState extends State<StudentDashboard>
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text("Add a Voice Reason (Optional)", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    Text("Add a Description & Voice Reason", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    SizedBox(height: 16),
+                    TextField(
+                      controller: _documentDescCtrl,
+                      decoration: InputDecoration(
+                        labelText: "Short Description (Required)",
+                        hintText: "E.g., Medical Certificate for sick leave",
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
                     SizedBox(height: 16),
                     GestureDetector(
                       onTap: toggleListening,
@@ -6656,7 +6955,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                       ),
                     ),
                     SizedBox(height: 16),
-                    Text(_isListeningSTT ? "Listening..." : "Tap to speak in English", style: TextStyle(color: Colors.grey)),
+                    Text(_isListeningSTT ? "Listening..." : "Tap to speak in English (Optional)", style: TextStyle(color: Colors.grey)),
                     if (_recognizedEnglishText.isNotEmpty) ...[
                       SizedBox(height: 16),
                       Text("English: $_recognizedEnglishText", style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic)),
@@ -6669,19 +6968,29 @@ class _StudentDashboardState extends State<StudentDashboard>
                       children: [
                         TextButton(
                           onPressed: () {
+                            if (_documentDescCtrl.text.trim().isEmpty) {
+                              _showSnackBar("⚠️ Please provide a short description.");
+                              return;
+                            }
                             _speech.stop();
                             _translatedTamilReason = ""; // explicitly clear
                             _recognizedEnglishText = "";
                             Navigator.pop(ctx);
-                            _uploadPickedFile(file); // proceed without reason
+                            _uploadPickedFile(file, _documentDescCtrl.text.trim()); // proceed without reason
                           },
-                          child: Text("Skip"),
+                          child: Text("Skip Voice"),
                         ),
                         ElevatedButton(
                           onPressed: () async {
+                            if (_documentDescCtrl.text.trim().isEmpty) {
+                              _showSnackBar("⚠️ Please provide a short description.");
+                              return;
+                            }
                             _speech.stop();
                             if (_recognizedEnglishText.isEmpty) {
-                              _showSnackBar("⚠️ No speech detected. Please try again or press Skip.");
+                              // Proceed without voice reason if empty
+                              Navigator.pop(ctx);
+                              _uploadPickedFile(file, _documentDescCtrl.text.trim());
                               return;
                             }
                             
@@ -6697,7 +7006,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                             }
                             
                             Navigator.pop(ctx);
-                            _uploadPickedFile(file); // proceed with reason
+                            _uploadPickedFile(file, _documentDescCtrl.text.trim()); // proceed with reason
                           },
                           child: Text("Confirm & Upload"),
                         ),
@@ -6713,7 +7022,7 @@ class _StudentDashboardState extends State<StudentDashboard>
     );
   }
 
-  Future<void> _uploadPickedFile(PlatformFile file) async {
+  Future<void> _uploadPickedFile(PlatformFile file, String description) async {
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -6778,7 +7087,7 @@ class _StudentDashboardState extends State<StudentDashboard>
 
       if (mounted) {
         Navigator.pop(context); // Close dialog
-        _sendRequestToAdmin(file.name, downloadUrl);
+        _sendRequestToAdmin(file.name, downloadUrl, description);
       }
     } catch (e) {
       if (mounted) {
@@ -6788,7 +7097,7 @@ class _StudentDashboardState extends State<StudentDashboard>
     }
   }
 
-  void _sendRequestToAdmin(String fileName, String downloadUrl) async {
+  void _sendRequestToAdmin(String fileName, String downloadUrl, String description) async {
     if (Firebase.apps.isEmpty) {
       _showSnackBar("⚠️ Firebase not connected!");
       return;
@@ -6801,12 +7110,13 @@ class _StudentDashboardState extends State<StudentDashboard>
         'studentYear': _studentYear,
         'studentDept': _studentDept,
         'studentBus': _profileBusCtrl.text.trim().toUpperCase(),
-        'documentName': fileName,
+        'documentName': description.isNotEmpty ? description : fileName,
         'documentUrl': downloadUrl,
         'voiceReasonTamil': _translatedTamilReason, // Added translated reason
+        'profilePicBase64': _profilePicUrl.startsWith('base64:') ? _profilePicUrl : '', // Pass profile pic
         'status': 'pending',
         'timestamp': DateTime.now().millisecondsSinceEpoch,
-        'savedStop': _savedStop.isNotEmpty ? _savedStop : "Not Selected",
+        'savedStop': _savedStop.isNotEmpty ? _formatStopName(_savedStop) : "Not Selected",
       });
       _showSnackBar("📨 Request sent to Admin successfully!");
       setState(() {
@@ -6852,58 +7162,93 @@ class _StudentDashboardState extends State<StudentDashboard>
                   ],
                 ),
                 const SizedBox(height: 16),
-                Container(
-                  height: 200,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF1F5F9),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: const Color(0xFFCBD5E1)),
-                  ),
-                  child:
-                      docUrl.isNotEmpty &&
-                          (docName.toLowerCase().endsWith('.png') ||
-                              docName.toLowerCase().endsWith('.jpg') ||
-                              docName.toLowerCase().endsWith('.jpeg'))
-                      ? ClipRRect(
-                          borderRadius: BorderRadius.circular(15),
-                          child: Image.network(
-                            docUrl,
-                            fit: BoxFit.cover,
-                            loadingBuilder: (context, child, progress) {
-                              if (progress == null) return child;
-                              return const Center(
-                                child: CircularProgressIndicator(),
-                              );
-                            },
-                            errorBuilder: (context, error, stackTrace) {
-                              return const Center(
-                                child: Icon(
-                                  Icons.broken_image,
-                                  size: 40,
-                                  color: Colors.grey,
-                                ),
-                              );
-                            },
+                FutureBuilder<DatabaseEvent>(
+                  future: FirebaseDatabase.instance.ref('documents/$docUrl').once(),
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const SizedBox(
+                        height: 200,
+                        child: Center(child: CircularProgressIndicator()),
+                      );
+                    }
+                    if (snapshot.hasError || !snapshot.hasData || snapshot.data?.snapshot.value == null) {
+                      return const SizedBox(
+                        height: 200,
+                        child: Center(
+                          child: Icon(Icons.broken_image, size: 40, color: Colors.grey),
+                        ),
+                      );
+                    }
+                    
+                    final docData = snapshot.data!.snapshot.value as Map;
+                    final base64String = docData['fileBase64'] as String?;
+                    
+                    if (base64String == null || base64String.isEmpty) {
+                      return const SizedBox(
+                        height: 200,
+                        child: Center(
+                          child: Icon(Icons.broken_image, size: 40, color: Colors.grey),
+                        ),
+                      );
+                    }
+                    
+                    final mimeType = docData['mimeType'] as String? ?? '';
+                    final isImage = mimeType.startsWith('image/');
+                    final isPdf = mimeType == 'application/pdf';
+                    
+                    if (isImage) {
+                      return GestureDetector(
+                        onTap: () {
+                          // Full screen image on tap
+                          showDialog(
+                            context: context,
+                            builder: (context) => Dialog(
+                              backgroundColor: Colors.transparent,
+                              insetPadding: const EdgeInsets.all(12),
+                              child: InteractiveViewer(
+                                child: Image.memory(base64Decode(base64String)),
+                              ),
+                            ),
+                          );
+                        },
+                        child: Container(
+                          constraints: BoxConstraints(
+                            maxHeight: MediaQuery.of(context).size.height * 0.5,
                           ),
-                        )
-                      : Center(
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF1F5F9),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: const Color(0xFFCBD5E1)),
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(15),
+                            child: Image.memory(
+                              base64Decode(base64String),
+                              fit: BoxFit.contain,
+                            ),
+                          ),
+                        ),
+                      );
+                    } else {
+                      return Container(
+                        height: 200,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF1F5F9),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: const Color(0xFFCBD5E1)),
+                        ),
+                        child: Center(
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               Icon(
-                                docName.toLowerCase().endsWith(".pdf")
-                                    ? Icons.picture_as_pdf
-                                    : Icons.insert_drive_file,
+                                isPdf ? Icons.picture_as_pdf : Icons.insert_drive_file,
                                 size: 40,
-                                color: docName.toLowerCase().endsWith(".pdf")
-                                    ? Colors.red
-                                    : Colors.grey,
+                                color: isPdf ? Colors.red : Colors.grey,
                               ),
                               const SizedBox(height: 8),
                               Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 16.0,
-                                ),
+                                padding: const EdgeInsets.symmetric(horizontal: 16.0),
                                 child: Text(
                                   docName,
                                   textAlign: TextAlign.center,
@@ -6919,38 +7264,10 @@ class _StudentDashboardState extends State<StudentDashboard>
                             ],
                           ),
                         ),
+                      );
+                    }
+                  },
                 ),
-                const SizedBox(height: 16),
-                if (docUrl.isNotEmpty) ...[
-                  ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF2563EB),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                    onPressed: () async {
-                      final uri = Uri.parse(docUrl);
-                      if (await canLaunchUrl(uri)) {
-                        await launchUrl(
-                          uri,
-                          mode: LaunchMode.externalApplication,
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.open_in_new, size: 16),
-                    label: const Text(
-                      "Open in Browser",
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                ],
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFFF1F5F9),

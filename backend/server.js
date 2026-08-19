@@ -46,6 +46,37 @@ const documentSchema = new mongoose.Schema({
 
 const DocumentModel = mongoose.model('Document', documentSchema);
 
+const announcementSchema = new mongoose.Schema({
+  title: String,
+  message: String,
+  attachmentBase64: String,
+  attachmentType: String,
+  timestamp: { type: Date, default: Date.now }
+});
+
+const Announcement = mongoose.model('Announcement', announcementSchema);
+
+// GET latest announcement
+app.get('/api/announcements/latest', async (req, res) => {
+  try {
+    const announcement = await Announcement.findOne().sort({ timestamp: -1 });
+    res.json(announcement || {});
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST new announcement
+app.post('/api/announcements', async (req, res) => {
+  try {
+    const { title, message, attachmentBase64, attachmentType } = req.body;
+    const announcement = new Announcement({ title, message, attachmentBase64, attachmentType });
+    await announcement.save();
+    res.json({ success: true, announcement });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 // GET profile
 app.get('/api/students/:rollNo', async (req, res) => {
   try {
