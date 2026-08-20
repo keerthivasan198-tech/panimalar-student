@@ -1972,6 +1972,7 @@ class _StudentDashboardState extends State<StudentDashboard>
   }
 
   String _deptToShortForm(String dept) {
+    if (dept.contains('(AIML)')) return 'AIML';
     if (dept.contains('(CSE)')) return 'CSE';
     if (dept.contains('(AIDS)')) return 'AIDS';
     if (dept.contains('(CSBS)')) return 'CSBS';
@@ -1981,6 +1982,10 @@ class _StudentDashboardState extends State<StudentDashboard>
     if (dept.contains('(MECH)')) return 'MECH';
     if (dept.contains('(CIVIL)')) return 'CIVIL';
     if (dept == 'MBA') return 'MBA';
+    if (dept == 'Nursing') return 'NURSING';
+    if (dept == 'Medical') return 'MEDICAL';
+    if (dept == 'Allied Science') return 'ALLIED';
+    if (dept == 'H&S') return 'HS';
     return dept.substring(0, min(3, dept.length)).toUpperCase();
   }
 
@@ -1992,7 +1997,7 @@ class _StudentDashboardState extends State<StudentDashboard>
     String boardingStop = '',
     String rollNo = '',
   }) async {
-    String actualRollNo = rollNo.isNotEmpty ? rollNo : widget.studentRollNo;
+    String actualRollNo = (rollNo.isNotEmpty ? rollNo : widget.studentRollNo).trim().toUpperCase();
 
     if (widget.isFaculty && widget.isFirstTimeSignup) {
       if (Firebase.apps.isNotEmpty) {
@@ -2019,21 +2024,160 @@ class _StudentDashboardState extends State<StudentDashboard>
           showDialog(
             context: context,
             barrierDismissible: false,
-            builder: (ctx) => AlertDialog(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              title: const Text('Profile Created 🎉', style: TextStyle(fontWeight: FontWeight.bold)),
-              content: Text(
-                'Your generated Faculty ID is:\n\n$actualRollNo\n\nPlease save this ID for future logins.',
-                style: const TextStyle(fontSize: 16),
-                textAlign: TextAlign.center,
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  child: const Text('OK', style: TextStyle(fontWeight: FontWeight.bold)),
-                ),
-              ],
-            ),
+            builder: (ctx) {
+              bool copied = false;
+              return StatefulBuilder(
+                builder: (context, setStateSB) {
+                  return Dialog(
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                    elevation: 10,
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFDCFCE7),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.badge_rounded,
+                              color: Color(0xFF15803D),
+                              size: 40,
+                            ),
+                          ),
+                          const SizedBox(height: 18),
+                          const Text(
+                            'Profile Created 🎉',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w900,
+                              color: Color(0xFF1E3A8A),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          const Text(
+                            'Please copy your ID or take a screenshot of this page for future logins.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Color(0xFF475569),
+                              height: 1.4,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFEF2F2),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: const Color(0xFFFCA5A5)),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.screenshot_rounded, size: 16, color: Color(0xFFDC2626)),
+                                SizedBox(width: 6),
+                                Text(
+                                  "Please take a screenshot!",
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFFDC2626),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 18),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF1F5F9),
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: const Color(0xFFE2E8F0)),
+                            ),
+                            child: Column(
+                              children: [
+                                const Text(
+                                  'GENERATED FACULTY ID',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF64748B),
+                                    letterSpacing: 1.0,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  actualRollNo,
+                                  style: const TextStyle(
+                                    fontSize: 24,
+                                    fontWeight: FontWeight.w900,
+                                    color: Color(0xFF2563EB),
+                                    letterSpacing: 1.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          const Text(
+                            "⚠️ You can log in only with this Faculty ID in the future.",
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFFDC2626),
+                            ),
+                          ),
+                          const SizedBox(height: 18),
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: copied ? const Color(0xFF15803D) : const Color(0xFF2563EB),
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(30),
+                              ),
+                              minimumSize: const Size(double.infinity, 44),
+                            ),
+                            icon: Icon(copied ? Icons.check : Icons.copy_rounded, size: 16),
+                            label: Text(
+                              copied ? 'Copied to Clipboard!' : 'Copy Faculty ID',
+                              style: const TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            onPressed: () async {
+                              await Clipboard.setData(ClipboardData(text: actualRollNo));
+                              setStateSB(() {
+                                copied = true;
+                              });
+                            },
+                          ),
+                          const SizedBox(height: 8),
+                          TextButton(
+                            style: TextButton.styleFrom(
+                              minimumSize: const Size(double.infinity, 44),
+                              foregroundColor: const Color(0xFF475569),
+                            ),
+                            onPressed: () {
+                              Navigator.pop(ctx);
+                            },
+                            child: const Text(
+                              'Got it, Proceed',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              );
+            },
           );
         }
       }
@@ -2891,53 +3035,36 @@ class _StudentDashboardState extends State<StudentDashboard>
   int _getNearestStopIndex(double lat, double lng) {
     final displayStops = _effectiveDisplayStops;
     if (displayStops.isEmpty) return 0;
-        
     if (displayStops.length == 1) return 0;
 
-    double cosLat = cos(lat * pi / 180);
-    double px = lng * cosLat;
-    double py = lat;
-
-    int bestSegment = 0;
-    double minD = double.infinity;
-
-    for (int i = 0; i < displayStops.length - 1; i++) {
-      final c1 = _coords[displayStops[i]];
-      final c2 = _coords[displayStops[i+1]];
-      if (c1 == null || c2 == null) continue;
-
-      double x1 = c1.longitude * cosLat;
-      double y1 = c1.latitude;
-      double x2 = c2.longitude * cosLat;
-      double y2 = c2.latitude;
-
-      double l2 = (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1);
-      double d;
-      if (l2 == 0) {
-        d = (px - x1) * (px - x1) + (py - y1) * (py - y1);
-      } else {
-        double t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / l2;
-        t = max(0.0, min(1.0, t));
-        double projX = x1 + t * (x2 - x1);
-        double projY = y1 + t * (y2 - y1);
-        d = (px - projX) * (px - projX) + (py - projY) * (py - projY);
-      }
-
-      if (d < minD) {
-        minD = d;
-        bestSegment = i;
+    int closestIdx = 0;
+    double minDistance = double.infinity;
+    for (int i = 0; i < displayStops.length; i++) {
+      final coord = _coords[displayStops[i]];
+      if (coord == null) continue;
+      final dist = _haversineKm(lat, lng, coord.latitude, coord.longitude);
+      if (dist < minDistance) {
+        minDistance = dist;
+        closestIdx = i;
       }
     }
 
-    int nextIdx = bestSegment + 1;
-
-    final lastStop = _coords[displayStops.last];
-    if (lastStop != null) {
-      if (_haversineKm(lat, lng, lastStop.latitude, lastStop.longitude) < 0.1) {
-        nextIdx = displayStops.length - 1;
+    int nextIdx = closestIdx;
+    if (closestIdx < displayStops.length - 1) {
+      final cCurr = _coords[displayStops[closestIdx]];
+      final cNext = _coords[displayStops[closestIdx + 1]];
+      if (cCurr != null && cNext != null) {
+        double vX = cNext.longitude - cCurr.longitude;
+        double vY = cNext.latitude - cCurr.latitude;
+        double uX = lng - cCurr.longitude;
+        double uY = lat - cCurr.latitude;
+        double dot = uX * vX + uY * vY;
+        if (dot > 0) {
+          nextIdx = closestIdx + 1;
+        }
       }
     }
-    
+
     final nextStopName = displayStops[nextIdx];
     final originalIdx = _effectiveDisplayStops.indexOf(nextStopName);
     return originalIdx != -1 ? originalIdx : 0;
@@ -4879,6 +5006,21 @@ class _StudentDashboardState extends State<StudentDashboard>
                 ],
               ),
 
+            if (_effectiveDisplayStops.isNotEmpty)
+              PolylineLayer(
+                polylines: [
+                  Polyline(
+                    points: _effectiveDisplayStops
+                        .map((s) => _coords[s])
+                        .where((c) => c != null)
+                        .cast<LatLng>()
+                        .toList(),
+                    color: const Color(0xFF2563EB),
+                    strokeWidth: 4.0,
+                  ),
+                ],
+              ),
+
             // All markers: stops + live bus icon
             MarkerLayer(markers: markers),
           ],
@@ -5857,6 +5999,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                     const SizedBox(height: 6),
                     TextField(
                       controller: _profileRollNoCtrl,
+                      textCapitalization: TextCapitalization.characters,
                       decoration: InputDecoration(
                         hintText: widget.isFaculty ? "Enter your Faculty ID" : "Enter your Roll No",
                         hintStyle: const TextStyle(
@@ -6046,8 +6189,16 @@ class _StudentDashboardState extends State<StudentDashboard>
                     isExpanded: true,
                     items: const [
                       DropdownMenuItem(
+                        value: "AI & Machine Learning (AIML)",
+                        child: Text("AI & Machine Learning (AIML)"),
+                      ),
+                      DropdownMenuItem(
                         value: "Computer Science (CSE)",
                         child: Text("Computer Science (CSE)"),
+                      ),
+                      DropdownMenuItem(
+                        value: "Information Technology (IT)",
+                        child: Text("Information Technology (IT)"),
                       ),
                       DropdownMenuItem(
                         value: "Artificial Intelligence & DS (AIDS)",
@@ -6058,26 +6209,33 @@ class _StudentDashboardState extends State<StudentDashboard>
                         child: Text("CS & Business Systems (CSBS)"),
                       ),
                       DropdownMenuItem(
-                        value: "Electronics & Communication (ECE)",
-                        child: Text("Electronics & Communication (ECE)"),
-                      ),
-                      DropdownMenuItem(
                         value: "Electrical & Electronics (EEE)",
                         child: Text("Electrical & Electronics (EEE)"),
-                      ),
-                      DropdownMenuItem(
-                        value: "Information Technology (IT)",
-                        child: Text("Information Technology (IT)"),
                       ),
                       DropdownMenuItem(
                         value: "Mechanical Engineering (MECH)",
                         child: Text("Mechanical Engineering (MECH)"),
                       ),
                       DropdownMenuItem(
-                        value: "Civil Engineering (CIVIL)",
-                        child: Text("Civil Engineering (CIVIL)"),
+                        value: "Nursing",
+                        child: Text("Nursing"),
                       ),
-                      DropdownMenuItem(value: "MBA", child: Text("MBA")),
+                      DropdownMenuItem(
+                        value: "Medical",
+                        child: Text("Medical"),
+                      ),
+                      DropdownMenuItem(
+                        value: "Electronics & Communication (ECE)",
+                        child: Text("Electronics & Communication (ECE)"),
+                      ),
+                      DropdownMenuItem(
+                        value: "Allied Science",
+                        child: Text("Allied Science"),
+                      ),
+                      DropdownMenuItem(
+                        value: "H&S",
+                        child: Text("H&S"),
+                      ),
                     ],
                     onChanged: (val) {
                       if (val != null) setState(() => _studentDept = val);
@@ -6282,7 +6440,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                         _studentDept,
                         busNo: _profileBusCtrl.text.trim().toUpperCase(),
                         boardingStop: _savedStop,
-                        rollNo: _profileRollNoCtrl.text.trim(),
+                        rollNo: _profileRollNoCtrl.text.trim().toUpperCase(),
                       );
                     },
                     child: const Text(
@@ -6418,15 +6576,18 @@ class _StudentDashboardState extends State<StudentDashboard>
   /// Returns the current department value only if it matches one of the
   String? _deptDropdownValue() {
     const valid = [
+      "AI & Machine Learning (AIML)",
       "Computer Science (CSE)",
+      "Information Technology (IT)",
       "Artificial Intelligence & DS (AIDS)",
       "Computer Science & BS (CSBS)",
-      "Electronics & Communication (ECE)",
       "Electrical & Electronics (EEE)",
-      "Information Technology (IT)",
       "Mechanical Engineering (MECH)",
-      "Civil Engineering (CIVIL)",
-      "MBA",
+      "Nursing",
+      "Medical",
+      "Electronics & Communication (ECE)",
+      "Allied Science",
+      "H&S",
     ];
     return valid.contains(_studentDept) ? _studentDept : null;
   }
