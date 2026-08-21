@@ -467,7 +467,8 @@ class _StudentDashboardState extends State<StudentDashboard>
       stops = ["COLLEGE"];
     }
     if (_busDirection.trim().toLowerCase() == 'to home' ||
-        _busDirection.trim().toLowerCase() == 'home') {
+        _busDirection.trim().toLowerCase() == 'home' ||
+        _busDirection.trim() == '2') {
       return stops.reversed.toList();
     }
     return stops;
