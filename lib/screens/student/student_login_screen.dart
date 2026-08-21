@@ -59,7 +59,7 @@ class _StudentLoginScreenState extends State<StudentLoginScreen>
   }
 
   void _handleLogin() async {
-    final rollNo = _rollNoController.text.trim();
+    final rollNo = _rollNoController.text.trim().toUpperCase();
     if (rollNo.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -157,6 +157,7 @@ class _StudentLoginScreenState extends State<StudentLoginScreen>
                 try {
                   final Map<String, String> routeLabels = {};
                   final Map<String, List<String>> routeStopsMap = {};
+                  final Map<String, _GuestBusRouteInfo> busMap = {};
 
                   if (Firebase.apps.isNotEmpty) {
                     final routesSnap = await FirebaseDatabase.instance.ref('routes').get();
@@ -165,47 +166,73 @@ class _StudentLoginScreenState extends State<StudentLoginScreen>
                         final childKey = child.key?.toString() ?? '';
                         final val = child.value;
                         if (val is Map) {
+                          if (val['deleted'] == true || val['isDeleted'] == true || val['status'] == 'deleted') continue;
                           final key = (val['key'] != null && val['key'].toString().isNotEmpty)
                               ? val['key'].toString()
                               : childKey;
+                          if (key.isEmpty) continue;
+                          
                           final name = val['name']?.toString() ?? key;
                           routeLabels[key] = name;
                           routeLabels[childKey] = name;
+                          
+                          List<String> stops = [];
                           if (val['stops'] != null && val['stops'] is List) {
-                            final stops = List<String>.from(val['stops'].map((e) => e.toString()));
+                            stops = List<String>.from(val['stops'].map((e) => e.toString()));
                             routeStopsMap[key] = stops;
                             routeStopsMap[childKey] = stops;
                           }
+                          
+                          busMap[key] = _GuestBusRouteInfo(
+                            busNo: name,
+                            routeKey: key,
+                            routeName: name,
+                            stops: stops,
+                          );
                         }
                       }
                     }
 
+                    final Map<String, String> routeToBusNoMap = {};
                     final driversSnap = await FirebaseDatabase.instance.ref('drivers').get();
                     if (driversSnap.exists && driversSnap.value != null) {
-                      final Map<String, _GuestBusRouteInfo> busMap = {};
                       for (final child in driversSnap.children) {
                         final val = child.value;
                         if (val is Map) {
                           final busNo = (val['bus']?.toString() ?? '').trim().toUpperCase();
                           final routeKey = (val['route']?.toString() ?? '').trim();
-                          if (busNo.isNotEmpty) {
-                            final name = routeLabels[routeKey] ?? 'Route $busNo';
-                            final stops = routeStopsMap[routeKey] ?? [];
-                            busMap[busNo] = _GuestBusRouteInfo(
-                              busNo: busNo,
-                              routeKey: routeKey,
-                              routeName: name,
-                              stops: stops,
-                            );
+                          if (busNo.isNotEmpty && routeKey.isNotEmpty) {
+                            routeToBusNoMap[routeKey] = busNo;
                           }
                         }
                       }
-                      allBusRoutes = busMap.values.toList()
-                        ..sort((a, b) {
-                          final nA = int.tryParse(a.busNo) ?? 999;
-                          final nB = int.tryParse(b.busNo) ?? 999;
-                          return nA.compareTo(nB);
-                        });
+                    }
+
+                    final List<_GuestBusRouteInfo> canonicalRoutes = [];
+                    for (final routeKey in busMap.keys) {
+                      final originalInfo = busMap[routeKey]!;
+                      final activeBusNo = routeToBusNoMap[routeKey];
+                      if (activeBusNo != null) {
+                        final updatedInfo = _GuestBusRouteInfo(
+                          busNo: activeBusNo,
+                          routeKey: routeKey,
+                          routeName: originalInfo.routeName,
+                          stops: originalInfo.stops,
+                        );
+                        canonicalRoutes.add(updatedInfo);
+                      } else {
+                        canonicalRoutes.add(originalInfo);
+                      }
+                    }
+
+                    allBusRoutes = canonicalRoutes;
+                    
+                    allBusRoutes.sort((a, b) {
+                      final nA = int.tryParse(a.busNo) ?? 999;
+                      final nB = int.tryParse(b.busNo) ?? 999;
+                      if (nA != 999 && nB != 999) return nA.compareTo(nB);
+                      return a.busNo.compareTo(b.busNo);
+                    });
 
                       String cleanStopName(String rawStop) {
                         var name = rawStop.trim();
@@ -236,7 +263,6 @@ class _StudentLoginScreenState extends State<StudentLoginScreen>
                       }
                       allStops = uniqueStops.toList()..sort();
                     }
-                  }
                 } catch (e) {
                   debugPrint("Guest dialog route fetch error: $e");
                 } finally {
@@ -272,11 +298,12 @@ class _StudentLoginScreenState extends State<StudentLoginScreen>
                 ? <String>[]
                 : allStops.where((s) => s.toLowerCase().contains(query)).toList();
 
-            // Filter matching buses for query ONLY if user types a pure number (e.g. "52")
-            final queryMatchingBuses = (query.isEmpty || int.tryParse(query) == null)
+            // Filter matching buses for query
+            final queryMatchingBuses = query.isEmpty
                 ? <_GuestBusRouteInfo>[]
                 : allBusRoutes.where((b) {
-                    return b.busNo.toLowerCase() == query;
+                    return b.busNo.toLowerCase().contains(query) ||
+                        b.routeName.toLowerCase().contains(query);
                   }).toList();
 
             // Buses serving selectedStop
@@ -577,6 +604,14 @@ class _StudentLoginScreenState extends State<StudentLoginScreen>
                                     color: Color(0xFF1E293B),
                                   ),
                                 ),
+                                subtitle: b.stops.isNotEmpty
+                                    ? Text(
+                                        b.stops.join(' ➔ '),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                                      )
+                                    : null,
                                 trailing: const Icon(Icons.chevron_right, size: 18),
                                 onTap: () async {
                                   final prefs = await SharedPreferences.getInstance();
@@ -617,30 +652,40 @@ class _StudentLoginScreenState extends State<StudentLoginScreen>
                         ),
 
                       if (query.isNotEmpty && matchingStops.isEmpty && queryMatchingBuses.isEmpty) ...[
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 20),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: const [
-                              Icon(Icons.location_off_rounded, size: 32, color: Colors.redAccent),
-                              SizedBox(height: 8),
-                              Text(
-                                'Bus stop not available.',
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.redAccent,
+                        Container(
+                          margin: const EdgeInsets.symmetric(vertical: 12),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFEF2F2),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFFFCA5A5)),
+                          ),
+                          child: const Row(
+                            children: [
+                              Icon(Icons.location_off_rounded, size: 24, color: Color(0xFFDC2626)),
+                              SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Bus stop not available.',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFF991B1B),
+                                      ),
+                                    ),
+                                    SizedBox(height: 2),
+                                    Text(
+                                      'Please enter a correct registered bus stop.',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        color: Color(0xFF7F1D1D),
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                                textAlign: TextAlign.center,
-                              ),
-                              SizedBox(height: 4),
-                              Text(
-                                'Please enter a correct registered bus stop.',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: Color(0xFF64748B),
-                                ),
-                                textAlign: TextAlign.center,
                               ),
                             ],
                           ),
@@ -653,7 +698,26 @@ class _StudentLoginScreenState extends State<StudentLoginScreen>
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context),
-                  child: const Text('Cancel'),
+                  child: const Text(
+                    'Cancel',
+                    style: TextStyle(color: Color(0xFF64748B)),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () async {
+                    final prefs = await SharedPreferences.getInstance();
+                    await prefs.setString('studentBusNo', 'Guest');
+                    await prefs.setString('studentSavedStop', '');
+                    await prefs.remove('studentSelectedRoute');
+                    if (mounted) {
+                      Navigator.pop(context);
+                      widget.onLogin('Guest', false);
+                    }
+                  },
+                  child: const Text(
+                    'Skip & Proceed',
+                    style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF2563EB)),
+                  ),
                 ),
               ],
             );
@@ -843,7 +907,7 @@ class _StudentLoginScreenState extends State<StudentLoginScreen>
                               const SizedBox(height: 8),
                               Text(
                                 _isFacultyLogin
-                                    ? 'Enter your Faculty ID (e.g. CSE/001)'
+                                    ? 'Enter your Faculty ID (e.g. CSE001)'
                                     : 'Enter your Roll Number to continue',
                                 style: TextStyle(
                                   fontSize: 14,
