@@ -208,12 +208,15 @@ class _StudentDashboardState extends State<StudentDashboard>
   }
 
   String _formatStopName(String stop, {int index = -1}) {
-    if (stop.contains("(Lat:") && stop.contains("Lng:")) {
-      return stop.split("(Lat:")[0].trim();
-    } else if (stop.startsWith("Lat: ")) {
+    if (stop.contains("(Lat:") || stop.contains("Lat:") || stop.contains("Lng:")) {
+      final clean = stop.replaceAll(RegExp(r'\s*\((?:Lat:\s*)?[-\d.]+[,\s]+(?:Lng:\s*)?[-\d.]+\)'), '')
+                        .replaceAll(RegExp(r'\(Lat:[^)]*'), '')
+                        .replaceAll(RegExp(r'Lng:[^)]*'), '')
+                        .trim();
+      if (clean.isNotEmpty) return clean;
       return index >= 0 ? "Stop ${index + 1}" : "Custom Stop";
     }
-    return stop;
+    return stop.trim();
   }  int _currentIndex = 0;
   bool _isLoading = true;
 
@@ -229,6 +232,7 @@ class _StudentDashboardState extends State<StudentDashboard>
   Map<String, String> _dynamicRouteLabels = {};
   Map<String, List<String>> _dynamicRouteStops = {};
   Map<String, String> _dynamicRouteColors = {};
+  Map<String, LatLng> _dynamicStopCoords = {};
 
   bool _isEditingProfile = false;
   String _profilePicUrl = "";
@@ -465,49 +469,142 @@ class _StudentDashboardState extends State<StudentDashboard>
   bool _isFetchingRoute = false;
   Timer? _debounceTimer;
 
+  String? _resolveRouteKeyFromBusInput(String busInput) {
+    final bus = busInput.trim();
+    if (bus.isEmpty) return null;
+    final busUpper = bus.toUpperCase();
+    final busLower = bus.toLowerCase();
+    final cleanBus = busLower.replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+    final busNum = _extractBusNumber(bus);
+
+    // 1. Check in _driverBusToRouteMap
+    if (_driverBusToRouteMap.containsKey(busUpper) && _driverBusToRouteMap[busUpper]!.isNotEmpty) {
+      return _driverBusToRouteMap[busUpper];
+    }
+    if (_driverBusToRouteMap.containsKey(cleanBus) && _driverBusToRouteMap[cleanBus]!.isNotEmpty) {
+      return _driverBusToRouteMap[cleanBus];
+    }
+    if (busNum.isNotEmpty && _driverBusToRouteMap.containsKey(busNum) && _driverBusToRouteMap[busNum]!.isNotEmpty) {
+      return _driverBusToRouteMap[busNum];
+    }
+
+    // 2. Check in _dynamicRouteLabels & _dynamicRouteStops
+    for (final k in _dynamicRouteLabels.keys) {
+      final kLower = k.toLowerCase();
+      final kClean = kLower.replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+      final kNum = _extractBusNumber(k);
+      final label = _dynamicRouteLabels[k] ?? '';
+      final labelLower = label.toLowerCase();
+      
+      if (kLower == busLower || kLower == 'route_$cleanBus' || kClean == cleanBus) {
+        return k;
+      }
+      if (busNum.isNotEmpty && (kNum == busNum || kLower == 'route_$busNum')) {
+        return k;
+      }
+      if (labelLower.contains('bus $cleanBus') || labelLower.contains('route $cleanBus')) {
+        return k;
+      }
+      if (busNum.isNotEmpty && (labelLower.contains('bus $busNum') || labelLower.contains('route $busNum'))) {
+        return k;
+      }
+    }
+
+    for (final k in _dynamicRouteStops.keys) {
+      final kLower = k.toLowerCase();
+      final kClean = kLower.replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+      final kNum = _extractBusNumber(k);
+      if (kLower == busLower || kLower == 'route_$cleanBus' || kClean == cleanBus || (busNum.isNotEmpty && kNum == busNum)) {
+        return k;
+      }
+    }
+
+    return null;
+  }
+
   void _fetchRouteForBus(String busNumber) async {
-    final bus = busNumber.trim().toUpperCase();
+    final bus = busNumber.trim();
     if (bus.isEmpty) {
-      setState(() {
-        _fetchedRouteKey = null;
-        _isFetchingRoute = false;
-      });
+      if (mounted) {
+        setState(() {
+          _fetchedRouteKey = null;
+          _isFetchingRoute = false;
+        });
+      }
       return;
     }
 
-    setState(() {
-      _isFetchingRoute = true;
-      _fetchedRouteKey = null;
-    });
+    // 1. Try instantaneous in-memory resolution
+    final immediateKey = _resolveRouteKeyFromBusInput(bus);
+    if (immediateKey != null) {
+      if (mounted) {
+        setState(() {
+          _fetchedRouteKey = immediateKey;
+          _isFetchingRoute = false;
+        });
+      }
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _isFetchingRoute = true;
+        _fetchedRouteKey = null;
+      });
+    }
 
     try {
       if (Firebase.apps.isNotEmpty) {
-        final snap = await FirebaseDatabase.instance.ref('drivers').get();
-        if (snap.exists) {
-          String? foundRoute;
-          for (final child in snap.children) {
+        final busUpper = bus.toUpperCase();
+        final cleanBus = bus.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+        final busNum = _extractBusNumber(bus);
+
+        // Check Firebase drivers node
+        final driversSnap = await FirebaseDatabase.instance.ref('drivers').get();
+        String? foundRoute;
+        if (driversSnap.exists && driversSnap.value != null) {
+          for (final child in driversSnap.children) {
             final val = child.value;
             if (val is Map) {
               final b = (val['bus']?.toString() ?? '').trim().toUpperCase();
-              if (b == bus) {
-                foundRoute = val['route'] as String?;
-                break;
+              final bClean = b.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').trim();
+              final bNum = _extractBusNumber(b);
+              if (b == busUpper || bClean == cleanBus || (busNum.isNotEmpty && bNum == busNum)) {
+                foundRoute = val['route']?.toString();
+                if (foundRoute != null && foundRoute.isNotEmpty) break;
               }
             }
           }
-          if (mounted) {
-            setState(() {
-              _fetchedRouteKey = foundRoute;
-              _isFetchingRoute = false;
-            });
+        }
+
+        // If not found in drivers, check Firebase routes node
+        if (foundRoute == null) {
+          final routesSnap = await FirebaseDatabase.instance.ref('routes').get();
+          if (routesSnap.exists && routesSnap.value != null) {
+            for (final child in routesSnap.children) {
+              final val = child.value;
+              final childKey = child.key?.toString() ?? '';
+              if (val is Map) {
+                final k = (val['key']?.toString() ?? childKey).trim();
+                final name = (val['name']?.toString() ?? '').toLowerCase();
+                final kClean = k.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+                final kNum = _extractBusNumber(k);
+                if (k.toUpperCase() == busUpper || kClean == cleanBus || (busNum.isNotEmpty && kNum == busNum) ||
+                    name.contains('bus $cleanBus') || name.contains('route $cleanBus') ||
+                    (busNum.isNotEmpty && (name.contains('bus $busNum') || name.contains('route $busNum')))) {
+                  foundRoute = k;
+                  break;
+                }
+              }
+            }
           }
-        } else {
-          if (mounted) {
-            setState(() {
-              _fetchedRouteKey = null;
-              _isFetchingRoute = false;
-            });
-          }
+        }
+
+        if (mounted) {
+          setState(() {
+            _fetchedRouteKey = foundRoute;
+            _isFetchingRoute = false;
+          });
         }
       } else {
         if (mounted) setState(() => _isFetchingRoute = false);
@@ -522,15 +619,20 @@ class _StudentDashboardState extends State<StudentDashboard>
     _coords.clear();
     final activeStops = _effectiveDisplayStops;
     for (var stop in activeStops) {
-      final match = RegExp(r'Lat:\s*([-\d.]+)\s*,\s*Lng:\s*([-\d.]+)').firstMatch(stop);
-      if (match != null) {
-        try {
-          final lat = double.parse(match.group(1)!);
-          final lng = double.parse(match.group(2)!);
-          _coords[stop] = LatLng(lat, lng);
-        } catch (_) {}
-      } else if (coordsConfig.containsKey(stop)) {
-        _coords[stop] = coordsConfig[stop]!;
+      final cleanStop = stop.trim();
+      if (_dynamicStopCoords.containsKey(cleanStop)) {
+        _coords[cleanStop] = _dynamicStopCoords[cleanStop]!;
+      } else {
+        final match = RegExp(r'Lat:\s*([-\d.]+)\s*,\s*Lng:\s*([-\d.]+)').firstMatch(stop);
+        if (match != null) {
+          try {
+            final lat = double.parse(match.group(1)!);
+            final lng = double.parse(match.group(2)!);
+            _coords[cleanStop] = LatLng(lat, lng);
+          } catch (_) {}
+        } else if (coordsConfig.containsKey(cleanStop)) {
+          _coords[cleanStop] = coordsConfig[cleanStop]!;
+        }
       }
     }
   }
@@ -540,10 +642,22 @@ class _StudentDashboardState extends State<StudentDashboard>
     final busNo = _profileBusCtrl.text.trim();
     if (busNo.isEmpty) return [];
 
-    final key = _fetchedRouteKey;
+    final key = _fetchedRouteKey ?? _resolveRouteKeyFromBusInput(busNo);
     if (key == null) return [];
     
-    final stops = List<String>.from(_dynamicRouteStops[key] ?? []);
+    List<String> stops = List<String>.from(_dynamicRouteStops[key] ?? []);
+    if (stops.isEmpty) {
+      final cleanKey = key.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+      final keyNum = _extractBusNumber(key);
+      for (final entry in _dynamicRouteStops.entries) {
+        final k = entry.key.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+        final entryNum = _extractBusNumber(entry.key);
+        if (k == cleanKey || (keyNum.isNotEmpty && entryNum == keyNum)) {
+          stops = List<String>.from(entry.value);
+          break;
+        }
+      }
+    }
     if (stops.isNotEmpty && stops.last != "COLLEGE" && stops.last != "Panimalar Engineering College") {
       stops.add("COLLEGE");
     }
@@ -646,6 +760,7 @@ class _StudentDashboardState extends State<StudentDashboard>
         Map<String, String> newLabels = {};
         Map<String, List<String>> newStops = {};
         Map<String, String> newColors = {};
+        Map<String, LatLng> newStopCoords = {};
         
         void processRoute(String fallbackKey, Map val) {
           if (val['deleted'] == true || val['isDeleted'] == true || val['status'] == 'deleted') return;
@@ -662,10 +777,74 @@ class _StudentDashboardState extends State<StudentDashboard>
             newColors[key] = val['color'].toString();
             newColors[fallbackKey] = val['color'].toString();
           }
-          if (val['stops'] != null && val['stops'] is List) {
-            final stops = List<String>.from(val['stops'].map((e) => e.toString()));
-            newStops[key] = stops;
-            newStops[fallbackKey] = stops;
+          List<String> rawStops = [];
+          if (val['stops'] != null) {
+            if (val['stops'] is List) {
+              rawStops = List<String>.from((val['stops'] as List).map((e) => e.toString()));
+            } else if (val['stops'] is Map) {
+              final mapStops = (val['stops'] as Map);
+              final sortedKeys = mapStops.keys.toList()..sort((a, b) => a.toString().compareTo(b.toString()));
+              for (final k in sortedKeys) {
+                final item = mapStops[k];
+                if (item is Map) {
+                  final nameStr = item['name']?.toString() ?? item['stopName']?.toString() ?? '';
+                  final latVal = item['lat'] ?? item['latitude'];
+                  final lngVal = item['lng'] ?? item['longitude'];
+                  if (latVal != null && lngVal != null && nameStr.isNotEmpty) {
+                    try {
+                      final lat = double.parse(latVal.toString());
+                      final lng = double.parse(lngVal.toString());
+                      newStopCoords[nameStr] = LatLng(lat, lng);
+                    } catch (_) {}
+                  }
+                  if (nameStr.isNotEmpty) rawStops.add(nameStr);
+                } else if (item != null) {
+                  rawStops.add(item.toString());
+                }
+              }
+            } else if (val['stops'] is String) {
+              rawStops = (val['stops'] as String).split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+            }
+          }
+
+          if (rawStops.isNotEmpty) {
+            final List<String> combined = [];
+            for (int i = 0; i < rawStops.length; i++) {
+              final s = rawStops[i].trim();
+              if (s.isEmpty) continue;
+              if ((s.startsWith("Lng:") || s == ")" || s == "),") && combined.isNotEmpty) {
+                combined[combined.length - 1] = "${combined.last}, $s";
+              } else {
+                combined.add(s);
+              }
+            }
+            final List<String> cleanedStops = [];
+            for (final s in combined) {
+              final match = RegExp(r'(?:Lat:\s*)?([-\d.]+)[,\s]+(?:Lng:\s*)?([-\d.]+)').firstMatch(s);
+              String name = s;
+              if (name.contains("(Lat:")) {
+                name = name.split("(Lat:")[0].trim();
+              }
+              name = name.replaceAll(RegExp(r'\s*\((?:Lat:\s*)?[-\d.]+[,\s]+(?:Lng:\s*)?[-\d.]+\)?'), '')
+                         .replaceAll(RegExp(r'\(Lat:[^)]*'), '')
+                         .replaceAll(RegExp(r'Lng:[^)]*'), '')
+                         .replaceAll(')', '')
+                         .trim();
+              if (match != null && name.isNotEmpty) {
+                try {
+                  final lat = double.parse(match.group(1)!);
+                  final lng = double.parse(match.group(2)!);
+                  if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+                    newStopCoords[name] = LatLng(lat, lng);
+                  }
+                } catch (_) {}
+              }
+              if (name.isNotEmpty) {
+                cleanedStops.add(name);
+              }
+            }
+            newStops[key] = cleanedStops;
+            newStops[fallbackKey] = cleanedStops;
           }
         }
 
@@ -680,6 +859,8 @@ class _StudentDashboardState extends State<StudentDashboard>
             _dynamicRouteLabels = newLabels;
             _dynamicRouteStops = newStops;
             _dynamicRouteColors = newColors;
+            _dynamicStopCoords = newStopCoords;
+            _processCoordinatesForCurrentRoute();
 
             // If student's currently selected route was deleted by admin, switch to first active route or clear
             if (_selectedRoute.isNotEmpty && !newLabels.containsKey(_selectedRoute)) {
@@ -747,6 +928,16 @@ class _StudentDashboardState extends State<StudentDashboard>
   }
 
   Map<String, String> _driverBusToRouteMap = {};
+
+  List<String> get _registeredAdminRouteKeys {
+    final Map<String, String> uniqueByName = {};
+    _dynamicRouteLabels.forEach((k, v) {
+      if (!uniqueByName.containsKey(v)) {
+        uniqueByName[v] = k;
+      }
+    });
+    return uniqueByName.values.toList();
+  }
 
   void _listenToDriverRoute() {
     _driverBusRouteSub?.cancel();
@@ -1826,10 +2017,13 @@ class _StudentDashboardState extends State<StudentDashboard>
               _studentDept = data['department'] ?? _studentDept;
               _profileBusCtrl.text = data['busNo'] ?? _profileBusCtrl.text;
               _studentBusNo = data['busNo'] ?? _studentBusNo;
-              _savedStop = data['boardingStop'] ?? _savedStop;
+              _savedStop = data['boardingStop'] ?? data['savedStop'] ?? _savedStop;
               // Keep edit controllers in sync with latest fetched values
               _profileNameCtrl.text = _studentName;
               _profileTempYear = _studentYear;
+              if (_studentBusNo.isNotEmpty) {
+                _fetchRouteForBus(_studentBusNo);
+              }
               if (data['profilePicBase64'] != null &&
                   data['profilePicBase64'].toString().isNotEmpty) {
                 _profilePicUrl = data['profilePicBase64'];
@@ -1851,6 +2045,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                 prefs.setString('studentDept', _studentDept);
                 prefs.setString('profilePicUrl', _profilePicUrl);
                 prefs.setString('studentBusNo', _studentBusNo);
+                prefs.setString('studentSavedStop', _savedStop);
               });
             });
           }
@@ -1893,7 +2088,20 @@ class _StudentDashboardState extends State<StudentDashboard>
   }
 
   void _updateRouteDetails(String routeKey, {bool startListener = true}) {
-    _routeStops = List<String>.from(_dynamicRouteStops[routeKey] ?? []);
+    List<String> foundStops = List<String>.from(_dynamicRouteStops[routeKey] ?? []);
+    if (foundStops.isEmpty) {
+      final cleanKey = routeKey.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+      final targetNum = _extractBusNumber(routeKey);
+      for (final entry in _dynamicRouteStops.entries) {
+        final k = entry.key.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+        final entryNum = _extractBusNumber(entry.key);
+        if (k == cleanKey || (targetNum.isNotEmpty && entryNum == targetNum)) {
+          foundStops = List<String>.from(entry.value);
+          break;
+        }
+      }
+    }
+    _routeStops = foundStops;
     if (_routeStops.isNotEmpty && _routeStops.last != "COLLEGE" && _routeStops.last != "Panimalar Engineering College") {
       _routeStops.add("COLLEGE");
     }
@@ -2223,9 +2431,11 @@ class _StudentDashboardState extends State<StudentDashboard>
           'department': dept,
           'busNo': busNo,
           'boardingStop': boardingStop,
+          'savedStop': boardingStop,
           'profilePicBase64': _profilePicUrl.startsWith('base64:')
               ? _profilePicUrl
               : '',
+          'updatedAt': DateTime.now().toIso8601String(),
         });
       }
     } catch (e) {
@@ -3005,18 +3215,29 @@ class _StudentDashboardState extends State<StudentDashboard>
   }
 
   void _startLerpLoop() {
-    _lerpTimer = Timer.periodic(const Duration(milliseconds: 50), (timer) {
-      if (_busLat == null ||
-          _busLng == null ||
-          _renderLat == null ||
-          _renderLng == null) {
+    _lerpTimer?.cancel();
+    _lerpTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+      if (_busLat == null || _busLng == null) return;
+      if (_renderLat == null || _renderLng == null) {
+        if (mounted) {
+          setState(() {
+            _renderLat = _busLat;
+            _renderLng = _busLng;
+          });
+        }
         return;
       }
-      const lerpSpeed = 0.08;
-      setState(() {
-        _renderLat = _renderLat! + (_busLat! - _renderLat!) * lerpSpeed;
-        _renderLng = _renderLng! + (_busLng! - _renderLng!) * lerpSpeed;
-      });
+      
+      final diffLat = (_busLat! - _renderLat!).abs();
+      final diffLng = (_busLng! - _renderLng!).abs();
+      if (diffLat < 0.000001 && diffLng < 0.000001) return;
+
+      if (mounted) {
+        setState(() {
+          _renderLat = _renderLat! + (_busLat! - _renderLat!) * 0.35;
+          _renderLng = _renderLng! + (_busLng! - _renderLng!) * 0.35;
+        });
+      }
     });
   }
 
@@ -3350,6 +3571,26 @@ class _StudentDashboardState extends State<StudentDashboard>
     );
   }
 
+  void _onSelectTab(int idx) {
+    setState(() {
+      _currentIndex = idx;
+    });
+    if (idx == 1) {
+      _isFollowingBus = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        try {
+          final targetLat = _renderLat ?? _busLat;
+          final targetLng = _renderLng ?? _busLng;
+          if (targetLat != null && targetLng != null) {
+            _mapController.move(LatLng(targetLat, targetLng), 15.2);
+          } else if (_coords.isNotEmpty) {
+            _mapController.move(_coords.values.first, 15.0);
+          }
+        } catch (_) {}
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool isGuest = widget.studentRollNo.toLowerCase() == 'guest';
@@ -3523,11 +3764,7 @@ class _StudentDashboardState extends State<StudentDashboard>
             backgroundColor: Colors.white,
             indicatorColor: const Color(0xFFEFF6FF),
             selectedIndex: _currentIndex,
-            onDestinationSelected: (idx) {
-              setState(() {
-                _currentIndex = idx;
-              });
-            },
+            onDestinationSelected: _onSelectTab,
             destinations: [
             NavigationDestination(
               icon: const Icon(Icons.home_outlined, color: Color(0xFF64748B)),
@@ -3799,7 +4036,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                               ),
                               const SizedBox(height: 4),
                               GestureDetector(
-                                onTap: _routeStops.isEmpty ? null : () {
+                               onTap: _effectiveDisplayStops.isEmpty ? null : () {
                                   setState(() => _savedStop = "");
                                   if (Firebase.apps.isNotEmpty) {
                                     FirebaseDatabase.instance
@@ -3808,7 +4045,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                                   }
                                 },
                                 child: Text(
-                                  _routeStops.isEmpty ? "--" : "Change stop",
+                                  _effectiveDisplayStops.isEmpty ? "--" : "Change stop",
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.bold,
@@ -3918,106 +4155,124 @@ class _StudentDashboardState extends State<StudentDashboard>
                     ),
                   ),
                 ),
-                const SizedBox(height: 12),
-                if (_routeSearchQuery.isNotEmpty)
+                if (_routeSearchQuery.trim().isNotEmpty) ...[
+                  const SizedBox(height: 12),
                   Container(
-                    height: 150,
+                    height: 180,
                     decoration: BoxDecoration(
                       color: Colors.white,
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(16),
                       border: Border.all(color: const Color(0xFFE2E8F0)),
                     ),
                     child: Builder(
                       builder: (context) {
-                        final query = _routeSearchQuery.toLowerCase();
-                        final matches = _dynamicRouteLabels.keys.where((key) {
-                          final label =
-                              _dynamicRouteLabels[key]?.toLowerCase() ?? '';
+                        final query = _routeSearchQuery.trim().toLowerCase();
+                        final allAdminKeys = _registeredAdminRouteKeys;
+                        
+                        final matches = allAdminKeys.where((key) {
+                          final label = _dynamicRouteLabels[key]?.toLowerCase() ?? '';
                           final stops = _dynamicRouteStops[key] ?? [];
-                          final stopsMatch = stops.any(
-                            (s) => s.toLowerCase().contains(query),
-                          );
+                          final stopsMatch = stops.any((s) => s.toLowerCase().contains(query));
                           return label.contains(query) || stopsMatch;
                         }).toList();
+
                         if (matches.isEmpty) {
                           return const Center(
                             child: Text(
-                              "No routes found",
+                              "No registered routes found",
                               style: TextStyle(
                                 fontSize: 12,
                                 color: Colors.grey,
+                                fontWeight: FontWeight.bold,
                               ),
                             ),
                           );
                         }
+                        
                         return ListView.separated(
-                          padding: const EdgeInsets.all(8),
+                          padding: const EdgeInsets.symmetric(vertical: 4),
                           itemCount: matches.length,
-                          separatorBuilder: (_, _) => const Divider(height: 1),
+                          separatorBuilder: (_, _) => const Divider(height: 1, indent: 16, endIndent: 16),
                           itemBuilder: (ctx, idx) {
                             final key = matches[idx];
                             final label = _dynamicRouteLabels[key] ?? key;
-                            return Material(
-                              color: Colors.transparent,
-                              child: ListTile(
-                                dense: true,
-                                title: Text(
-                                  label,
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w700,
-                                  ),
+                            final stopsCount = (_dynamicRouteStops[key] ?? []).length;
+                            final isSelected = _selectedRoute == key || _effectiveRouteKey == key;
+
+                            return ListTile(
+                              dense: true,
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                              leading: CircleAvatar(
+                                radius: 16,
+                                backgroundColor: isSelected ? const Color(0xFFEFF6FF) : const Color(0xFFF1F5F9),
+                                child: Icon(
+                                  Icons.directions_bus, 
+                                  color: isSelected ? const Color(0xFF2563EB) : const Color(0xFF64748B), 
+                                  size: 16
                                 ),
-                                trailing: _selectedRoute == key
-                                    ? const Icon(
-                                        Icons.check_circle,
-                                        color: Colors.green,
-                                        size: 18,
-                                      )
-                                    : null,
-                                onTap: () {
-                                  _changeSelectedRoute(key);
-                                  _routeSearchCtrl.clear();
-                                  setState(() => _routeSearchQuery = "");
-                                },
                               ),
+                              title: Text(
+                                label,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: isSelected ? FontWeight.w900 : FontWeight.w700,
+                                  color: isSelected ? const Color(0xFF2563EB) : const Color(0xFF0F172A),
+                                ),
+                              ),
+                              subtitle: Text(
+                                "$stopsCount stops",
+                                style: const TextStyle(fontSize: 10, color: Colors.grey),
+                              ),
+                              trailing: isSelected
+                                  ? const Icon(
+                                      Icons.check_circle_rounded,
+                                      color: Color(0xFF22C55E),
+                                      size: 20,
+                                    )
+                                  : null,
+                              onTap: () {
+                                _changeSelectedRoute(key);
+                                _routeSearchCtrl.clear();
+                                setState(() => _routeSearchQuery = "");
+                              },
                             );
                           },
                         );
                       },
                     ),
                   ),
-                if (_routeSearchQuery.isEmpty)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFEEF2FF),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(
-                          Icons.directions_bus,
-                          size: 18,
-                          color: Color(0xFF2563EB),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            "Selected: $_effectiveRouteLabel",
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w800,
-                              color: Color(0xFF1E3A8A),
-                            ),
+                ],
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEEF2FF),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.directions_bus,
+                        size: 18,
+                        color: Color(0xFF2563EB),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          "Selected: $_effectiveRouteLabel",
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                            color: Color(0xFF1E3A8A),
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
+                ),
                 const SizedBox(height: 20),
 
                 Row(
@@ -4027,7 +4282,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                         icon: Icons.location_on_rounded,
                         iconColor: const Color(0xFF2563EB),
                         label: "Track Live",
-                        onTap: () => setState(() => _currentIndex = 1),
+                        onTap: () => _onSelectTab(1),
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -4073,11 +4328,13 @@ class _StudentDashboardState extends State<StudentDashboard>
                     builder: (context) {
                       final displayStops = _effectiveDisplayStops;
                       String? closestStopToBus;
+                      int nearestIdx = 0;
                       if (_allBusesLocations.containsKey(_displayBusId)) {
                         final busData = _allBusesLocations[_displayBusId];
                         if (busData != null && busData['lat'] != null && busData['lng'] != null) {
                           double minDistance = double.infinity;
-                          for (String stop in displayStops) {
+                          for (int k = 0; k < displayStops.length; k++) {
+                            final stop = displayStops[k];
                             if (_coords.containsKey(stop)) {
                               double dist = _haversineM(
                                 busData['lat'],
@@ -4088,11 +4345,18 @@ class _StudentDashboardState extends State<StudentDashboard>
                               if (dist < minDistance) {
                                 minDistance = dist;
                                 closestStopToBus = stop;
+                                nearestIdx = k;
                               }
                             }
                           }
                         }
+                      } else if (_busIsOnline && _busLat != null && _busLng != null) {
+                        nearestIdx = _getNearestStopIndex(_busLat!, _busLng!);
+                        if (nearestIdx >= 0 && nearestIdx < displayStops.length) {
+                          closestStopToBus = displayStops[nearestIdx];
+                        }
                       }
+
                       return Column(
                         children: [
                           for (int i = 0; i < displayStops.length; i++) ...[
@@ -4103,6 +4367,12 @@ class _StudentDashboardState extends State<StudentDashboard>
                               isLast: i == displayStops.length - 1,
                               isMyStop: _savedStop == displayStops[i],
                               isBusHere: closestStopToBus == displayStops[i],
+                              arrivalTimeIST: _getStopArrivalTimeIST(
+                                i,
+                                displayStops,
+                                nearestIdx: _busIsOnline ? nearestIdx : null,
+                              ),
+                              isPassed: _busIsOnline && (i < nearestIdx),
                             ),
                             if (i < displayStops.length - 1) _buildStopConnector(),
                           ],
@@ -4146,6 +4416,169 @@ class _StudentDashboardState extends State<StudentDashboard>
     );
   }
 
+  String _getStopArrivalTimeIST(int stopIndex, List<String> displayStops, {int? nearestIdx, String? routeKey}) {
+    if (displayStops.isEmpty || stopIndex < 0 || stopIndex >= displayStops.length) return "--:--";
+
+    // Target College entry arrival time is 07:35 AM IST (strictly below 7:40 AM IST)
+    const int targetCollegeMinuteOfDay = 7 * 60 + 35; // 455 minutes from midnight (07:35 AM)
+
+    // Calculate segment travel times between consecutive stops
+    List<double> stopOffsets = [0.0];
+    double totalRouteMinutes = 0.0;
+    for (int i = 0; i < displayStops.length - 1; i++) {
+      final s1 = displayStops[i];
+      final s2 = displayStops[i + 1];
+      double segDist = 0.0;
+      if (_coords.containsKey(s1) && _coords.containsKey(s2)) {
+        segDist = _haversineKm(
+          _coords[s1]!.latitude,
+          _coords[s1]!.longitude,
+          _coords[s2]!.latitude,
+          _coords[s2]!.longitude,
+        );
+      }
+      double segTime = (segDist > 0.1 ? (segDist * 2.2) + 1.2 : 3.5);
+      totalRouteMinutes += segTime;
+      stopOffsets.add(totalRouteMinutes);
+    }
+
+    if (totalRouteMinutes < 30) {
+      double scale = 35.0 / (totalRouteMinutes > 0 ? totalRouteMinutes : 1);
+      for (int i = 0; i < stopOffsets.length; i++) {
+        stopOffsets[i] *= scale;
+      }
+      totalRouteMinutes = 35.0;
+    } else if (totalRouteMinutes > 85) {
+      double scale = 80.0 / totalRouteMinutes;
+      for (int i = 0; i < stopOffsets.length; i++) {
+        stopOffsets[i] *= scale;
+      }
+      totalRouteMinutes = 80.0;
+    }
+
+    final int baseStartMinuteOfDay = targetCollegeMinuteOfDay - totalRouteMinutes.round();
+
+    // 1. If Bus is Online and moving, dynamically calculate live arrival in IST
+    if (_busIsOnline && _busLat != null && _busLng != null && _busLat != 0.0 && _busLng != 0.0 && nearestIdx != null) {
+      final now = DateTime.now();
+      if (stopIndex < nearestIdx) {
+        double elapsedMinutes = 0.0;
+        for (int i = stopIndex; i < nearestIdx; i++) {
+          final s1 = displayStops[i];
+          final s2 = displayStops[i + 1];
+          double segDist = 0.0;
+          if (_coords.containsKey(s1) && _coords.containsKey(s2)) {
+            segDist = _haversineKm(
+              _coords[s1]!.latitude,
+              _coords[s1]!.longitude,
+              _coords[s2]!.latitude,
+              _coords[s2]!.longitude,
+            );
+          }
+          elapsedMinutes += (segDist > 0.1 ? (segDist * 2.2) + 1.2 : 3.5);
+        }
+        final pastTime = now.subtract(Duration(minutes: elapsedMinutes.round()));
+        return _formatTimeOfDay(pastTime.hour, pastTime.minute);
+      } else if (stopIndex == nearestIdx) {
+        final sName = displayStops[nearestIdx];
+        double distToNearest = 0.0;
+        if (_coords.containsKey(sName)) {
+          distToNearest = _haversineKm(_busLat!, _busLng!, _coords[sName]!.latitude, _coords[sName]!.longitude);
+        }
+        int etaToNearest = (distToNearest * 2.2).round();
+        if (etaToNearest < 1) etaToNearest = 1;
+        final arrTime = now.add(Duration(minutes: etaToNearest));
+        return _formatTimeOfDay(arrTime.hour, arrTime.minute);
+      } else {
+        final sNearest = displayStops[nearestIdx];
+        double distToNearest = 0.0;
+        if (_coords.containsKey(sNearest)) {
+          distToNearest = _haversineKm(_busLat!, _busLng!, _coords[sNearest]!.latitude, _coords[sNearest]!.longitude);
+        }
+        double liveMins = (distToNearest * 2.2);
+        for (int i = nearestIdx; i < stopIndex; i++) {
+          final s1 = displayStops[i];
+          final s2 = displayStops[i + 1];
+          double segDist = 0.0;
+          if (_coords.containsKey(s1) && _coords.containsKey(s2)) {
+            segDist = _haversineKm(
+              _coords[s1]!.latitude,
+              _coords[s1]!.longitude,
+              _coords[s2]!.latitude,
+              _coords[s2]!.longitude,
+            );
+          }
+          liveMins += (segDist > 0.1 ? (segDist * 2.2) + 1.2 : 3.5);
+        }
+        final arrTime = now.add(Duration(minutes: liveMins.round()));
+        return _formatTimeOfDay(arrTime.hour, arrTime.minute);
+      }
+    }
+
+    // 2. Timetable Mode: Anchored to reach College at 07:35 AM IST (strictly below 7:40 AM IST)
+    int arrivalMinuteOfDay = baseStartMinuteOfDay + stopOffsets[stopIndex].round();
+    int scheduledHour = (arrivalMinuteOfDay ~/ 60) % 24;
+    int scheduledMinute = arrivalMinuteOfDay % 60;
+    return _formatTimeOfDay(scheduledHour, scheduledMinute);
+  }
+
+  String _formatTimeOfDay(int hour, int minute) {
+    final period = hour >= 12 ? "PM" : "AM";
+    int displayHour = hour % 12;
+    if (displayHour == 0) displayHour = 12;
+    final minStr = minute.toString().padLeft(2, '0');
+    final hourStr = displayHour.toString().padLeft(2, '0');
+    return "$hourStr:$minStr $period";
+  }
+
+  Widget _buildStopTimeBadge(
+    String timeStr, {
+    bool isPassed = false,
+    bool isNext = false,
+  }) {
+    final bgColor = isNext
+        ? const Color(0xFFEFF6FF)
+        : (isPassed ? const Color(0xFFF1F5F9) : const Color(0xFFF8FAFC));
+    final borderColor = isNext
+        ? const Color(0xFF93C5FD)
+        : (isPassed ? const Color(0xFFE2E8F0) : const Color(0xFFCBD5E1));
+    final textColor = isNext
+        ? const Color(0xFF1D4ED8)
+        : (isPassed ? const Color(0xFF94A3B8) : const Color(0xFF334155));
+
+    return Container(
+      margin: const EdgeInsets.only(right: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: borderColor, width: 0.8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isNext
+                ? Icons.directions_bus
+                : (isPassed ? Icons.check_circle_outline : Icons.access_time_rounded),
+            size: 10,
+            color: textColor,
+          ),
+          const SizedBox(width: 3),
+          Text(
+            timeStr,
+            style: TextStyle(
+              fontSize: 9.5,
+              fontWeight: isNext ? FontWeight.w800 : FontWeight.w700,
+              color: textColor,
+              letterSpacing: 0.2,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildStopRow(
     String stopName, {
     int index = -1,
@@ -4153,6 +4586,8 @@ class _StudentDashboardState extends State<StudentDashboard>
     bool isLast = false,
     bool isMyStop = false,
     bool isBusHere = false,
+    String? arrivalTimeIST,
+    bool isPassed = false,
   }) {
     Color dotColor = const Color(0xFF94A3B8);
     double dotSize = 10.0;
@@ -4191,17 +4626,24 @@ class _StudentDashboardState extends State<StudentDashboard>
                   ),
                 ),
         ),
-        const SizedBox(width: 12),
+        const SizedBox(width: 10),
         Expanded(
           child: Text(
             _formatStopName(stopName, index: index),
             style: TextStyle(
               fontSize: 12.5,
               fontWeight: fWeight,
-              color: const Color(0xFF1E293B),
+              color: isPassed ? const Color(0xFF64748B) : const Color(0xFF1E293B),
             ),
           ),
         ),
+        const SizedBox(width: 6),
+        if (arrivalTimeIST != null && arrivalTimeIST.isNotEmpty)
+          _buildStopTimeBadge(
+            arrivalTimeIST,
+            isPassed: isPassed,
+            isNext: isBusHere,
+          ),
         if (!isLast && !isMyStop)
           TextButton(
             style: TextButton.styleFrom(
@@ -4619,6 +5061,84 @@ class _StudentDashboardState extends State<StudentDashboard>
     );
   }
 
+  LatLng _getStopCoord(String stopName, [int sequenceIndex = 0]) {
+    final cleanStop = stopName.trim();
+    if (_coords.containsKey(cleanStop)) {
+      return _coords[cleanStop]!;
+    }
+    if (_dynamicStopCoords.containsKey(cleanStop)) {
+      return _dynamicStopCoords[cleanStop]!;
+    }
+
+    final RegExp regEx = RegExp(r'(?:Lat:\s*)?([-\d.]+)[,\s]+(?:Lng:\s*)?([-\d.]+)');
+    final match = regEx.firstMatch(stopName);
+    if (match != null) {
+      try {
+        final lat = double.parse(match.group(1)!);
+        final lng = double.parse(match.group(2)!);
+        if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+          final coord = LatLng(lat, lng);
+          if (cleanStop.isNotEmpty) _dynamicStopCoords[cleanStop] = coord;
+          final formattedName = _formatStopName(stopName);
+          if (formattedName.isNotEmpty) _dynamicStopCoords[formattedName] = coord;
+          return coord;
+        }
+      } catch (_) {}
+    }
+
+    final cleanName = _formatStopName(stopName).toLowerCase();
+    if (cleanName.isNotEmpty && _dynamicStopCoords.containsKey(cleanName)) {
+      return _dynamicStopCoords[cleanName]!;
+    }
+
+    final defaultCoords = <String, LatLng>{
+      'hostel1': const LatLng(13.0500, 80.0742),
+      'hostel2': const LatLng(13.0515, 80.0755),
+      'hostel3': const LatLng(13.0530, 80.0768),
+      'hostel4': const LatLng(13.0545, 80.0781),
+      'hostel': const LatLng(13.0500, 80.0742),
+      'panimalar engineering college': const LatLng(13.04890, 80.07546),
+      'panimalar': const LatLng(13.04890, 80.07546),
+      'pec': const LatLng(13.04890, 80.07546),
+      'college': const LatLng(13.04890, 80.07546),
+      'manali': const LatLng(13.1667, 80.2667),
+      'porur': const LatLng(13.0382, 80.1565),
+      'koyambedu': const LatLng(13.0732, 80.1982),
+      'poonamallee': const LatLng(13.0495, 80.0934),
+      'maduravoyal': const LatLng(13.0650, 80.1650),
+      'avadi': const LatLng(13.1147, 80.1098),
+      'ambattur': const LatLng(13.1143, 80.1548),
+      'tambaram': const LatLng(12.9249, 80.1000),
+      'guindy': const LatLng(13.0067, 80.2020),
+      'velachery': const LatLng(12.9759, 80.2212),
+      'chromepet': const LatLng(12.9516, 80.1462),
+    };
+
+    if (defaultCoords.containsKey(cleanName)) {
+      final coord = defaultCoords[cleanName]!;
+      if (cleanStop.isNotEmpty) _dynamicStopCoords[cleanStop] = coord;
+      return coord;
+    }
+
+    for (final entry in defaultCoords.entries) {
+      if (cleanName.contains(entry.key) || entry.key.contains(cleanName)) {
+        if (cleanStop.isNotEmpty) _dynamicStopCoords[cleanStop] = entry.value;
+        return entry.value;
+      }
+    }
+
+    int hash = 0;
+    final strToHash = cleanName.isNotEmpty ? cleanName : "stop_$sequenceIndex";
+    for (int i = 0; i < strToHash.length; i++) {
+      hash = 31 * hash + strToHash.codeUnitAt(i);
+    }
+    final latOffset = ((hash.abs() % 1000) - 500) / 100000.0;
+    final lngOffset = (((hash.abs() ~/ 1000) % 1000) - 500) / 100000.0;
+    final fallbackCoord = LatLng(13.0495 + latOffset, 80.0934 + lngOffset);
+    if (cleanStop.isNotEmpty) _dynamicStopCoords[cleanStop] = fallbackCoord;
+    return fallbackCoord;
+  }
+
   Widget _buildTrackTab() {
     final int nearestIdx = (_busLat != null && _busLng != null)
         ? _getNearestStopIndex(_busLat!, _busLng!)
@@ -4693,27 +5213,11 @@ class _StudentDashboardState extends State<StudentDashboard>
               child: Stack(
                 clipBehavior: Clip.none,
                 children: [
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: const Color(0xFF22C55E),
-                        width: 2.5,
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.25),
-                          blurRadius: 6,
-                        ),
-                      ],
-                    ),
-                    child: const Center(
-                      child: Text(
-                        "🚌",
-                        style: TextStyle(fontSize: 14),
-                      ),
-                    ),
+                  Image.asset(
+                    'assets/images/yellow_bus_marker.png',
+                    width: 38,
+                    height: 28,
+                    fit: BoxFit.contain,
                   ),
                   Positioned(
                     top: -2,
@@ -4759,46 +5263,56 @@ class _StudentDashboardState extends State<StudentDashboard>
 
     // --- All Route Stop Markers (always visible) ---
     bool collegeAdded = false;
-    for (var stopName in _effectiveDisplayStops) {
-      final coord = _coords[stopName];
-      if (coord == null) continue;
-
-      final isCollege =
-          stopName == "COLLEGE" || stopName == "Panimalar Engineering College";
-      
+    for (int i = 0; i < _effectiveDisplayStops.length; i++) {
+      final stopName = _effectiveDisplayStops[i];
+      if (stopName.trim().isEmpty) continue;
+      final cleanName = _formatStopName(stopName);
+      final coord = _getStopCoord(stopName, i);
+      final isCollege = stopName == "COLLEGE" || stopName == "Panimalar Engineering College";
       if (isCollege) collegeAdded = true;
 
       markers.add(
         Marker(
           point: coord,
-          width: isCollege ? 40 : 30,
-          height: isCollege ? 40 : 30,
+          width: 100,
+          height: 48,
           alignment: Alignment.center,
-          child: Tooltip(
-            message: _formatStopName(stopName),
-            child: Container(
-              decoration: BoxDecoration(
-                color: isCollege ? const Color(0xFF1B5E20) : _routeColor,
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.white, width: 2),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Colors.black26,
-                    blurRadius: 4,
-                    offset: Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Center(
-                child: isCollege
-                    ? const Text("🏫", style: TextStyle(fontSize: 16))
-                    : const Icon(
-                        Icons.location_pin,
-                        color: Colors.white,
-                        size: 16,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: isCollege ? const Color(0xFF1B5E20) : const Color(0xFF1D4ED8),
+                  borderRadius: BorderRadius.circular(10),
+                  boxShadow: const [
+                    BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2)),
+                  ],
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(3),
+                      decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+                      child: Text(
+                        isCollege ? "🏫" : "${i + 1}",
+                        style: const TextStyle(fontSize: 8, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8)),
                       ),
+                    ),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        cleanName,
+                        style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
+              const Icon(Icons.location_on_rounded, size: 22, color: Color(0xFF2563EB)),
+            ],
           ),
         ),
       );
@@ -4872,7 +5386,12 @@ class _StudentDashboardState extends State<StudentDashboard>
                 ),
               ),
               const SizedBox(height: 2),
-              const Text("🚌", style: TextStyle(fontSize: 30)),
+              Image.asset(
+                'assets/images/yellow_bus_marker.png',
+                width: 56,
+                height: 38,
+                fit: BoxFit.contain,
+              ),
             ],
           ),
         ),
@@ -4884,7 +5403,7 @@ class _StudentDashboardState extends State<StudentDashboard>
       final displayStops = _effectiveDisplayStops;
       final safeIdx = nearestIdx < displayStops.length ? nearestIdx : 0;
       final nearStop = displayStops[safeIdx];
-      final nearCoord = _coords[nearStop];
+      final nearCoord = _getStopCoord(nearStop);
       if (nearCoord != null) {
         markers.add(
           Marker(
@@ -4969,10 +5488,13 @@ class _StudentDashboardState extends State<StudentDashboard>
           children: [
             // Map tiles
             TileLayer(
-              urlTemplate: 'https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',
+              urlTemplate: 'https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',
+              subdomains: const ['0', '1', '2', '3'],
               userAgentPackageName: 'com.panimalar.bus',
               maxNativeZoom: 19,
               maxZoom: 22.0,
+              keepBuffer: 5,
+              panBuffer: 2,
             ),
 
             // GPS accuracy circle around bus when live
@@ -5003,21 +5525,6 @@ class _StudentDashboardState extends State<StudentDashboard>
                     color: const Color(0xFF2563EB).withValues(alpha: 0.12),
                     borderColor: const Color(0xFF2563EB),
                     borderStrokeWidth: 2.0,
-                  ),
-                ],
-              ),
-
-            if (_effectiveDisplayStops.isNotEmpty)
-              PolylineLayer(
-                polylines: [
-                  Polyline(
-                    points: _effectiveDisplayStops
-                        .map((s) => _coords[s])
-                        .where((c) => c != null)
-                        .cast<LatLng>()
-                        .toList(),
-                    color: const Color(0xFF2563EB),
-                    strokeWidth: 4.0,
                   ),
                 ],
               ),
@@ -5187,7 +5694,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                           const SizedBox(height: 4),
                           Builder(
                             builder: (context) {
-                              if (_routeStops.isEmpty) {
+                              if (_effectiveDisplayStops.isEmpty) {
                                 return const Text(
                                   "--",
                                   style: TextStyle(
@@ -5277,7 +5784,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                _routeStops.isEmpty ? "--" : _formatStopName(_savedStop),
+                                _effectiveDisplayStops.isEmpty ? "--" : _formatStopName(_savedStop),
                                 style: const TextStyle(
                                   fontSize: 11,
                                   fontWeight: FontWeight.bold,
@@ -5477,7 +5984,12 @@ class _StudentDashboardState extends State<StudentDashboard>
                     ],
                     border: Border.all(color: Colors.white, width: 2),
                   ),
-                  child: const Icon(Icons.directions_bus, color: Colors.white, size: 20),
+                  child: Image.asset(
+                    'assets/images/yellow_bus_marker.png',
+                    width: 28,
+                    height: 20,
+                    fit: BoxFit.contain,
+                  ),
                 ),
                 const SizedBox(height: 2),
                 Container(
@@ -6316,10 +6828,12 @@ class _StudentDashboardState extends State<StudentDashboard>
                       ),
                       // Show route label as helper text when bus is recognised
                       helperText: () {
-                        if (_isFetchingRoute) return 'Checking bus number...';
-                        final key = _fetchedRouteKey;
+                        if (_isFetchingRoute) return 'Checking database for bus stops...';
+                        final key = _fetchedRouteKey ?? _resolveRouteKeyFromBusInput(_profileBusCtrl.text.trim());
                         if (key == null) return null;
-                        return '✓  ${_dynamicRouteLabels[key] ?? ''}';
+                        final label = _dynamicRouteLabels[key] ?? key;
+                        final stopsCount = _profileBusStops.length;
+                        return '✓  $label ($stopsCount stops)';
                       }(),
                       helperStyle: TextStyle(
                         color: _isFetchingRoute
@@ -6331,8 +6845,8 @@ class _StudentDashboardState extends State<StudentDashboard>
                       errorText:
                           _profileBusCtrl.text.trim().isNotEmpty &&
                               !_isFetchingRoute &&
-                              _fetchedRouteKey == null
-                          ? 'Unknown bus number'
+                              (_fetchedRouteKey == null && _resolveRouteKeyFromBusInput(_profileBusCtrl.text.trim()) == null)
+                          ? 'No stops found in database for this bus'
                           : null,
                     ),
                     style: const TextStyle(
@@ -6342,7 +6856,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                   ),
                   const SizedBox(height: 16),
 
-                  // ── Boarding Stop — shown only when bus number is valid ─────
+                  // ── Boarding Stop — shown only when bus number has stops in database ─────
                   if (_profileBusStops.isNotEmpty) ...[
                     const Text(
                       "BOARDING STOP",
@@ -6354,7 +6868,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                     ),
                     const SizedBox(height: 6),
                     DropdownButtonFormField<String>(
-                      initialValue: _profileBusStops.contains(_savedStop)
+                      value: _profileBusStops.contains(_savedStop)
                           ? _savedStop
                           : null,
                       hint: const Text(
