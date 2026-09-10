@@ -10,7 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
+import 'package:latlong2/latlong.dart' hide Path;
 import 'package:geolocator/geolocator.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -367,19 +367,35 @@ class _StudentDashboardState extends State<StudentDashboard>
       }
       return 'route_$cleanRep';
     }
+    if (_selectedRoute.isNotEmpty) {
+      return _selectedRoute;
+    }
+    if (_fetchedRouteKey != null && _fetchedRouteKey!.isNotEmpty) {
+      return _fetchedRouteKey!;
+    }
+    if (_studentBusNo.isNotEmpty && _studentBusNo.toLowerCase() != 'guest') {
+      final resolved = _resolveRouteKeyFromBusInput(_studentBusNo);
+      if (resolved != null && resolved.isNotEmpty) {
+        return resolved;
+      }
+    }
     return _selectedRoute;
   }
 
   String get _effectiveRouteLabel {
     final activeKey = _effectiveRouteKey;
-    if (_dynamicRouteLabels.containsKey(activeKey)) {
+    if (activeKey.isNotEmpty && _dynamicRouteLabels.containsKey(activeKey)) {
       return _dynamicRouteLabels[activeKey]!;
     }
-    final cleanKey = activeKey.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
-    for (final entry in _dynamicRouteLabels.entries) {
-      final k = entry.key.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
-      if (k == cleanKey) {
-        return entry.value;
+    if (activeKey.isNotEmpty) {
+      final cleanKey = activeKey.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+      final targetNum = _extractBusNumber(activeKey);
+      for (final entry in _dynamicRouteLabels.entries) {
+        final k = entry.key.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+        final entryNum = _extractBusNumber(entry.key);
+        if (k == cleanKey || (targetNum.isNotEmpty && entryNum == targetNum)) {
+          return entry.value;
+        }
       }
     }
     if (_breakdownActive && _replacementBus.isNotEmpty && _replacementBus != 'Unknown') {
@@ -387,17 +403,38 @@ class _StudentDashboardState extends State<StudentDashboard>
       final displayRep = repNum.isNotEmpty ? repNum : _replacementBus;
       return "Bus $displayRep";
     }
-    return _dynamicRouteLabels[_selectedRoute] ?? "No Route Selected";
+    if (_studentBusNo.isNotEmpty && _studentBusNo.toLowerCase() != 'guest') {
+      return "Bus $_studentBusNo";
+    }
+    if (_selectedRoute.isNotEmpty) {
+      return _dynamicRouteLabels[_selectedRoute] ?? _selectedRoute;
+    }
+    return "No Route Selected";
   }
 
   List<String> get _effectiveDisplayStops {
     final activeKey = _effectiveRouteKey;
-    List<String> stops = List<String>.from(_dynamicRouteStops[activeKey] ?? []);
-    if (stops.isEmpty) {
-      final cleanKey = activeKey.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+    List<String> stops = [];
+    if (activeKey.isNotEmpty) {
+      stops = List<String>.from(_dynamicRouteStops[activeKey] ?? []);
+      if (stops.isEmpty) {
+        final cleanKey = activeKey.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+        final targetNum = _extractBusNumber(activeKey);
+        for (final entry in _dynamicRouteStops.entries) {
+          final k = entry.key.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
+          final entryNum = _extractBusNumber(entry.key);
+          if (k == cleanKey || (targetNum.isNotEmpty && entryNum == targetNum)) {
+            stops = List<String>.from(entry.value);
+            break;
+          }
+        }
+      }
+    }
+    if (stops.isEmpty && _studentBusNo.isNotEmpty && _studentBusNo.toLowerCase() != 'guest') {
+      final busNum = _extractBusNumber(_studentBusNo);
       for (final entry in _dynamicRouteStops.entries) {
-        final k = entry.key.toLowerCase().replaceAll(RegExp(r'^[Bb]us\s*|^[Bb]'), '').replaceAll('route_', '').trim();
-        if (k == cleanKey) {
+        final entryNum = _extractBusNumber(entry.key);
+        if (busNum.isNotEmpty && entryNum == busNum) {
           stops = List<String>.from(entry.value);
           break;
         }
@@ -724,8 +761,11 @@ class _StudentDashboardState extends State<StudentDashboard>
   final MapController _campusMapController = MapController();
   static const LatLng _homeScanCenter = LatLng(13.04890, 80.07546);
   static const bool _showNearbyCircle = false;
-
-
+  bool _isSatelliteMap = false;
+  bool _is3dMode = true;
+  double _busHeading = 90.0;
+  double? _prevBusLat;
+  double? _prevBusLng;
 
   Map<String, dynamic>? _latestAnnouncement;
 
@@ -862,22 +902,21 @@ class _StudentDashboardState extends State<StudentDashboard>
             _dynamicStopCoords = newStopCoords;
             _processCoordinatesForCurrentRoute();
 
-            // If student's currently selected route was deleted by admin, switch to first active route or clear
-            if (_selectedRoute.isNotEmpty && !newLabels.containsKey(_selectedRoute)) {
-              if (newLabels.isNotEmpty) {
-                _selectedRoute = newLabels.keys.first;
-              } else {
-                _selectedRoute = '';
+            if (_selectedRoute.isNotEmpty) {
+              final resolvedKey = _resolveRouteKeyFromBusInput(_selectedRoute);
+              if (resolvedKey != null && resolvedKey.isNotEmpty) {
+                _selectedRoute = resolvedKey;
               }
-            }
-
-            // Also need to re-evaluate current active route stops
-            if (_selectedRoute.isNotEmpty && newLabels.containsKey(_selectedRoute)) {
-               _updateRouteDetails(_selectedRoute, startListener: false);
+              _updateRouteDetails(_selectedRoute, startListener: false);
+            } else if (_studentBusNo.isNotEmpty && _studentBusNo.toLowerCase() != 'guest') {
+              final resolvedKey = _resolveRouteKeyFromBusInput(_studentBusNo);
+              if (resolvedKey != null && resolvedKey.isNotEmpty) {
+                _selectedRoute = resolvedKey;
+                _updateRouteDetails(_selectedRoute, startListener: false);
+              }
             } else if (_fetchedRouteKey != null && newLabels.containsKey(_fetchedRouteKey)) {
-               _updateRouteDetails(_fetchedRouteKey!, startListener: false);
-            } else {
-               _routeStops = [];
+              _selectedRoute = _fetchedRouteKey!;
+              _updateRouteDetails(_selectedRoute, startListener: false);
             }
           });
         }
@@ -1976,18 +2015,19 @@ class _StudentDashboardState extends State<StudentDashboard>
     }
 
     final prefs = await SharedPreferences.getInstance();
-    final isNewUser = widget.isFirstTimeSignup || prefs.getString('studentRollNo') != widget.studentRollNo;
+    final isGuest = widget.studentRollNo.toLowerCase() == 'guest';
+    final isNewUser = (!isGuest) && (widget.isFirstTimeSignup || prefs.getString('studentRollNo') != widget.studentRollNo);
     
     setState(() {
-      _studentName = isNewUser ? "" : (prefs.getString('studentName') ?? "");
-      _studentYear = isNewUser ? "" : (prefs.getString('studentYear') ?? "3rd Year");
-      _studentDept = isNewUser ? "" : (prefs.getString('studentDept') ?? "Computer Science (CSE)");
-      _profilePicUrl = isNewUser ? "" : (prefs.getString('profilePicUrl') ?? "");
+      _studentName = isGuest ? "Guest User" : (isNewUser ? "" : (prefs.getString('studentName') ?? ""));
+      _studentYear = isGuest ? "" : (isNewUser ? "" : (prefs.getString('studentYear') ?? "3rd Year"));
+      _studentDept = isGuest ? "" : (isNewUser ? "" : (prefs.getString('studentDept') ?? "Computer Science (CSE)"));
+      _profilePicUrl = isGuest ? "" : (isNewUser ? "" : (prefs.getString('profilePicUrl') ?? ""));
       _studentBusNo = isNewUser ? "" : (prefs.getString('studentBusNo') ?? "");
       _savedStop = isNewUser ? "" : (prefs.getString('studentSavedStop') ?? "");
-      _studentId = isNewUser ? "" : widget.studentRollNo;
+      _studentId = (isGuest || isNewUser) ? "" : widget.studentRollNo;
       // Pre-fill all edit controllers with existing values
-      _profileRollNoCtrl.text = isNewUser ? "" : widget.studentRollNo;
+      _profileRollNoCtrl.text = (isGuest || isNewUser) ? "" : widget.studentRollNo;
       _profileNameCtrl.text = _studentName;
       _profileTempYear = _studentYear;
       _profileBusCtrl.text = _studentBusNo;
@@ -2002,67 +2042,68 @@ class _StudentDashboardState extends State<StudentDashboard>
       }
     });
 
-    try {
-      if (Firebase.apps.isNotEmpty && widget.studentRollNo.isNotEmpty) {
-        final node = widget.isFaculty ? 'faculty' : 'students';
-        final snapshot = await FirebaseDatabase.instance
-            .ref('$node/${widget.studentRollNo}')
-            .get();
-        if (snapshot.exists && snapshot.value != null) {
-          final data = snapshot.value as Map<dynamic, dynamic>;
-          if (mounted) {
-            setState(() {
-              _studentName = data['name'] ?? _studentName;
-              _studentYear = data['year'] ?? _studentYear;
-              _studentDept = data['department'] ?? _studentDept;
-              _profileBusCtrl.text = data['busNo'] ?? _profileBusCtrl.text;
-              _studentBusNo = data['busNo'] ?? _studentBusNo;
-              _savedStop = data['boardingStop'] ?? data['savedStop'] ?? _savedStop;
-              // Keep edit controllers in sync with latest fetched values
-              _profileNameCtrl.text = _studentName;
-              _profileTempYear = _studentYear;
-              if (_studentBusNo.isNotEmpty) {
-                _fetchRouteForBus(_studentBusNo);
-              }
-              if (data['profilePicBase64'] != null &&
-                  data['profilePicBase64'].toString().isNotEmpty) {
-                _profilePicUrl = data['profilePicBase64'];
-                if (_profilePicUrl.startsWith('base64:')) {
-                  try {
-                    _cachedProfileImage = MemoryImage(
-                      base64Decode(_profilePicUrl.substring(7)),
-                    );
-                  } catch (_) {
-                    _cachedProfileImage = null;
+    if (!isGuest) {
+      try {
+        if (Firebase.apps.isNotEmpty && widget.studentRollNo.isNotEmpty) {
+          final node = widget.isFaculty ? 'faculty' : 'students';
+          final snapshot = await FirebaseDatabase.instance
+              .ref('$node/${widget.studentRollNo}')
+              .get();
+          if (snapshot.exists && snapshot.value != null) {
+            final data = snapshot.value as Map<dynamic, dynamic>;
+            if (mounted) {
+              setState(() {
+                _studentName = data['name'] ?? _studentName;
+                _studentYear = data['year'] ?? _studentYear;
+                _studentDept = data['department'] ?? _studentDept;
+                _profileBusCtrl.text = data['busNo'] ?? _profileBusCtrl.text;
+                _studentBusNo = data['busNo'] ?? _studentBusNo;
+                _savedStop = data['boardingStop'] ?? data['savedStop'] ?? _savedStop;
+                // Keep edit controllers in sync with latest fetched values
+                _profileNameCtrl.text = _studentName;
+                _profileTempYear = _studentYear;
+                if (_studentBusNo.isNotEmpty) {
+                  _fetchRouteForBus(_studentBusNo);
+                }
+                if (data['profilePicBase64'] != null &&
+                    data['profilePicBase64'].toString().isNotEmpty) {
+                  _profilePicUrl = data['profilePicBase64'];
+                  if (_profilePicUrl.startsWith('base64:')) {
+                    try {
+                      _cachedProfileImage = MemoryImage(
+                        base64Decode(_profilePicUrl.substring(7)),
+                      );
+                    } catch (_) {
+                      _cachedProfileImage = null;
+                    }
                   }
                 }
-              }
-              
-              // Save fetched details to SharedPreferences to prevent placeholders on next app launch
-              SharedPreferences.getInstance().then((prefs) {
-                prefs.setString('studentName', _studentName);
-                prefs.setString('studentYear', _studentYear);
-                prefs.setString('studentDept', _studentDept);
-                prefs.setString('profilePicUrl', _profilePicUrl);
-                prefs.setString('studentBusNo', _studentBusNo);
-                prefs.setString('studentSavedStop', _savedStop);
+                
+                // Save fetched details to SharedPreferences to prevent placeholders on next app launch
+                SharedPreferences.getInstance().then((prefs) {
+                  prefs.setString('studentName', _studentName);
+                  prefs.setString('studentYear', _studentYear);
+                  prefs.setString('studentDept', _studentDept);
+                  prefs.setString('profilePicUrl', _profilePicUrl);
+                  prefs.setString('studentBusNo', _studentBusNo);
+                  prefs.setString('studentSavedStop', _savedStop);
+                });
               });
-            });
-          }
-        } else {
-          if (mounted) {
-            setState(() {
-              _isEditingProfile = true;
-            });
+            }
+          } else {
+            if (mounted) {
+              setState(() {
+                _isEditingProfile = true;
+              });
+            }
           }
         }
+      } catch (e) {
+        debugPrint("Failed to fetch profile from Firebase: $e");
       }
-    } catch (e) {
-      debugPrint("Failed to fetch profile from Firebase: $e");
     }
     // Check if the student has previously selected a route manually
     final savedRoute = prefs.getString('studentSelectedRoute');
-    final isGuest = widget.studentRollNo.toLowerCase() == 'guest';
 
     if (savedRoute != null && savedRoute.isNotEmpty) {
       // User manually selected a route before — use it directly
@@ -2070,21 +2111,27 @@ class _StudentDashboardState extends State<StudentDashboard>
         _selectedRoute = savedRoute;
       });
       _updateRouteDetails(_selectedRoute, startListener: true);
-    } else if (_studentBusNo.isNotEmpty && Firebase.apps.isNotEmpty) {
-      // No saved route — listen dynamically to the drivers node for this bus
-      _listenToDriverRoute();
-      _updateRouteDetails(_selectedRoute, startListener: true);
-    } else if (isGuest) {
-      setState(() {
-        _selectedRoute = "";
-      });
-      _updateRouteDetails(_selectedRoute, startListener: true);
+    } else if (_studentBusNo.isNotEmpty && _studentBusNo.toLowerCase() != 'guest') {
+      final key = _resolveRouteKeyFromBusInput(_studentBusNo);
+      if (key != null && key.isNotEmpty) {
+        setState(() {
+          _selectedRoute = key;
+        });
+        _updateRouteDetails(_selectedRoute, startListener: true);
+      } else {
+        _fetchRouteForBus(_studentBusNo);
+        if (Firebase.apps.isNotEmpty) {
+          _listenToDriverRoute();
+        }
+      }
     } else {
       _updateRouteDetails(_selectedRoute, startListener: true);
     }
 
-    _startPickupRequestListener();
-    _listenForStudentIntercomMessages();
+    if (!isGuest && _studentId.isNotEmpty) {
+      _startPickupRequestListener();
+      _listenForStudentIntercomMessages();
+    }
   }
 
   void _updateRouteDetails(String routeKey, {bool startListener = true}) {
@@ -2145,35 +2192,50 @@ class _StudentDashboardState extends State<StudentDashboard>
   }
 
   void _changeSelectedRoute(String routeKey) async {
+    final isGuest = widget.studentRollNo.toLowerCase() == 'guest';
     setState(() {
       _selectedRoute = routeKey;
+      _studentBusNo = _extractBusNumber(routeKey);
       _savedStop = "";
       _updateRouteDetails(routeKey, startListener: true);
       _hasAlertedApproaching = false;
       _hasAlertedArrived = false;
     });
-    if (Firebase.apps.isNotEmpty) {
-      await FirebaseDatabase.instance.ref('students/$_studentId').update({
-        'selectedRoute': routeKey,
-        'boardingStop': '',
-      });
+    if (!isGuest && _studentId.isNotEmpty && Firebase.apps.isNotEmpty) {
+      try {
+        await FirebaseDatabase.instance.ref('students/$_studentId').update({
+          'selectedRoute': routeKey,
+          'boardingStop': '',
+        });
+      } catch (e) {
+        debugPrint("Error updating student route in Firebase: $e");
+      }
     }
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('studentSelectedRoute', routeKey);
     await prefs.setString('studentSavedStop', '');
-    _showSnackBar("Route switched to ${_dynamicRouteLabels[routeKey]}");
+    if (_studentBusNo.isNotEmpty) {
+      await prefs.setString('studentBusNo', _studentBusNo);
+    }
+    final label = _dynamicRouteLabels[routeKey] ?? routeKey;
+    _showSnackBar("Route switched to $label");
   }
 
   void _saveStop(String stopName) async {
+    final isGuest = widget.studentRollNo.toLowerCase() == 'guest';
     setState(() {
       _savedStop = stopName;
       _hasAlertedApproaching = false;
       _hasAlertedArrived = false;
     });
-    if (Firebase.apps.isNotEmpty) {
-      await FirebaseDatabase.instance.ref('students/$_studentId').update({
-        'boardingStop': stopName,
-      });
+    if (!isGuest && _studentId.isNotEmpty && Firebase.apps.isNotEmpty) {
+      try {
+        await FirebaseDatabase.instance.ref('students/$_studentId').update({
+          'boardingStop': stopName,
+        });
+      } catch (e) {
+        debugPrint("Error updating student boarding stop in Firebase: $e");
+      }
     }
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('studentSavedStop', stopName);
@@ -2924,6 +2986,28 @@ class _StudentDashboardState extends State<StudentDashboard>
                   final rawLng = (data?['lng'] as num?)?.toDouble() ?? 0.0;
 
                   if (rawLat != 0.0 || rawLng != 0.0) {
+                    if (_busLat != null && _busLng != null && (_busLat != rawLat || _busLng != rawLng)) {
+                      final explicitHeading = (data?['heading'] as num?)?.toDouble() ?? (data?['bearing'] as num?)?.toDouble();
+                      if (explicitHeading != null) {
+                        _busHeading = explicitHeading;
+                      } else {
+                        // calculate bearing between previous coordinate and new coordinate
+                        final dLng = (rawLng - _busLng!) * pi / 180.0;
+                        final lat1 = _busLat! * pi / 180.0;
+                        final lat2 = rawLat * pi / 180.0;
+                        final y = sin(dLng) * cos(lat2);
+                        final x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLng);
+                        final brng = atan2(y, x) * 180.0 / pi;
+                        if (y != 0 || x != 0) {
+                          _busHeading = (brng + 360.0) % 360.0;
+                        }
+                      }
+                      _prevBusLat = _busLat;
+                      _prevBusLng = _busLng;
+                    } else if (data?['heading'] != null || data?['bearing'] != null) {
+                      final explicitHeading = (data?['heading'] as num?)?.toDouble() ?? (data?['bearing'] as num?)?.toDouble();
+                      if (explicitHeading != null) _busHeading = explicitHeading;
+                    }
                     _busLat = rawLat;
                     _busLng = rawLng;
                   }
@@ -3795,6 +3879,7 @@ class _StudentDashboardState extends State<StudentDashboard>
   }
 
   Widget _buildHomeTab() {
+    final bool isGuest = widget.studentRollNo.toLowerCase() == 'guest';
     final int nearestIdx = (_busLat != null && _busLng != null)
         ? _getNearestStopIndex(_busLat!, _busLng!)
         : 0;
@@ -3825,7 +3910,7 @@ class _StudentDashboardState extends State<StudentDashboard>
                 ),
                 const SizedBox(height: 3),
                 Text(
-                  _studentName,
+                  isGuest ? "Guest User" : (_studentName.isNotEmpty ? _studentName : "Student"),
                   style: const TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.w800,
@@ -3843,14 +3928,16 @@ class _StudentDashboardState extends State<StudentDashboard>
                       borderRadius: BorderRadius.circular(16),
                       border: Border.all(color: const Color(0xFFE2E8F0)),
                     ),
-                    child: const Row(
+                    child: Row(
                       children: [
-                        Icon(Icons.info_outline, color: Color(0xFF64748B)),
-                        SizedBox(width: 12),
+                        const Icon(Icons.info_outline, color: Color(0xFF64748B)),
+                        const SizedBox(width: 12),
                         Expanded(
                           child: Text(
-                            "Please complete your profile and select a route to view bus details and trip status.",
-                            style: TextStyle(
+                            isGuest
+                                ? "Search and select a bus or route below to view live details and stops."
+                                : "Please complete your profile and select a route to view bus details and trip status.",
+                            style: const TextStyle(
                               fontSize: 13,
                               color: Color(0xFF64748B),
                               fontWeight: FontWeight.w600,
@@ -4037,12 +4124,16 @@ class _StudentDashboardState extends State<StudentDashboard>
                               const SizedBox(height: 4),
                               GestureDetector(
                                onTap: _effectiveDisplayStops.isEmpty ? null : () {
+                                  final isGuest = widget.studentRollNo.toLowerCase() == 'guest';
                                   setState(() => _savedStop = "");
-                                  if (Firebase.apps.isNotEmpty) {
-                                    FirebaseDatabase.instance
-                                        .ref('students/$_studentId')
-                                        .update({'savedStop': ''});
+                                  if (!isGuest && _studentId.isNotEmpty && Firebase.apps.isNotEmpty) {
+                                    try {
+                                      FirebaseDatabase.instance
+                                          .ref('students/$_studentId')
+                                          .update({'savedStop': ''});
+                                    } catch (_) {}
                                   }
+                                  SharedPreferences.getInstance().then((p) => p.setString('studentSavedStop', ''));
                                 },
                                 child: Text(
                                   _effectiveDisplayStops.isEmpty ? "--" : "Change stop",
@@ -5356,9 +5447,9 @@ class _StudentDashboardState extends State<StudentDashboard>
       markers.add(
         Marker(
           point: LatLng(currentLat, currentLng),
-          width: 80,
-          height: 75,
-          alignment: Alignment.bottomCenter,
+          width: _is3dMode ? 100 : 80,
+          height: _is3dMode ? 115 : 75,
+          alignment: Alignment.center,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -5386,12 +5477,10 @@ class _StudentDashboardState extends State<StudentDashboard>
                 ),
               ),
               const SizedBox(height: 2),
-              Image.asset(
-                'assets/images/yellow_bus_marker.png',
-                width: 56,
-                height: 38,
-                fit: BoxFit.contain,
-              ),
+              if (_is3dMode)
+                _Isometric3DBusWidget(heading: _busHeading)
+              else
+                _2DNavPinpointWidget(heading: _busHeading),
             ],
           ),
         ),
@@ -5488,7 +5577,10 @@ class _StudentDashboardState extends State<StudentDashboard>
           children: [
             // Map tiles
             TileLayer(
-              urlTemplate: 'https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',
+              key: ValueKey(_isSatelliteMap ? 'satellite' : 'street'),
+              urlTemplate: _isSatelliteMap
+                  ? 'https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}'
+                  : 'https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',
               subdomains: const ['0', '1', '2', '3'],
               userAgentPackageName: 'com.panimalar.bus',
               maxNativeZoom: 19,
@@ -5608,209 +5700,344 @@ class _StudentDashboardState extends State<StudentDashboard>
           ),
         ),
 
+        // Street View / Satellite View switcher button + 3D Mode Toggle
         Positioned(
-          left: 16,
+          top: 56,
+          right: 12,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // 3D View Toggle Pill
+              GestureDetector(
+                onTap: () {
+                  setState(() => _is3dMode = !_is3dMode);
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Colors.black26,
+                        blurRadius: 8,
+                        offset: Offset(0, 3),
+                      ),
+                    ],
+                    border: Border.all(
+                      color: _is3dMode ? const Color(0xFF2563EB) : const Color(0xFFCBD5E1),
+                      width: 1.2,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        _is3dMode ? Icons.view_in_ar_rounded : Icons.layers_outlined,
+                        size: 15,
+                        color: _is3dMode ? const Color(0xFF2563EB) : const Color(0xFF64748B),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        "3D",
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w900,
+                          color: _is3dMode ? const Color(0xFF2563EB) : const Color(0xFF64748B),
+                        ),
+                      ),
+                      const SizedBox(width: 5),
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: _is3dMode ? const Color(0xFF16A34A) : const Color(0xFF94A3B8),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              // Street / Satellite View Switcher
+              Container(
+                padding: const EdgeInsets.all(3),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Colors.black26,
+                      blurRadius: 8,
+                      offset: Offset(0, 3),
+                    ),
+                  ],
+                  border: Border.all(color: const Color(0xFFCBD5E1), width: 1.2),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    GestureDetector(
+                      onTap: () {
+                        if (_isSatelliteMap) {
+                          setState(() => _isSatelliteMap = false);
+                        }
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: !_isSatelliteMap ? const Color(0xFF2563EB) : Colors.transparent,
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.map_outlined,
+                              size: 15,
+                              color: !_isSatelliteMap ? Colors.white : const Color(0xFF334155),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              "Street",
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800,
+                                color: !_isSatelliteMap ? Colors.white : const Color(0xFF334155),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    GestureDetector(
+                      onTap: () {
+                        if (!_isSatelliteMap) {
+                          setState(() => _isSatelliteMap = true);
+                        }
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: _isSatelliteMap ? const Color(0xFF2563EB) : Colors.transparent,
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.satellite_alt_rounded,
+                              size: 15,
+                              color: _isSatelliteMap ? Colors.white : const Color(0xFF334155),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              "Satellite",
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800,
+                                color: _isSatelliteMap ? Colors.white : const Color(0xFF334155),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        // Floating Recenter Map FAB
+        Positioned(
           right: 16,
-          bottom: 20,
+          bottom: 82,
+          child: FloatingActionButton.small(
+            heroTag: 'recenter_bus_fab',
+            backgroundColor: Colors.white,
+            elevation: 4,
+            shape: const CircleBorder(),
+            onPressed: () {
+              if (_busLat != null && _busLng != null) {
+                setState(() => _isFollowingBus = true);
+                _mapController.move(LatLng(_busLat!, _busLng!), 14.5);
+              } else {
+                _showSnackBar("Location signal not received yet");
+              }
+            },
+            child: Icon(
+              Icons.my_location_rounded,
+              size: 20,
+              color: _isFollowingBus
+                  ? const Color(0xFF16A34A)
+                  : const Color(0xFF2563EB),
+            ),
+          ),
+        ),
+
+        // Ultra-Compact Floating Pill Bar
+        Positioned(
+          left: 14,
+          right: 14,
+          bottom: 16,
           child: Container(
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
               color: Colors.white,
-              borderRadius: BorderRadius.circular(24),
+              borderRadius: BorderRadius.circular(32),
               boxShadow: const [
                 BoxShadow(
                   color: Colors.black26,
-                  blurRadius: 16,
-                  offset: Offset(0, 4),
+                  blurRadius: 10,
+                  offset: Offset(0, 3),
                 ),
               ],
-              border: Border.all(color: const Color(0xFFE2E8F0)),
+              border: Border.all(
+                color: const Color(0xFFCBD5E1),
+                width: 1.2,
+              ),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              mainAxisSize: MainAxisSize.min,
+            child: Row(
               children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          _displayBusId.isNotEmpty ? "BUS $_displayBusId DETAILS" : "ROUTE DETAILS",
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w800,
-                            color: _routeColor,
-                            letterSpacing: 1.0,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          _effectiveRouteLabel,
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w900,
-                            color: Color(0xFF0F172A),
-                          ),
-                        ),
-                      ],
+                // Circular Bus / Route Badge
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: const BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xFF2563EB), Color(0xFF1D4ED8)],
                     ),
-                    IconButton(
-                      icon: Icon(
-                        Icons.gps_fixed,
-                        color: _isFollowingBus
-                            ? const Color(0xFF16A34A)
-                            : const Color(0xFF2563EB),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Color(0x402563EB),
+                        blurRadius: 6,
+                        offset: Offset(0, 2),
                       ),
-                      onPressed: () {
-                        if (_busLat != null && _busLng != null) {
-                          setState(() => _isFollowingBus = true);
-                          _mapController.move(LatLng(_busLat!, _busLng!), 14.5);
-                        } else {
-                          _showSnackBar("Location signal not received yet");
-                        }
-                      },
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 14),
-                const Divider(height: 1),
-                const SizedBox(height: 14),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            "NEXT STOP",
-                            style: TextStyle(
-                              fontSize: 9,
-                              color: Color(0xFF64748B),
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Builder(
-                            builder: (context) {
-                              if (_effectiveDisplayStops.isEmpty) {
-                                return const Text(
-                                  "--",
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w800,
-                                    color: Color(0xFF1E293B),
-                                  ),
-                                );
-                              }
-                              int idx = _effectiveDisplayStops.indexOf(nearestStopName);
-                              String displayName = _formatStopName(nearestStopName, index: idx);
-                              return Text(
-                                displayName,
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w800,
-                                  color: Color(0xFF1E293B),
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              );
-                            },
-                          ),
-                        ],
+                    ],
+                  ),
+                  child: Center(
+                    child: Text(
+                      _displayBusId.isNotEmpty ? _displayBusId : "52",
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w900,
+                        color: Colors.white,
+                        letterSpacing: -0.5,
                       ),
-                    ),
-                    Container(
-                      width: 1,
-                      height: 30,
-                      color: const Color(0xFFCBD5E1),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            "ACCURACY SIGNAL",
-                            style: TextStyle(
-                              fontSize: 9,
-                              color: Color(0xFF64748B),
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            _busIsOnline && _busAccuracy != null
-                                ? "${_busAccuracy!.toStringAsFixed(1)} meters"
-                                : "No Signal",
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w800,
-                              color: Color(0xFF1E293B),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                if (_savedStop.isNotEmpty) ...[
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 10,
-                    ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFEFF6FF),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: const Color(0xFFBFDBFE)),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                "ETA TO MY STOP",
-                                style: TextStyle(
-                                  fontSize: 8.5,
-                                  color: Color(0xFF1E40AF),
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                _effectiveDisplayStops.isEmpty ? "--" : _formatStopName(_savedStop),
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.bold,
-                                  color: Color(0xFF1E293B),
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
-                          ),
-                        ),
-                        Text(
-                          _effectiveDisplayStops.isEmpty 
-                              ? "Coming Soon" 
-                              : (_busIsOnline
-                                  ? (eta != null ? "$eta min" : "Passed")
-                                  : "offline"),
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w900,
-                            color: Color(0xFF1E40AF),
-                          ),
-                        ),
-                      ],
                     ),
                   ),
-                ],
+                ),
+                const SizedBox(width: 12),
+                // Route Name & Next Stop Info
+                Expanded(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _effectiveRouteLabel.toUpperCase(),
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          color: Color(0xFF64748B),
+                          letterSpacing: 0.8,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 2),
+                      Builder(
+                        builder: (context) {
+                          String nextStopText = "--";
+                          if (_effectiveDisplayStops.isNotEmpty) {
+                            int idx = _effectiveDisplayStops.indexOf(nearestStopName);
+                            nextStopText = _formatStopName(nearestStopName, index: idx);
+                          }
+                          return Row(
+                            children: [
+                              const Icon(
+                                Icons.location_on_rounded,
+                                size: 13,
+                                color: Color(0xFF2563EB),
+                              ),
+                              const SizedBox(width: 3),
+                              Expanded(
+                                child: Text(
+                                  "Next: $nextStopText",
+                                  style: const TextStyle(
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w800,
+                                    color: Color(0xFF0F172A),
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 10),
+                // ETA / Status Chip
+                Builder(
+                  builder: (context) {
+                    final String etaText = _effectiveDisplayStops.isEmpty
+                        ? "Offline"
+                        : (_busIsOnline
+                            ? (eta != null ? "$eta min" : "Passed")
+                            : "Offline");
+                    final bool isPassed = etaText.toLowerCase().contains("passed");
+                    final bool isOffline = etaText.toLowerCase().contains("offline");
+
+                    final Color chipBg = isPassed
+                        ? const Color(0xFF16A34A)
+                        : (isOffline ? const Color(0xFF475569) : const Color(0xFF2563EB));
+
+                    final IconData chipIcon = isPassed
+                        ? Icons.check_circle_rounded
+                        : (isOffline ? Icons.cloud_off_rounded : Icons.timer_outlined);
+
+                    return Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: chipBg,
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: [
+                          BoxShadow(
+                            color: chipBg.withValues(alpha: 0.4),
+                            blurRadius: 6,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(chipIcon, size: 13, color: Colors.white),
+                          const SizedBox(width: 4),
+                          Text(
+                            etaText.toUpperCase(),
+                            style: const TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w900,
+                              color: Colors.white,
+                              letterSpacing: 0.4,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
               ],
             ),
           ),
@@ -8295,3 +8522,425 @@ class _BlinkingBusIconState extends State<_BlinkingBusIcon> {
     );
   }
 }
+
+class _2DNavPinpointWidget extends StatelessWidget {
+  final double heading;
+
+  const _2DNavPinpointWidget({
+    super.key,
+    required this.heading,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 44,
+      height: 44,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          // Outer subtle pulse halo
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: const Color(0xFF2563EB).withValues(alpha: 0.22),
+            ),
+          ),
+          // White border base
+          Container(
+            width: 32,
+            height: 32,
+            decoration: const BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.white,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black26,
+                  blurRadius: 6,
+                  offset: Offset(0, 2),
+                ),
+              ],
+            ),
+          ),
+          // Inner core circle
+          Container(
+            width: 26,
+            height: 26,
+            decoration: const BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF3B82F6), Color(0xFF1D4ED8)],
+              ),
+            ),
+          ),
+          // Rotated directional navigation arrow
+          Transform.rotate(
+            angle: heading * (pi / 180.0),
+            child: const Icon(
+              Icons.navigation_rounded,
+              size: 17,
+              color: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Isometric3DBusWidget extends StatelessWidget {
+  final double heading; // in degrees (0 = North, 90 = East, 180 = South, 270 = West)
+
+  const _Isometric3DBusWidget({
+    super.key,
+    required this.heading,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 70,
+      height: 84,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Transform.rotate(
+            angle: heading * (pi / 180.0),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                // Direction beam / forward navigation indicator with clear air gap
+                Positioned(
+                  top: 0,
+                  child: CustomPaint(
+                    size: const Size(16, 13),
+                    painter: _BusDirectionArrowPainter(),
+                  ),
+                ),
+                // Dynamic Elongated 3D Panimalar College Bus Model (spaced 20px from arrow)
+                Padding(
+                  padding: const EdgeInsets.only(top: 20.0),
+                  child: CustomPaint(
+                    size: const Size(44, 58),
+                    painter: _Isometric3DBusPainter(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Isometric3DBusPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+    final center = Offset(w / 2, h / 2);
+
+    // 1. Soft Ground Drop Shadow (Elongated)
+    final shadowPaint = Paint()
+      ..color = Colors.black.withValues(alpha: 0.34)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.5);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(center: Offset(center.dx, center.dy + 3.0), width: 22, height: 53),
+        const Radius.circular(8),
+      ),
+      shadowPaint,
+    );
+
+    // 2. Wheels (Rubber tires with silver rim center)
+    final wheelPaint = Paint()..color = const Color(0xFF0F172A);
+    final rimPaint = Paint()..color = const Color(0xFF94A3B8);
+    void drawWheel(double x, double y) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(Rect.fromLTWH(x, y, 2.8, 6.5), const Radius.circular(1.2)),
+        wheelPaint,
+      );
+      canvas.drawCircle(Offset(x + 1.4, y + 3.25), 0.7, rimPaint);
+    }
+    // Front wheels (left and right)
+    drawWheel(center.dx - 11.0, center.dy - 16.0);
+    drawWheel(center.dx + 8.2, center.dy - 16.0);
+    // Rear wheels (left and right)
+    drawWheel(center.dx - 11.0, center.dy + 12.0);
+    drawWheel(center.dx + 8.2, center.dy + 12.0);
+
+    // 3. Main 3D Bus Body - Base Extrusion (Panimalar Golden Yellow)
+    final bodyExtrusionPaint = Paint()..color = const Color(0xFFD97706);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(center: Offset(center.dx, center.dy + 2.0), width: 17.5, height: 49.0),
+        const Radius.circular(4.5),
+      ),
+      bodyExtrusionPaint,
+    );
+
+    // 5. Main Roof & Body Deck (Golden Yellow Bus Color)
+    final roofGradient = const LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: [
+        Color(0xFFFEF08A), // Yellow 200
+        Color(0xFFFBBF24), // Yellow 400
+        Color(0xFFF59E0B), // Amber 500
+        Color(0xFFD97706), // Amber 600
+      ],
+    );
+    final roofRect = Rect.fromCenter(center: Offset(center.dx, center.dy - 0.5), width: 16.5, height: 47.0);
+    final roofPaint = Paint()..shader = roofGradient.createShader(roofRect);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(roofRect, const Radius.circular(3.5)),
+      roofPaint,
+    );
+
+    // 6. Roof Longitudinal Aerodynamic Ribs (Yellow Body Accents)
+    final roofRibPaint = Paint()
+      ..color = const Color(0xFFD97706).withValues(alpha: 0.6)
+      ..strokeWidth = 0.8;
+    canvas.drawLine(Offset(center.dx - 4.5, center.dy - 12.0), Offset(center.dx - 4.5, center.dy + 14.0), roofRibPaint);
+    canvas.drawLine(Offset(center.dx + 4.5, center.dy - 12.0), Offset(center.dx + 4.5, center.dy + 14.0), roofRibPaint);
+
+    // 7. Side Passenger Windows (5 windows along each side)
+    final sideWinPaint = Paint()..color = const Color(0xFF38BDF8).withValues(alpha: 0.75);
+    final winFrame = Paint()..color = const Color(0xFF0F172A).withValues(alpha: 0.85);
+    for (int i = 0; i < 5; i++) {
+      // Left side windows
+      final rLeft = Rect.fromLTWH(center.dx - 7.5, center.dy - 12.0 + (i * 5.6), 2.0, 4.2);
+      canvas.drawRRect(RRect.fromRectAndRadius(rLeft, const Radius.circular(0.6)), winFrame);
+      canvas.drawRRect(RRect.fromRectAndRadius(rLeft.deflate(0.3), const Radius.circular(0.4)), sideWinPaint);
+
+      // Right side windows
+      final rRight = Rect.fromLTWH(center.dx + 5.5, center.dy - 12.0 + (i * 5.6), 2.0, 4.2);
+      canvas.drawRRect(RRect.fromRectAndRadius(rRight, const Radius.circular(0.6)), winFrame);
+      canvas.drawRRect(RRect.fromRectAndRadius(rRight.deflate(0.3), const Radius.circular(0.4)), sideWinPaint);
+    }
+
+    // ==========================================
+    // 8. REALISTIC BUS FRONT FACELIFT
+    // ==========================================
+    // Curved Front Windshield with panoramic A-pillars
+    final glassPaint = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [Color(0xFF38BDF8), Color(0xFF0369A1)],
+      ).createShader(Rect.fromLTWH(center.dx - 6.8, center.dy - 21.0, 13.6, 6.5));
+    canvas.drawRRect(
+      RRect.fromRectAndCorners(
+        Rect.fromLTWH(center.dx - 6.8, center.dy - 21.0, 13.6, 6.5),
+        topLeft: const Radius.circular(3.5),
+        topRight: const Radius.circular(3.5),
+        bottomLeft: const Radius.circular(1.0),
+        bottomRight: const Radius.circular(1.0),
+      ),
+      glassPaint,
+    );
+    // Windshield Glare Reflection
+    final glassGlare = Paint()..color = Colors.white.withValues(alpha: 0.65);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(center.dx - 5.2, center.dy - 20.0, 4.0, 1.8),
+        const Radius.circular(0.8),
+      ),
+      glassGlare,
+    );
+    // Twin Wipers
+    final wiperPaint = Paint()
+      ..color = const Color(0xFF0F172A)
+      ..strokeWidth = 0.8;
+    canvas.drawLine(Offset(center.dx - 4.0, center.dy - 16.5), Offset(center.dx - 1.5, center.dy - 18.8), wiperPaint);
+    canvas.drawLine(Offset(center.dx + 1.0, center.dy - 16.5), Offset(center.dx + 3.5, center.dy - 18.8), wiperPaint);
+
+    // Front Destination LED Board: "PANIMALAR"
+    final boardBg = Paint()..color = const Color(0xFF09090B);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(center.dx - 6.0, center.dy - 23.5, 12.0, 2.6),
+        const Radius.circular(0.8),
+      ),
+      boardBg,
+    );
+    // Glowing Amber LED dots
+    final ledPaint = Paint()..color = const Color(0xFFFBBF24);
+    for (int i = 0; i < 5; i++) {
+      canvas.drawCircle(Offset(center.dx - 4.0 + (i * 2.0), center.dy - 22.2), 0.55, ledPaint);
+    }
+
+    // Front Radiator Grille & Panimalar Emblem (Bus Face)
+    final grillePaint = Paint()..color = const Color(0xFF1E293B);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(center: Offset(center.dx, center.dy - 23.8), width: 7.5, height: 1.8),
+        const Radius.circular(0.5),
+      ),
+      grillePaint,
+    );
+    // Chrome center badge / emblem
+    canvas.drawCircle(Offset(center.dx, center.dy - 23.8), 0.6, Paint()..color = const Color(0xFFCBD5E1));
+
+    // Front Curved Bumper Bar & License Plate
+    final bumperPaint = Paint()..color = const Color(0xFFB45309);
+    canvas.drawRRect(
+      RRect.fromRectAndCorners(
+        Rect.fromCenter(center: Offset(center.dx, center.dy - 24.8), width: 15.5, height: 1.6),
+        topLeft: const Radius.circular(1.5),
+        topRight: const Radius.circular(1.5),
+      ),
+      bumperPaint,
+    );
+    // Tiny white front plate
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Rect.fromCenter(center: Offset(center.dx, center.dy - 24.8), width: 4.5, height: 1.0), const Radius.circular(0.3)),
+      Paint()..color = Colors.white,
+    );
+
+    // Front Headlight Clusters (Dual White Projector + Amber Turn Indicator)
+    final headlightGlow = Paint()
+      ..color = const Color(0xFFFEF08A).withValues(alpha: 0.85)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.0);
+    final headlightCore = Paint()..color = Colors.white;
+    final amberTurn = Paint()..color = const Color(0xFFF59E0B);
+    // Left Headlight + Blinker
+    canvas.drawCircle(Offset(center.dx - 5.5, center.dy - 23.0), 1.8, headlightGlow);
+    canvas.drawCircle(Offset(center.dx - 5.5, center.dy - 23.0), 1.0, headlightCore);
+    canvas.drawCircle(Offset(center.dx - 7.0, center.dy - 22.5), 0.7, amberTurn);
+    // Right Headlight + Blinker
+    canvas.drawCircle(Offset(center.dx + 5.5, center.dy - 23.0), 1.8, headlightGlow);
+    canvas.drawCircle(Offset(center.dx + 5.5, center.dy - 23.0), 1.0, headlightCore);
+    canvas.drawCircle(Offset(center.dx + 7.0, center.dy - 22.5), 0.7, amberTurn);
+
+    // ==========================================
+    // 9. REALISTIC BUS REAR FACELIFT
+    // ==========================================
+    // Rear Back Window (Dark Tinted Glass across rear wall)
+    final rearWinPaint = Paint()..color = const Color(0xFF0F172A).withValues(alpha: 0.9);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(center: Offset(center.dx, center.dy + 18.0), width: 12.5, height: 4.2),
+        const Radius.circular(1.0),
+      ),
+      rearWinPaint,
+    );
+    // Rear glass highlight line
+    final rearGlare = Paint()
+      ..color = const Color(0xFF38BDF8).withValues(alpha: 0.5)
+      ..strokeWidth = 0.8;
+    canvas.drawLine(Offset(center.dx - 5.0, center.dy + 17.0), Offset(center.dx + 5.0, center.dy + 17.0), rearGlare);
+
+    // Rear Engine Cooling Louvers / Ventilation Slats
+    final rearLouver = Paint()
+      ..color = const Color(0xFF78350F)
+      ..strokeWidth = 0.7;
+    canvas.drawLine(Offset(center.dx - 4.5, center.dy + 21.0), Offset(center.dx + 4.5, center.dy + 21.0), rearLouver);
+    canvas.drawLine(Offset(center.dx - 4.5, center.dy + 22.2), Offset(center.dx + 4.5, center.dy + 22.2), rearLouver);
+
+    // Rear Bumper Step Bar
+    final rearBumperPaint = Paint()..color = const Color(0xFF1E293B);
+    canvas.drawRRect(
+      RRect.fromRectAndCorners(
+        Rect.fromCenter(center: Offset(center.dx, center.dy + 24.2), width: 16.5, height: 1.8),
+        bottomLeft: const Radius.circular(1.5),
+        bottomRight: const Radius.circular(1.5),
+      ),
+      rearBumperPaint,
+    );
+
+    // Rear Triple Tail Lamp Clusters (Red Brake + Amber Signal + Red Reflector)
+    final brakePaint = Paint()..color = const Color(0xFFEF4444);
+    final rearSignalPaint = Paint()..color = const Color(0xFFF59E0B);
+    // Left Rear Lamps
+    canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(center.dx - 7.5, center.dy + 20.5, 1.8, 1.8), const Radius.circular(0.4)), brakePaint);
+    canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(center.dx - 7.5, center.dy + 22.5, 1.8, 1.2), const Radius.circular(0.4)), rearSignalPaint);
+    // Right Rear Lamps
+    canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(center.dx + 5.7, center.dy + 20.5, 1.8, 1.8), const Radius.circular(0.4)), brakePaint);
+    canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(center.dx + 5.7, center.dy + 22.5, 1.8, 1.2), const Radius.circular(0.4)), rearSignalPaint);
+
+    // ==========================================
+    // 10. ROOFTOP AC POD & ANTENNA (Yellow Body Themed)
+    // ==========================================
+    final acBase = Paint()..color = const Color(0xFFD97706); // Dark Amber base
+    final acTop = Paint()..color = const Color(0xFFFEF08A);  // Vibrant Yellow top
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(center: Offset(center.dx, center.dy + 1.0), width: 7.5, height: 16.0),
+        const Radius.circular(2.0),
+      ),
+      acBase,
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(center: Offset(center.dx, center.dy + 0.5), width: 6.8, height: 15.0),
+        const Radius.circular(1.6),
+      ),
+      acTop,
+    );
+    // White ventilation cooling slats on AC top
+    final ventPaint = Paint()
+      ..color = const Color(0xFFF59E0B)
+      ..strokeWidth = 0.8;
+    canvas.drawLine(Offset(center.dx - 2.0, center.dy - 4.0), Offset(center.dx - 2.0, center.dy + 4.0), ventPaint);
+    canvas.drawLine(Offset(center.dx, center.dy - 4.0), Offset(center.dx, center.dy + 4.0), ventPaint);
+    canvas.drawLine(Offset(center.dx + 2.0, center.dy - 4.0), Offset(center.dx + 2.0, center.dy + 4.0), ventPaint);
+
+    // Rooftop Radio Antenna Stalk
+    final antennaPaint = Paint()
+      ..color = const Color(0xFF0F172A)
+      ..strokeWidth = 0.9;
+    canvas.drawLine(Offset(center.dx - 2.5, center.dy - 22.5), Offset(center.dx - 4.0, center.dy - 26.0), antennaPaint);
+    canvas.drawCircle(Offset(center.dx - 4.0, center.dy - 26.0), 0.7, Paint()..color = const Color(0xFFEF4444));
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _BusDirectionArrowPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.bottomCenter,
+        end: Alignment.topCenter,
+        colors: [Color(0xFF2563EB), Color(0xFF60A5FA), Color(0xFF93C5FD)],
+      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height))
+      ..style = PaintingStyle.fill;
+
+    final shadowPaint = Paint()
+      ..color = const Color(0xFF2563EB).withValues(alpha: 0.5)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3.0);
+
+    final path = Path()
+      ..moveTo(size.width / 2, 0) // Arrow tip pointing forward
+      ..lineTo(size.width, size.height)
+      ..lineTo(size.width / 2, size.height * 0.65) // inner notch
+      ..lineTo(0, size.height)
+      ..close();
+
+    canvas.drawPath(path, shadowPaint);
+    canvas.drawPath(path, paint);
+
+    // Center highlight
+    final innerPaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.8)
+      ..strokeWidth = 1.2
+      ..style = PaintingStyle.stroke;
+    canvas.drawLine(
+      Offset(size.width / 2, 2),
+      Offset(size.width / 2, size.height * 0.6),
+      innerPaint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+

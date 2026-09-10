@@ -1,6 +1,5 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
@@ -84,6 +83,9 @@ class _StudentLoginScreenState extends State<StudentLoginScreen>
     });
 
     if (rollNo.toLowerCase() == 'guest') {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('studentRollNo', 'Guest');
+      await prefs.setString('studentName', 'Guest User');
       widget.onLogin(rollNo, false);
       if (mounted) {
         setState(() {
@@ -506,9 +508,11 @@ class _StudentLoginScreenState extends State<StudentLoginScreen>
                                   trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: Color(0xFF2563EB)),
                                   onTap: () async {
                                     final prefs = await SharedPreferences.getInstance();
+                                    await prefs.setString('studentRollNo', 'Guest');
+                                    await prefs.setString('studentName', 'Guest User');
                                     await prefs.setString('studentBusNo', b.busNo);
                                     await prefs.setString('studentSavedStop', selectedStop);
-                                    await prefs.remove('studentSelectedRoute');
+                                    await prefs.setString('studentSelectedRoute', b.routeKey.isNotEmpty ? b.routeKey : 'route_${b.busNo}');
                                     if (mounted) {
                                       Navigator.pop(context);
                                       widget.onLogin('Guest', false);
@@ -615,9 +619,11 @@ class _StudentLoginScreenState extends State<StudentLoginScreen>
                                 trailing: const Icon(Icons.chevron_right, size: 18),
                                 onTap: () async {
                                   final prefs = await SharedPreferences.getInstance();
+                                  await prefs.setString('studentRollNo', 'Guest');
+                                  await prefs.setString('studentName', 'Guest User');
                                   await prefs.setString('studentBusNo', b.busNo);
+                                  await prefs.setString('studentSelectedRoute', b.routeKey.isNotEmpty ? b.routeKey : 'route_${b.busNo}');
                                   await prefs.remove('studentSavedStop');
-                                  await prefs.remove('studentSelectedRoute');
                                   if (mounted) {
                                     Navigator.pop(context);
                                     widget.onLogin('Guest', false);
@@ -706,7 +712,9 @@ class _StudentLoginScreenState extends State<StudentLoginScreen>
                 TextButton(
                   onPressed: () async {
                     final prefs = await SharedPreferences.getInstance();
-                    await prefs.setString('studentBusNo', 'Guest');
+                    await prefs.setString('studentRollNo', 'Guest');
+                    await prefs.setString('studentName', 'Guest User');
+                    await prefs.setString('studentBusNo', '');
                     await prefs.setString('studentSavedStop', '');
                     await prefs.remove('studentSelectedRoute');
                     if (mounted) {
