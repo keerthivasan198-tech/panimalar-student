@@ -482,24 +482,59 @@ class _StudentLoginScreenState extends State<StudentLoginScreen>
                                   dense: true,
                                   contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                                   leading: CircleAvatar(
-                                    radius: 16,
+                                    radius: 22,
                                     backgroundColor: const Color(0xFF2563EB),
-                                    child: Text(
-                                      b.busNo,
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.bold,
-                                      ),
+                                    child: Builder(
+                                      builder: (ctx) {
+                                        // Extract just the numeric/short bus number for the avatar
+                                        // Priority: numeric from routeKey > numeric from busNo > busNo trimmed short
+                                        String avatarLabel = b.busNo;
+                                        // Try to extract digits from routeKey e.g. "route_52" -> "52"
+                                        final routeDigits = RegExp(r'\d+').firstMatch(b.routeKey)?.group(0);
+                                        if (routeDigits != null && routeDigits.isNotEmpty) {
+                                          avatarLabel = routeDigits;
+                                        } else {
+                                          // Try to extract digits from busNo e.g. "Route 52-Padappai" -> "52"
+                                          final busDigits = RegExp(r'\d+').firstMatch(b.busNo)?.group(0);
+                                          if (busDigits != null && busDigits.isNotEmpty) {
+                                            avatarLabel = busDigits;
+                                          } else if (avatarLabel.length > 4) {
+                                            avatarLabel = avatarLabel.substring(0, 4);
+                                          }
+                                        }
+                                        return Text(
+                                          avatarLabel,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        );
+                                      },
                                     ),
                                   ),
-                                  title: Text(
-                                    'Bus ${b.busNo} — ${b.routeName}',
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 13,
-                                      color: Color(0xFF0F172A),
-                                    ),
+                                  title: Builder(
+                                    builder: (ctx) {
+                                      // Extract clean bus number for title display
+                                      String displayBusNo = b.busNo;
+                                      final routeDigits = RegExp(r'\d+').firstMatch(b.routeKey)?.group(0);
+                                      if (routeDigits != null && routeDigits.isNotEmpty) {
+                                        displayBusNo = routeDigits;
+                                      } else {
+                                        final busDigits = RegExp(r'\d+').firstMatch(b.busNo)?.group(0);
+                                        if (busDigits != null && busDigits.isNotEmpty) {
+                                          displayBusNo = busDigits;
+                                        }
+                                      }
+                                      return Text(
+                                        'Bus $displayBusNo — ${b.routeName}',
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 13,
+                                          color: Color(0xFF0F172A),
+                                        ),
+                                      );
+                                    },
                                   ),
                                   subtitle: Text(
                                     'Passes through $selectedStop',
