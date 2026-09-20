@@ -53,6 +53,10 @@ import 'package:http/http.dart' as http;
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
+// ignore: avoid_web_libraries_in_flutter
+import 'dart:ui' as ui;
+import '../../platform/bus3d_iframe.dart' as bus3d_platform;
+
 
 class MainShell extends StatefulWidget {
   final VoidCallback onSwitchRole;
@@ -8592,8 +8596,12 @@ class _2DNavPinpointWidget extends StatelessWidget {
   }
 }
 
-class _Isometric3DBusWidget extends StatelessWidget {
-  final double heading; // in degrees (0 = North, 90 = East, 180 = South, 270 = West)
+// ====================================================================
+// 3D Bus Widget — uses WebGL Three.js iframe on Flutter Web,
+// falls back to isometric canvas painter on native platforms.
+// ====================================================================
+class _Isometric3DBusWidget extends StatefulWidget {
+  final double heading; // compass degrees (0=N, 90=E, 180=S, 270=W)
 
   const _Isometric3DBusWidget({
     super.key,
@@ -8601,7 +8609,67 @@ class _Isometric3DBusWidget extends StatelessWidget {
   });
 
   @override
+  State<_Isometric3DBusWidget> createState() => _Isometric3DBusWidgetState();
+}
+
+class _Isometric3DBusWidgetState extends State<_Isometric3DBusWidget> {
+  static int _viewIdCounter = 0;
+  late final String _viewId;
+
+  @override
+  void initState() {
+    super.initState();
+    _viewId = kIsWeb ? 'bus3d-iframe-${_viewIdCounter++}' : '';
+    if (kIsWeb) {
+      _registerWebView();
+    }
+  }
+
+  void _registerWebView() {
+    // ignore: undefined_prefixed_name
+    ui.platformViewRegistry.registerViewFactory(_viewId, (int id) {
+      return _makeBus3dIframe();
+    });
+  }
+
+  @override
+  void didUpdateWidget(_Isometric3DBusWidget old) {
+    super.didUpdateWidget(old);
+    // heading updates are sent via postMessage from JS injected in index.html
+    // (the iframe auto-orbits; heading update is best-effort)
+  }
+
+  @override
   Widget build(BuildContext context) {
+    if (kIsWeb) {
+      // Flutter Web: embed the Three.js 3D bus via HtmlElementView
+      return SizedBox(
+        width: 110,
+        height: 130,
+        child: Stack(
+          children: [
+            HtmlElementView(viewType: _viewId),
+            // Direction arrow overlay at top
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Transform.rotate(
+                  angle: widget.heading * (pi / 180.0),
+                  child: CustomPaint(
+                    size: const Size(16, 13),
+                    painter: _BusDirectionArrowPainter(),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Native (Android/iOS/Desktop): use the canvas painter fallback
     return SizedBox(
       width: 70,
       height: 84,
@@ -8609,11 +8677,10 @@ class _Isometric3DBusWidget extends StatelessWidget {
         alignment: Alignment.center,
         children: [
           Transform.rotate(
-            angle: heading * (pi / 180.0),
+            angle: widget.heading * (pi / 180.0),
             child: Stack(
               alignment: Alignment.center,
               children: [
-                // Direction beam / forward navigation indicator with clear air gap
                 Positioned(
                   top: 0,
                   child: CustomPaint(
@@ -8621,7 +8688,6 @@ class _Isometric3DBusWidget extends StatelessWidget {
                     painter: _BusDirectionArrowPainter(),
                   ),
                 ),
-                // Dynamic Elongated 3D Panimalar College Bus Model (spaced 20px from arrow)
                 Padding(
                   padding: const EdgeInsets.only(top: 20.0),
                   child: CustomPaint(
@@ -8637,6 +8703,27 @@ class _Isometric3DBusWidget extends StatelessWidget {
     );
   }
 }
+
+/// Creates an IFrameElement for the Three.js 3D bus.
+/// On Flutter Web: returns an html.IFrameElement pointing to /bus3d.html.
+/// On native: returns null (never shown due to kIsWeb guard in widget).
+dynamic _makeBus3dIframe() {
+  return bus3d_platform.makeBus3dIframe();
+}
+
+// ignore: non_constant_identifier_names
+dynamic _createWebIframe(String src) => _makeBus3dIframe();
+
+// ignore: non_constant_identifier_names
+void _webPostMessage(dynamic iframe, double heading) {}
+
+/// Builds an HTML iframe element pointing to /bus3d.html.
+// ignore: avoid_web_libraries_in_flutter
+dynamic _buildIframeElement(String src) => _makeBus3dIframe();
+
+void _postToIframeWindow(dynamic iframe, double heading) {}
+
+
 
 class _Isometric3DBusPainter extends CustomPainter {
   @override

@@ -1,0 +1,785 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>College bus 3D model</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700&family=Poppins:wght@700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  --bg: #eceee8; --panel: rgba(251, 252, 249, 0.86); --ink: #17211c; --muted: #5b6961;
+  --line: rgba(23, 33, 28, 0.14); --hover: rgba(23, 33, 28, 0.07);
+  --accent: #2b67d9; --accent-ink: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1b2124; --panel: rgba(30, 37, 41, 0.86); --ink: #edf2ee; --muted: #9aa8a1;
+    --line: rgba(237, 242, 238, 0.16); --hover: rgba(237, 242, 238, 0.09);
+    --accent: #7fa7ff; --accent-ink: #0b1630;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1b2124; --panel: rgba(30, 37, 41, 0.86); --ink: #edf2ee; --muted: #9aa8a1;
+  --line: rgba(237, 242, 238, 0.16); --hover: rgba(237, 242, 238, 0.09);
+  --accent: #7fa7ff; --accent-ink: #0b1630;
+}
+*, *::before, *::after { box-sizing: inherit; }
+html { height: 100%; scroll-padding-top: env(safe-area-inset-top, 0px); }
+body {
+  margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--ink);
+  font-family: 'Manrope', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+#scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; outline: none; cursor: grab; }
+#scene:active { cursor: grabbing; }
+.card, .dock {
+  background: var(--panel); border: 1px solid var(--line);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+}
+.card {
+  position: fixed; left: 14px; top: calc(env(safe-area-inset-top, 0px) + 14px);
+  max-width: min(330px, calc(100% - 28px)); padding: 14px 16px 13px; border-radius: 16px;
+}
+.card h1 { margin: 0 0 3px; font-size: 19px; line-height: 1.2; font-weight: 700; letter-spacing: -0.01em; }
+.card p { margin: 0; font-size: 13.5px; line-height: 1.45; color: var(--muted); }
+.card .stats { margin-top: 8px; font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--ink); }
+.dock {
+  position: fixed; left: 0; right: 0; margin-inline: auto; width: fit-content;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 14px); max-width: calc(100% - 24px);
+  display: flex; align-items: center; gap: 3px; padding: 5px; border-radius: 16px;
+  overflow-x: auto; scrollbar-width: none;
+}
+.dock::-webkit-scrollbar { display: none; }
+.dock button {
+  font: 600 13px/1 'Manrope', system-ui, sans-serif; color: var(--ink); background: transparent; border: 0;
+  padding: 11px 13px; border-radius: 11px; cursor: pointer; white-space: nowrap; flex: none;
+}
+.dock button:hover { background: var(--hover); }
+.dock button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.dock button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.dock .sep { width: 1px; align-self: stretch; margin: 6px 4px; background: var(--line); flex: none; }
+#loading {
+  position: fixed; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px;
+  color: var(--muted); font-size: 14px; pointer-events: none;
+}
+@media (max-width: 520px) { .card p { display: none; } .card h1 { font-size: 17px; } }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+</head>
+<body>
+<canvas id="scene" tabindex="0" aria-label="Interactive 3D model of a yellow college bus. Drag to rotate, scroll to zoom."></canvas>
+
+<section class="card">
+  <h1>College bus</h1>
+  <p>Drag to turn the bus, scroll or pinch to zoom. The buttons below jump to each face.</p>
+  <div class="stats" id="stats"></div>
+</section>
+
+<nav class="dock" id="dock" aria-label="Camera views">
+  <button type="button" data-toggle="spin" aria-pressed="false">Spin</button>
+  <span class="sep" role="separator"></span>
+  <button type="button" data-view="iso" aria-pressed="false">Overview</button>
+  <button type="button" data-view="front" aria-pressed="false">Front</button>
+  <button type="button" data-view="door" aria-pressed="false">Door side</button>
+  <button type="button" data-view="rear" aria-pressed="false">Rear</button>
+  <button type="button" data-view="driver" aria-pressed="false">Driver side</button>
+  <button type="button" data-view="top" aria-pressed="false">Top</button>
+  <button type="button" data-view="nav" aria-pressed="false">Navigation</button>
+  <span class="sep" role="separator"></span>
+  <button type="button" data-toggle="drive" aria-pressed="false">Wheels</button>
+</nav>
+<div id="loading">Building the bus...</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+/* College bus – procedural high-detail model.
+   Units: metres. Y up. Bus faces +Z (glTF convention). Left side (door side, India) is +X.
+   Origin: ground level, centred on the bus footprint. */
+function createCollegeBus(THREE, options) {
+  const V = THREE;
+  const opt = Object.assign({
+    sign: 'COLLEGE SPECIAL',
+    title: 'COLLEGE BUS',
+    college: 'YOUR COLLEGE NAME',
+    busNo: '07',
+    plate: 'TN 45 AB 1234',
+    yellow: 0xffd000,
+    createCanvas: null,          // (w,h) => canvas ; null = skip text decals
+    font: 'Poppins, Arial, Helvetica, "Liberation Sans", "DejaVu Sans", sans-serif'
+  }, options || {});
+
+  const bus = new V.Group();
+  bus.name = 'CollegeBus';
+  const wheels = [];
+  bus.userData.wheels = wheels;
+
+  // ---------------------------------------------------------------- dimensions
+  const BW = 2.5;                  // body width
+  const BV = 0.18;                 // body edge rounding
+  const P = 5.25, YB = 0.5, YT = 3.1, RT = 0.4, RB = 0.22, AR = 0.72;
+  const Z_F = P + BV;              // 5.43 flat front plane
+  const X_S = BW / 2;              // 1.25 flat side plane
+  const Y_TOP = YT + BV;           // 3.28 flat roof plane
+  const ZF_AXLE = 3.3, ZR_AXLE = -3.2, WR = 0.52;
+
+  // ---------------------------------------------------------------- materials
+  const std = (o) => new V.MeshStandardMaterial(o);
+  const M = {
+    yellow: new V.MeshPhysicalMaterial({ name: 'BusYellow', color: opt.yellow, roughness: 0.3, metalness: 0.0, clearcoat: 1, clearcoatRoughness: 0.05 }),
+    black: std({ name: 'BlackTrim', color: 0x0f1113, roughness: 0.55, metalness: 0.1 }),
+    blackTwo: std({ name: 'WheelWell', color: 0x08090a, roughness: 0.9, metalness: 0, side: V.DoubleSide }),
+    glass: new V.MeshPhysicalMaterial({ name: 'Glass', color: 0x0a1620, roughness: 0.04, metalness: 0.35, clearcoat: 1, clearcoatRoughness: 0.02, envMapIntensity: 1.6 }),
+    mirror: std({ name: 'MirrorGlass', color: 0xb8c4cc, roughness: 0.03, metalness: 1 }),
+    chrome: std({ name: 'Chrome', color: 0xdfe3e6, roughness: 0.12, metalness: 1 }),
+    rubber: std({ name: 'Tyre', color: 0x0b0b0c, roughness: 0.92, metalness: 0 }),
+    rim: std({ name: 'Rim', color: 0xc9ced2, roughness: 0.35, metalness: 0.9 }),
+    hatch: std({ name: 'RoofHatch', color: 0xdadfe2, roughness: 0.45, metalness: 0.1 }),
+    chassis: std({ name: 'Chassis', color: 0x1d2023, roughness: 0.75, metalness: 0.5 }),
+    head: std({ name: 'Headlamp', color: 0xfff7e0, roughness: 0.1, metalness: 0, emissive: 0xfff0c0, emissiveIntensity: 1.1 }),
+    amber: std({ name: 'AmberLamp', color: 0xff9d00, roughness: 0.2, metalness: 0, emissive: 0xff8a00, emissiveIntensity: 0.9 }),
+    red: std({ name: 'TailLamp', color: 0xd40d0d, roughness: 0.2, metalness: 0, emissive: 0xc00000, emissiveIntensity: 0.8 })
+  };
+
+  // ---------------------------------------------------------------- geometry helpers
+  // Smooth normals for extrusions: flat caps stay perfectly flat, bevels shade smoothly.
+  function smoothExtrude(g, creaseDeg) {
+    const p = g.attributes.position, cnt = p.count, tri = cnt / 3;
+    g.computeBoundingBox();
+    const zmin = g.boundingBox.min.z, zmax = g.boundingBox.max.z, eps = 1e-5;
+    const nx = new Float32Array(tri), ny = new Float32Array(tri), nz = new Float32Array(tri), ar = new Float32Array(tri);
+    const cap = new Uint8Array(tri);
+    const keys = new Array(cnt);
+    const map = new Map();
+    for (let t = 0; t < tri; t++) {
+      const a = 3 * t, b = a + 1, c = a + 2;
+      const ax = p.getX(a), ay = p.getY(a), az = p.getZ(a);
+      const ux = p.getX(b) - ax, uy = p.getY(b) - ay, uz = p.getZ(b) - az;
+      const vx = p.getX(c) - ax, vy = p.getY(c) - ay, vz = p.getZ(c) - az;
+      let cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
+      const len = Math.hypot(cx, cy, cz);
+      if (len < 1e-12) { nx[t] = 0; ny[t] = 0; nz[t] = 1; ar[t] = 0; }
+      else { nx[t] = cx / len; ny[t] = cy / len; nz[t] = cz / len; ar[t] = len * 0.5; }
+      const z0 = p.getZ(a), z1 = p.getZ(b), z2 = p.getZ(c);
+      cap[t] = ((Math.abs(z0 - zmin) < eps && Math.abs(z1 - zmin) < eps && Math.abs(z2 - zmin) < eps) ||
+                (Math.abs(z0 - zmax) < eps && Math.abs(z1 - zmax) < eps && Math.abs(z2 - zmax) < eps)) ? 1 : 0;
+      for (let k = 0; k < 3; k++) {
+        const i = a + k;
+        const key = Math.round(p.getX(i) * 1e4) + ',' + Math.round(p.getY(i) * 1e4) + ',' + Math.round(p.getZ(i) * 1e4);
+        keys[i] = key;
+        if (!cap[t]) { let arr = map.get(key); if (!arr) { arr = []; map.set(key, arr); } arr.push(t); }
+      }
+    }
+    const out = new Float32Array(cnt * 3);
+    const cosC = Math.cos((creaseDeg || 55) * Math.PI / 180);
+    for (let t = 0; t < tri; t++) {
+      for (let k = 0; k < 3; k++) {
+        const i = 3 * t + k;
+        let sx, sy, sz;
+        if (cap[t]) { sx = nx[t]; sy = ny[t]; sz = nz[t]; }
+        else {
+          sx = 0; sy = 0; sz = 0;
+          const arr = map.get(keys[i]);
+          for (let j = 0; j < arr.length; j++) {
+            const u = arr[j];
+            if (nx[t] * nx[u] + ny[t] * ny[u] + nz[t] * nz[u] >= cosC) { sx += nx[u] * ar[u]; sy += ny[u] * ar[u]; sz += nz[u] * ar[u]; }
+          }
+          const l = Math.hypot(sx, sy, sz);
+          if (l < 1e-12) { sx = nx[t]; sy = ny[t]; sz = nz[t]; } else { sx /= l; sy /= l; sz /= l; }
+        }
+        out[i * 3] = sx; out[i * 3 + 1] = sy; out[i * 3 + 2] = sz;
+      }
+    }
+    g.setAttribute('normal', new V.BufferAttribute(out, 3));
+    return g;
+  }
+
+  function rrShape(w, h, r) {
+    const s = new V.Shape(); const x = -w / 2, y = -h / 2;
+    r = Math.max(0.001, Math.min(r, w / 2 - 0.0005, h / 2 - 0.0005));
+    s.moveTo(x + r, y); s.lineTo(x + w - r, y);
+    s.absarc(x + w - r, y + r, r, -Math.PI / 2, 0, false);
+    s.lineTo(x + w, y + h - r);
+    s.absarc(x + w - r, y + h - r, r, 0, Math.PI / 2, false);
+    s.lineTo(x + r, y + h);
+    s.absarc(x + r, y + h - r, r, Math.PI / 2, Math.PI, false);
+    s.lineTo(x, y + r);
+    s.absarc(x + r, y + r, r, Math.PI, Math.PI * 1.5, false);
+    return s;
+  }
+
+  const geoCache = new Map();
+  function slabGeo(w, h, d, r, b, seg) {
+    const key = [w, h, d, r, b, seg].join('|');
+    let g = geoCache.get(key);
+    if (g) return g;
+    g = new V.ExtrudeGeometry(rrShape(w - 2 * b, h - 2 * b, Math.max(r - b, 0.002)), {
+      depth: d - 2 * b, bevelEnabled: true, bevelThickness: b, bevelSize: b, bevelSegments: seg, curveSegments: 8
+    });
+    g.translate(0, 0, -(d - 2 * b) / 2);
+    smoothExtrude(g, 60);
+    geoCache.set(key, g);
+    return g;
+  }
+  const slab = (w, h, d, r, mat, b = 0.012, seg = 2) => new V.Mesh(slabGeo(w, h, d, r, b, seg), mat);
+  const box = (w, h, d, mat) => new V.Mesh(new V.BoxGeometry(w, h, d), mat);
+  function put(mesh, x, y, z, ry = 0, rx = 0, rz = 0, name) {
+    mesh.position.set(x, y, z); mesh.rotation.set(rx, ry, rz);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    if (name) mesh.name = name;
+    bus.add(mesh); return mesh;
+  }
+
+  // ---------------------------------------------------------------- text decals
+  function textTex(text, W, H, o) {
+    if (!opt.createCanvas) return null;
+    o = o || {};
+    const c = opt.createCanvas(W, H), g = c.getContext('2d');
+    if (o.bg) {
+      g.fillStyle = o.bg;
+      if (o.round) { const r = o.round; g.beginPath(); g.moveTo(r, 0); g.arcTo(W, 0, W, H, r); g.arcTo(W, H, 0, H, r); g.arcTo(0, H, 0, 0, r); g.arcTo(0, 0, W, 0, r); g.closePath(); g.fill(); }
+      else g.fillRect(0, 0, W, H);
+    }
+    g.fillStyle = o.fg || '#101214'; g.textBaseline = 'middle'; g.textAlign = 'left';
+    const left = o.left || 0;
+    let fs = H * (o.size || 0.74), sp = fs * (o.spacing == null ? 0.16 : o.spacing);
+    const measure = () => {
+      g.font = (o.weight || '700') + ' ' + fs + 'px ' + opt.font;
+      let w = 0; for (const ch of text) w += g.measureText(ch).width + sp; return w - sp;
+    };
+    let tw = measure();
+    const maxW = (W - left) * 0.95;
+    if (tw > maxW) { const k = maxW / tw; fs *= k; sp *= k; tw = measure(); }
+    let x = left + ((W - left) - tw) / 2;
+    for (const ch of text) { g.fillText(ch, x, H / 2 + H * 0.035); x += g.measureText(ch).width + sp; }
+    const t = new V.CanvasTexture(c);
+    t.encoding = V.sRGBEncoding; t.anisotropy = 16; t.needsUpdate = true;
+    return t;
+  }
+  function decal(tex, w, h, x, y, z, ry, o) {
+    if (!tex) return;
+    o = o || {};
+    const m = new V.MeshStandardMaterial({
+      name: o.name || 'Decal', map: tex, transparent: !o.opaque, roughness: 0.5, metalness: 0,
+      polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4, depthWrite: !!o.opaque,
+      emissive: o.glow ? 0xffffff : 0x000000, emissiveMap: o.glow ? tex : null, emissiveIntensity: o.glow ? 0.9 : 1
+    });
+    const mesh = new V.Mesh(new V.PlaneGeometry(w, h), m);
+    mesh.position.set(x, y, z); mesh.rotation.y = ry; mesh.receiveShadow = true; mesh.name = o.name || 'Decal';
+    bus.add(mesh);
+  }
+
+  // ================================================================ BODY SHELL
+  (function body() {
+    const s = new V.Shape();
+    s.moveTo(-P + RB, YB);
+    const arch = (zc) => { s.lineTo(zc - AR, YB); s.absarc(zc, YB, AR, Math.PI, 0, true); };
+    arch(ZR_AXLE); arch(ZF_AXLE);
+    s.lineTo(P - RB, YB);
+    s.absarc(P - RB, YB + RB, RB, -Math.PI / 2, 0, false);
+    s.lineTo(P, YT - RT);
+    s.absarc(P - RT, YT - RT, RT, 0, Math.PI / 2, false);
+    s.lineTo(-P + RT, YT);
+    s.absarc(-P + RT, YT - RT, RT, Math.PI / 2, Math.PI, false);
+    s.lineTo(-P, YB + RB);
+    s.absarc(-P + RB, YB + RB, RB, Math.PI, Math.PI * 1.5, false);
+    const D = BW - 2 * BV;
+    const g = new V.ExtrudeGeometry(s, { depth: D, bevelEnabled: true, bevelThickness: BV, bevelSize: BV, bevelSegments: 12, curveSegments: 24, steps: 1 });
+    g.translate(0, 0, -D / 2);
+    smoothExtrude(g, 50);
+    g.rotateY(-Math.PI / 2);          // profile-x -> world +Z, extrusion -> X
+    const m = new V.Mesh(g, M.yellow); m.name = 'BodyShell'; m.castShadow = true; m.receiveShadow = true;
+    bus.add(m);
+  })();
+
+  // ================================================================ RUB RAILS + TRIM
+  const railH = (y) => (y > 3 ? 0.04 : 0.055);
+  [1.36, 1.66, 2.72, 3.05].forEach((y) => {
+    const len = y > 3 ? 9.8 : 10.5;
+    [1, -1].forEach((s) => put(box(0.035, railH(y), len, M.black), s * (X_S + 0.0175), y, 0, 0, 0, 0, 'RubRail'));
+  });
+  [1.36, 1.66, 2.72].forEach((y) => put(box(2.14, railH(y), 0.035, M.black), 0, y, Z_F + 0.0175, 0, 0, 0, 'RubRail'));
+  put(box(2.14, railH(1.36), 0.035, M.black), 0, 1.36, -Z_F - 0.0175, 0, 0, 0, 'RubRail');
+  // rails wrapping the rounded vertical corners
+  const cornerRail = (y, sx, sz) => {
+    const th0 = sx > 0 ? (sz > 0 ? 0 : Math.PI / 2) : (sz > 0 ? Math.PI * 1.5 : Math.PI);
+    const g = new V.CylinderGeometry(BV + 0.0175, BV + 0.0175, railH(y), 14, 1, true, th0, Math.PI / 2);
+    put(new V.Mesh(g, M.blackTwo), sx * (BW / 2 - BV), y, sz * P, 0, 0, 0, 'RubRailCorner');
+  };
+  [1, -1].forEach((sx) => {
+    [1.36, 1.66, 2.72].forEach((y) => cornerRail(y, sx, 1));
+    cornerRail(1.36, sx, -1);
+  });
+
+  // ================================================================ SIDE WINDOWS
+  const winZ = [3.2, 2.05, 0.9, -0.25, -1.4, -2.55, -3.7];
+  function sideWindow(s, z, w) {
+    const ry = s > 0 ? Math.PI / 2 : -Math.PI / 2;
+    const y = 2.2, h = 0.84;
+    put(slab(w + 0.10, h + 0.10, 0.05, 0.10, M.black), s * 1.262, y, z, ry, 0, 0, 'WindowFrame');
+    put(slab(w, h, 0.05, 0.07, M.glass, 0.01), s * 1.268, y, z, ry, 0, 0, 'WindowGlass');
+    put(slab(w + 0.02, 0.045, 0.06, 0.02, M.black, 0.008, 1), s * 1.274, y + 0.10, z, ry, 0, 0, 'WindowBar');
+    put(slab(0.05, 0.10, 0.06, 0.02, M.chrome, 0.008, 1), s * 1.28, y + 0.10, z + s * 0.34, ry, 0, 0, 'WindowLatch');
+  }
+  [1, -1].forEach((s) => winZ.forEach((z) => sideWindow(s, z, 1.0)));
+  sideWindow(-1, 4.55, 0.98);                       // driver window (right side)
+
+  // Passenger door (left / +X side)
+  (function door() {
+    const ry = Math.PI / 2, zc = 4.55;
+    put(slab(1.08, 2.32, 0.06, 0.08, M.black), 1.272, 1.69, zc, ry, 0, 0, 'DoorFrame');
+    [-1, 1].forEach((k) => put(slab(0.46, 2.06, 0.05, 0.05, M.glass, 0.01), 1.279, 1.71, zc + k * 0.245, ry, 0, 0, 'DoorGlass'));
+    put(slab(0.03, 2.1, 0.07, 0.01, M.black, 0.005, 1), 1.283, 1.71, zc, ry, 0, 0, 'DoorSeam');
+    put(slab(0.045, 0.32, 0.08, 0.02, M.chrome, 0.008, 1), 1.29, 1.55, zc + 0.10, ry, 0, 0, 'DoorHandle');
+    put(slab(0.32, 0.05, 0.9, 0.02, M.chassis, 0.01, 1), 1.34, 0.6, zc, 0, 0, 0, 'DoorStep');
+    put(slab(0.30, 0.05, 0.85, 0.02, M.chassis, 0.01, 1), 1.32, 1.0, zc, 0, 0, 0, 'DoorStep');
+  })();
+
+  // ================================================================ WHEEL ARCH TRIM + LINERS
+  [ZF_AXLE, ZR_AXLE].forEach((zc) => {
+    [1, -1].forEach((s) => {
+      const tr = new V.Mesh(new V.TorusGeometry(AR + 0.005, 0.022, 10, 64, Math.PI), M.black);
+      put(tr, s * (X_S + 0.004), YB, zc, Math.PI / 2, 0, 0, 'ArchTrim');
+      const lin = new V.Mesh(new V.CylinderGeometry(0.548, 0.548, 0.62, 48, 1, true, 0, Math.PI), M.blackTwo);
+      put(lin, s * 0.80, YB + 0.02, zc, 0, 0, Math.PI / 2, 'WheelWell');
+    });
+  });
+
+  // ================================================================ WHEELS
+  const tyrePts = [[.30,-.14],[.36,-.15],[.46,-.145],[.50,-.12],[.52,-.085],[.52,-.052],[.507,-.04],[.507,-.02],[.52,-.008],
+    [.52,.008],[.507,.02],[.507,.04],[.52,.052],[.52,.085],[.50,.12],[.46,.145],[.36,.15],[.30,.14],[.30,-.14]].map((a) => new V.Vector2(a[0], a[1]));
+  const rimPts = [[.001,-.12],[.30,-.14],[.315,-.14],[.315,.15],[.29,.15],[.245,.14],[.22,.13],[.13,.13],[.12,.16],[.001,.16]].map((a) => new V.Vector2(a[0], a[1]));
+  const tyreGeo = new V.LatheGeometry(tyrePts, 72);
+  const rimGeo = new V.LatheGeometry(rimPts, 48);
+  const hubGeo = new V.CylinderGeometry(0.075, 0.075, 0.05, 24);
+  const lugGeo = new V.CylinderGeometry(0.017, 0.017, 0.03, 6);
+  function makeWheel(side, fancy) {
+    const orient = new V.Group(); orient.name = 'Wheel';
+    orient.rotation.z = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+    const spin = new V.Group(); orient.add(spin);
+    const tyre = new V.Mesh(tyreGeo, M.rubber); tyre.castShadow = true; tyre.receiveShadow = true;
+    const rim = new V.Mesh(rimGeo, M.rim); rim.castShadow = true;
+    spin.add(tyre, rim);
+    if (fancy) {
+      const hub = new V.Mesh(hubGeo, M.chrome); hub.position.y = 0.165; spin.add(hub);
+      for (let i = 0; i < 8; i++) {
+        const a = i / 8 * Math.PI * 2;
+        const lug = new V.Mesh(lugGeo, M.chrome); lug.position.set(Math.cos(a) * 0.185, 0.145, Math.sin(a) * 0.185); spin.add(lug);
+      }
+    }
+    spin.userData.dir = side; wheels.push(spin);
+    return orient;
+  }
+  [1, -1].forEach((s) => {
+    const f = makeWheel(s, true); f.position.set(s * 1.04, WR, ZF_AXLE); bus.add(f);
+    const ro = makeWheel(s, true); ro.position.set(s * 1.06, WR, ZR_AXLE); bus.add(ro);
+    const ri = makeWheel(s, false); ri.position.set(s * 0.72, WR, ZR_AXLE); bus.add(ri);
+  });
+  // axles, diff, chassis, tanks, silencer
+  [ZF_AXLE, ZR_AXLE].forEach((zc) => {
+    const ax = new V.Mesh(new V.CylinderGeometry(0.06, 0.06, 1.9, 16), M.chassis); put(ax, 0, WR, zc, 0, 0, Math.PI / 2, 'Axle');
+  });
+  put(new V.Mesh(new V.SphereGeometry(0.24, 24, 16), M.chassis), 0, 0.5, ZR_AXLE, 0, 0, 0, 'Differential').scale.set(1, 0.9, 1);
+  put(box(1.7, 0.16, 10.3, M.chassis), 0, 0.36, 0, 0, 0, 0, 'Underbody');
+  [-0.6, 0.6].forEach((x) => put(box(0.12, 0.2, 10.4, M.chassis), x, 0.3, 0, 0, 0, 0, 'ChassisBeam'));
+  put(new V.Mesh(new V.CylinderGeometry(0.21, 0.21, 1.4, 32), M.chassis), -0.72, 0.3, 0.2, 0, Math.PI / 2, 0, 'FuelTank');
+  put(new V.Mesh(new V.CylinderGeometry(0.13, 0.13, 0.9, 24), M.chassis), 0.66, 0.26, -1.1, 0, Math.PI / 2, 0, 'Silencer');
+  // mud flaps
+  [1, -1].forEach((s) => {
+    put(slab(0.42, 0.40, 0.02, 0.03, M.black, 0.006, 1), s * 1.0, 0.30, ZR_AXLE - AR - 0.06, 0, 0, 0, 'MudFlap');
+    put(slab(0.36, 0.34, 0.02, 0.03, M.black, 0.006, 1), s * 1.0, 0.32, ZF_AXLE - AR - 0.06, 0, 0, 0, 'MudFlap');
+  });
+
+  // ================================================================ FRONT FACE (+Z)
+  (function front() {
+    const z = Z_F;
+    // bumper
+    put(slab(2.36, 0.40, 0.34, 0.14, M.black, 0.03, 3), 0, 0.5, z + 0.05, 0, 0, 0, 'FrontBumper');
+    put(slab(1.5, 0.07, 0.06, 0.03, M.chrome, 0.012, 2), 0, 0.6, z + 0.235, 0, 0, 0, 'BumperChrome');
+    [-1, 1].forEach((s) => {
+      const fl = new V.Mesh(new V.CylinderGeometry(0.06, 0.06, 0.04, 24), M.head); fl.rotation.x = Math.PI / 2;
+      put(fl, s * 0.78, 0.47, z + 0.225, 0, Math.PI / 2, 0, 'FogLamp');
+    });
+    // headlamps + indicators
+    [-1, 1].forEach((s) => {
+      put(slab(0.40, 0.30, 0.07, 0.10, M.black, 0.015, 2), s * 0.70, 0.98, z + 0.015, 0, 0, 0, 'HeadlampHousing');
+      put(slab(0.33, 0.22, 0.05, 0.08, M.head, 0.012, 2), s * 0.70, 0.98, z + 0.035, 0, 0, 0, 'Headlamp');
+      put(slab(0.12, 0.30, 0.06, 0.05, M.amber, 0.012, 2), s * 0.985, 0.98, z + 0.02, 0, 0, 0, 'Indicator');
+    });
+    // grille
+    put(slab(1.3, 0.34, 0.05, 0.06, M.black, 0.012, 2), 0, 1.38, z + 0.02, 0, 0, 0, 'Grille');
+    for (let i = 0; i < 5; i++) put(box(1.22, 0.014, 0.02, M.chrome), 0, 1.25 + i * 0.065, z + 0.05, 0, 0, 0, 'GrilleBar');
+    const em = new V.Mesh(new V.CylinderGeometry(0.075, 0.075, 0.02, 32), M.chrome); em.rotation.x = Math.PI / 2;
+    put(em, 0, 1.38, z + 0.065, 0, Math.PI / 2, 0, 'Emblem');
+    // windshield
+    put(slab(2.12, 0.92, 0.05, 0.09, M.black, 0.012, 2), 0, 2.04, z + 0.012, 0, 0, 0, 'WindshieldFrame');
+    [-1, 1].forEach((s) => put(slab(1.0, 0.84, 0.05, 0.06, M.glass, 0.01, 2), s * 0.535, 2.04, z + 0.03, 0, 0, 0, 'Windshield'));
+    [-1, 1].forEach((s) => {
+      put(box(0.66, 0.018, 0.018, M.black), s * 0.52, 1.74, z + 0.07, 0, 0, s * -0.09, 'Wiper');
+    });
+    // destination sign
+    put(slab(1.72, 0.27, 0.05, 0.04, M.black, 0.01, 2), 0, 2.66, z + 0.012, 0, 0, 0, 'SignBoard');
+    decal(textTex(opt.sign, 2048, 256, { bg: '#050505', fg: '#ffb020', weight: '700', spacing: 0.22, size: 0.6 }), 1.6, 0.2, 0, 2.66, z + 0.042, 0, { opaque: true, glow: true, name: 'DestinationSign' });
+    // number plate
+    decal(textTex(opt.plate, 1024, 256, { bg: '#f6f6f2', fg: '#101214', weight: '700', spacing: 0.06, size: 0.52, left: 135, round: 26 }), 0.5, 0.125, 0, 0.98, z + 0.006, 0, { opaque: true, name: 'NumberPlate' });
+    decal(textTex('IND', 128, 256, { bg: '#1d3f91', fg: '#ffffff', weight: '700', spacing: 0, size: 0.3 }), 0.055, 0.125, -0.2225, 0.98, z + 0.007, 0, { opaque: true, name: 'PlateStrip' });
+  })();
+
+  // ================================================================ REAR FACE (-Z)
+  (function rear() {
+    const z = -Z_F, ry = Math.PI;
+    put(slab(2.36, 0.40, 0.34, 0.14, M.black, 0.03, 3), 0, 0.5, z - 0.05, 0, 0, 0, 'RearBumper');
+    put(slab(1.5, 0.07, 0.06, 0.03, M.chrome, 0.012, 2), 0, 0.6, z - 0.235, 0, 0, 0, 'BumperChrome');
+    put(slab(1.95, 0.84, 0.05, 0.09, M.black, 0.012, 2), 0, 2.08, z - 0.012, ry, 0, 0, 'RearWindowFrame');
+    put(slab(1.83, 0.74, 0.05, 0.07, M.glass, 0.01, 2), 0, 2.08, z - 0.03, ry, 0, 0, 'RearWindow');
+    [-1, 1].forEach((s) => {
+      put(slab(0.44, 0.30, 0.06, 0.06, M.red, 0.012, 2), s * 0.82, 1.12, z - 0.02, ry, 0, 0, 'TailLamp');
+      put(slab(0.44, 0.12, 0.06, 0.04, M.amber, 0.01, 2), s * 0.82, 0.88, z - 0.02, ry, 0, 0, 'RearIndicator');
+      put(slab(0.14, 0.30, 0.06, 0.05, M.red, 0.012, 2), s * 0.995, 1.62, z - 0.02, ry, 0, 0, 'MarkerLamp');
+    });
+    put(slab(0.9, 0.06, 0.06, 0.02, M.red, 0.01, 1), 0, 1.5, z - 0.02, ry, 0, 0, 'BrakeLamp');
+    put(slab(0.05, 0.4, 0.06, 0.02, M.chrome, 0.01, 1), 0.5, 1.15, z - 0.03, ry, 0, 0, 'DoorHandle');
+    // emergency door outline
+    decal(textTex(opt.title, 2048, 256, { fg: '#0c0d0e', weight: '800', spacing: 0.2, size: 0.7 }), 2.0, 0.25, 0, 2.62, z - 0.004, ry, { name: 'RearTitle' });
+    decal(textTex(opt.plate, 1024, 256, { bg: '#f6f6f2', fg: '#101214', weight: '700', spacing: 0.06, size: 0.52, left: 135, round: 26 }), 0.5, 0.125, 0, 1.0, z - 0.006, ry, { opaque: true, name: 'NumberPlate' });
+    decal(textTex('IND', 128, 256, { bg: '#1d3f91', fg: '#ffffff', weight: '700', spacing: 0, size: 0.3 }), 0.055, 0.125, 0.2225, 1.0, z - 0.007, ry, { opaque: true, name: 'PlateStrip' });
+  })();
+
+  // ================================================================ SIDE DECALS
+  [1, -1].forEach((s) => {
+    const ry = s > 0 ? Math.PI / 2 : -Math.PI / 2;
+    decal(textTex(opt.title, 4096, 256, { fg: '#0c0d0e', weight: '800', spacing: 0.32, size: 0.66 }), 5.2, 0.325, s * (X_S + 0.004), 2.895, -0.2, ry, { name: 'SideTitle' });
+    decal(textTex(opt.college + '   |   BUS NO. ' + opt.busNo, 4096, 256, { fg: '#0c0d0e', weight: '700', spacing: 0.12, size: 0.58 }), 4.4, 0.275, s * (X_S + 0.004), 1.515, -0.2, ry, { name: 'SideCollege' });
+  });
+
+  // ================================================================ MIRRORS
+  [1, -1].forEach((s) => {
+    [2.6, 1.95].forEach((y) => put(box(0.42, 0.028, 0.028, M.black), s * 1.46, y, 5.14, 0, 0, 0, 'MirrorArm'));
+    put(slab(0.20, 0.52, 0.16, 0.07, M.black, 0.02, 2), s * 1.75, 2.27, 5.14, 0, 0, 0, 'MirrorHousing');
+    put(slab(0.16, 0.46, 0.02, 0.05, M.mirror, 0.006, 1), s * 1.75, 2.27, 5.14 - 0.085, Math.PI, 0, 0, 'Mirror');
+    put(slab(0.16, 0.46, 0.02, 0.05, M.mirror, 0.006, 1), s * 1.75, 2.27, 5.14 + 0.085, 0, 0, 0, 'MirrorFront');
+  });
+
+  // ================================================================ SIDE LAMPS
+  [1, -1].forEach((s) => {
+    const ry = s > 0 ? Math.PI / 2 : -Math.PI / 2;
+    put(slab(0.16, 0.05, 0.03, 0.02, M.amber, 0.006, 1), s * (X_S + 0.012), 1.5, 4.95, ry, 0, 0, 'SideMarker');
+    put(slab(0.16, 0.05, 0.03, 0.02, M.red, 0.006, 1), s * (X_S + 0.012), 1.5, -4.95, ry, 0, 0, 'SideMarker');
+  });
+
+  // ================================================================ ROOF
+  [1.9, -1.5].forEach((z) => put(slab(0.9, 1.05, 0.09, 0.12, M.hatch, 0.02, 3), 0, Y_TOP + 0.03, z, 0, -Math.PI / 2, 0, 'RoofHatch'));
+  const dome = new V.SphereGeometry(0.12, 28, 14, 0, Math.PI * 2, 0, Math.PI / 2);
+  [-1, 1].forEach((s) => {
+    put(new V.Mesh(dome, M.amber), s * 0.85, Y_TOP - 0.005, 4.35, 0, 0, 0, 'RoofLampFront');
+    put(new V.Mesh(dome, M.red), s * 0.85, Y_TOP - 0.005, -4.35, 0, 0, 0, 'RoofLampRear');
+  });
+  put(new V.Mesh(new V.CylinderGeometry(0.10, 0.12, 0.05, 28), M.black), 0.45, Y_TOP + 0.02, -3.0, 0, 0, 0, 'GPS');
+  put(new V.Mesh(new V.SphereGeometry(0.09, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2), M.black), 0.45, Y_TOP + 0.045, -3.0, 0, 0, 0, 'GPSDome');
+
+  bus.userData.dimensions = { length: (Z_F + 0.4) * 2, width: 2.5 + 0.6, height: Y_TOP + 0.08 };
+  return bus;
+}
+if (typeof module !== 'undefined') module.exports = { createCollegeBus };
+
+</script>
+<script>
+(function () {
+  'use strict';
+  THREE.ColorManagement.legacyMode = false;
+
+  const $ = (s) => document.querySelector(s);
+  const canvas = $('#scene');
+  const rootEl = document.documentElement;
+  const reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const isDark = () => rootEl.dataset.theme === 'dark' ||
+    (rootEl.dataset.theme !== 'light' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+
+  // ------------------------------------------------------------------ renderer
+  let renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+  } catch (e) {
+    $('#loading').textContent = 'This browser could not start WebGL, so the 3D view is unavailable.';
+    return;
+  }
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 400);
+  const controls = new THREE.OrbitControls(camera, canvas);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.07;
+  controls.minDistance = 6;
+  controls.maxDistance = 90;
+  controls.maxPolarAngle = Math.PI / 2 - 0.03;
+  controls.autoRotateSpeed = 2.2;
+  controls.target.set(0, 1.5, 0);
+
+  // ------------------------------------------------------------------ studio environment (for reflections)
+  function makeEnvironment() {
+    const env = new THREE.Scene();
+    const sky = new THREE.Mesh(
+      new THREE.SphereGeometry(50, 48, 24),
+      new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        vertexShader: 'varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+        fragmentShader: 'varying vec3 vP; void main(){ float h = vP.y; vec3 top = vec3(0.30,0.46,0.80); vec3 hor = vec3(0.92,0.93,0.92); vec3 bot = vec3(0.16,0.17,0.16); vec3 c = h > 0.0 ? mix(hor, top, pow(h, 0.55)) : mix(hor, bot, pow(-h, 0.45)); gl_FragColor = vec4(c, 1.0); }'
+      })
+    );
+    env.add(sky);
+    const panel = (w, h, x, y, z, k) => {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 0.98, 0.94).multiplyScalar(k), side: THREE.DoubleSide }));
+      m.position.set(x, y, z); m.lookAt(0, 0, 0); env.add(m);
+    };
+    panel(26, 10, 0, 34, 0, 7);
+    panel(18, 7, -30, 12, 8, 5);
+    panel(18, 7, 30, 10, -10, 4);
+    panel(14, 5, 6, 8, 34, 3);
+    const pm = new THREE.PMREMGenerator(renderer);
+    const rt = pm.fromScene(env, 0.02);
+    pm.dispose();
+    return rt.texture;
+  }
+  scene.environment = makeEnvironment();
+
+  // ------------------------------------------------------------------ lights
+  const sun = new THREE.DirectionalLight(0xfff1de, 2.4);
+  sun.position.set(12, 20, 14);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(4096, 4096);
+  const sc = sun.shadow.camera; sc.left = -10; sc.right = 10; sc.top = 10; sc.bottom = -10; sc.near = 1; sc.far = 60;
+  sun.shadow.bias = -0.0002; sun.shadow.normalBias = 0.02;
+  scene.add(sun);
+  const fill = new THREE.DirectionalLight(0xbdd3ff, 0.55);
+  fill.position.set(-14, 8, -10);
+  scene.add(fill);
+
+  // ------------------------------------------------------------------ map-style ground
+  const PAL = {
+    light: { land: '#eceee8', park: '#cfe5c3', tree: '#bcd9ad', water: '#b4d2ee', bld: '#dfe1da', casing: '#cbd0c8', road: '#ffffff', lane: '#d2d6cf', route: '#3d78e6', routeCase: '#ffffff', zebra: '#eef0eb' },
+    dark: { land: '#1b2124', park: '#1f3020', tree: '#274128', water: '#152838', bld: '#232a2e', casing: '#101416', road: '#39424a', lane: '#5b666e', route: '#6c9dff', routeCase: '#0d1a33', zebra: '#59636b' }
+  };
+  function rng(seed) { return function () { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+  function drawMap(dark, S) {
+    const c = document.createElement('canvas'); c.width = c.height = S;
+    const g = c.getContext('2d'); const P = dark ? PAL.dark : PAL.light;
+    const ppm = S / 140, X = (x) => S / 2 + x * ppm, Y = (z) => S / 2 + z * ppm, R = rng(7);
+    const rr = (x, z, w, h, r, fill) => { g.fillStyle = fill; g.beginPath(); g.roundRect ? g.roundRect(X(x), Y(z), w * ppm, h * ppm, r * ppm) : g.rect(X(x), Y(z), w * ppm, h * ppm); g.fill(); };
+    g.fillStyle = P.land; g.fillRect(0, 0, S, S);
+
+    const vx = [-100, -70, -35, 0, 35, 70, 100], hz = [-100, -60, -20, 20, 60, 100];
+    const hwV = (x) => (Math.abs(x) >= 100 ? 0 : (x === 0 ? 4.5 : 3.2) + 1.0);
+    const hwH = (z) => (Math.abs(z) >= 100 ? 0 : 3.2 + 1.0);
+    for (let i = 0; i < vx.length - 1; i++) for (let j = 0; j < hz.length - 1; j++) {
+      const x0 = vx[i] + hwV(vx[i]), x1 = vx[i + 1] - hwV(vx[i + 1]);
+      const z0 = hz[j] + hwH(hz[j]), z1 = hz[j + 1] - hwH(hz[j + 1]);
+      const w = x1 - x0, h = z1 - z0;
+      const water = vx[i] === 35 && hz[j] === 20;
+      const park = (vx[i] === -70 && hz[j] === -20) || (vx[i] === -35 && hz[j] === 20) || (vx[i] === 35 && hz[j] === -60);
+      if (water) { rr(x0, z0, w, h, 9, P.water); }
+      else if (park) {
+        rr(x0, z0, w, h, 3, P.park);
+        for (let k = 0; k < 46; k++) { const tx = x0 + 2 + R() * (w - 4), tz = z0 + 2 + R() * (h - 4), tr = 1.0 + R() * 1.3; g.fillStyle = P.tree; g.beginPath(); g.arc(X(tx), Y(tz), tr * ppm, 0, 6.2832); g.fill(); }
+      } else {
+        const cols = 2 + Math.floor(R() * 2), rows = 2 + Math.floor(R() * 2);
+        for (let a = 0; a < cols; a++) for (let b = 0; b < rows; b++) {
+          if (R() > 0.88) continue;
+          const cw = w / cols, ch = h / rows, m = 1.6 + R() * 2.2;
+          rr(x0 + a * cw + m, z0 + b * ch + m, cw - 2 * m, ch - 2 * m, 0.8, P.bld);
+        }
+      }
+    }
+
+    const minorV = [-70, -35, 35, 70], minorH = [-60, -20, 20, 60];
+    const line = (x0, z0, x1, z1, wm, col) => { g.strokeStyle = col; g.lineWidth = wm * ppm; g.lineCap = 'butt'; g.beginPath(); g.moveTo(X(x0), Y(z0)); g.lineTo(X(x1), Y(z1)); g.stroke(); };
+    [0, 1].forEach((pass) => {
+      const col = pass === 0 ? P.casing : P.road, add = pass === 0 ? 1.3 : 0;
+      minorV.forEach((x) => line(x, -100, x, 100, 6.4 + add, col));
+      minorH.forEach((z) => line(-100, z, 100, z, 6.4 + add, col));
+      line(0, -100, 0, 100, 9 + add, col);
+    });
+    // lane markings on the main road
+    g.setLineDash([2.6 * ppm, 3.4 * ppm]);
+    [[-100, -64], [-56, -24], [-16, 16], [24, 56], [64, 100]].forEach((s) => line(0, s[0], 0, s[1], 0.22, P.lane));
+    g.setLineDash([]);
+    [-4.0, 4.0].forEach((x) => [[-100, -64], [-56, -24], [-16, 16], [24, 56], [64, 100]].forEach((s) => line(x, s[0], x, s[1], 0.14, P.lane)));
+    // zebra crossings
+    [14, -14].forEach((z0) => { for (let x = -3.6; x <= 3.6; x += 1.0) rr(x - 0.25, z0 - 1.2, 0.5, 2.4, 0.05, P.zebra); });
+
+    // navigation route: straight ahead, then a right turn (screen-left of the bus's heading)
+    const route = (wm, col) => {
+      g.strokeStyle = col; g.lineWidth = wm * ppm; g.lineCap = 'round'; g.lineJoin = 'round';
+      g.beginPath(); g.moveTo(X(0), Y(0)); g.lineTo(X(0), Y(13)); g.quadraticCurveTo(X(0), Y(20), X(-7), Y(20)); g.lineTo(X(-100), Y(20)); g.stroke();
+    };
+    route(2.6, P.routeCase); route(1.7, P.route);
+
+    const t = new THREE.CanvasTexture(c);
+    t.encoding = THREE.sRGBEncoding; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); t.needsUpdate = true;
+    return t;
+  }
+
+  const mapTex = {};
+  const SIZE = Math.min(renderer.capabilities.maxTextureSize || 4096, window.innerWidth > 900 ? 4096 : 2048);
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(140, 140), new THREE.MeshBasicMaterial({ toneMapped: false }));
+  ground.rotation.x = -Math.PI / 2;
+  scene.add(ground);
+
+  const shadowCatcher = new THREE.Mesh(new THREE.PlaneGeometry(44, 44), new THREE.ShadowMaterial({ opacity: 0.3 }));
+  shadowCatcher.rotation.x = -Math.PI / 2; shadowCatcher.position.y = 0.004; shadowCatcher.receiveShadow = true;
+  scene.add(shadowCatcher);
+
+  (function contactShadow() {
+    const c = document.createElement('canvas'); c.width = 256; c.height = 256;
+    const g = c.getContext('2d'); const gr = g.createRadialGradient(128, 128, 10, 128, 128, 128);
+    gr.addColorStop(0, 'rgba(0,0,0,0.55)'); gr.addColorStop(0.55, 'rgba(0,0,0,0.28)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 256, 256);
+    const t = new THREE.CanvasTexture(c);
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(15, 5.6), new THREE.MeshBasicMaterial({ map: t, transparent: true, depthWrite: false, toneMapped: false }));
+    m.rotation.x = -Math.PI / 2; m.rotation.z = Math.PI / 2; m.position.y = 0.006; m.renderOrder = 1;
+    scene.add(m);
+  })();
+
+  function applyTheme() {
+    const dark = isDark(), key = dark ? 'dark' : 'light', P = PAL[key];
+    if (!mapTex[key]) mapTex[key] = drawMap(dark, SIZE);
+    ground.material.map = mapTex[key]; ground.material.needsUpdate = true;
+    const bg = new THREE.Color(P.land);
+    scene.background = bg;
+    scene.fog = new THREE.Fog(P.land, 60, 118);
+    shadowCatcher.material.opacity = dark ? 0.5 : 0.3;
+    renderer.toneMappingExposure = dark ? 0.92 : 1.0;
+  }
+  applyTheme();
+  if (window.matchMedia) {
+    const mq = matchMedia('(prefers-color-scheme: dark)');
+    (mq.addEventListener ? mq.addEventListener.bind(mq, 'change') : mq.addListener.bind(mq))(applyTheme);
+  }
+  new MutationObserver(applyTheme).observe(rootEl, { attributes: true, attributeFilter: ['data-theme'] });
+
+  // ------------------------------------------------------------------ views
+  const tmpV = new THREE.Vector3();
+  function fitDistance(halfW, halfH) {
+    const t = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+    return Math.max(halfH / t, halfW / (t * camera.aspect)) * 1.12;
+  }
+  function fitSphere(r) {
+    const vf = THREE.MathUtils.degToRad(camera.fov / 2), hf = Math.atan(Math.tan(vf) * camera.aspect);
+    return r / Math.sin(Math.min(vf, hf)) * 1.02;
+  }
+  const VIEWS = {
+    iso:    () => ({ dir: [0.62, 0.40, 0.68], dist: Math.min(fitSphere(6.6), 80), target: [0, 1.4, 0] }),
+    front:  () => ({ dir: [0, 0.10, 1], dist: fitDistance(2.3, 1.95) + 5.7, target: [0, 1.6, 0] }),
+    door:   () => ({ dir: [1, 0.08, 0], dist: fitDistance(5.9, 1.95) + 1.9, target: [0, 1.6, 0] }),
+    rear:   () => ({ dir: [0, 0.10, -1], dist: fitDistance(2.3, 1.95) + 5.7, target: [0, 1.6, 0] }),
+    driver: () => ({ dir: [-1, 0.08, 0], dist: fitDistance(5.9, 1.95) + 1.9, target: [0, 1.6, 0] }),
+    top:    () => ({ dir: [0, 1, -0.0015], dist: fitDistance(2.0, 5.9) + 3.4, target: [0, 1.2, 0] }),
+    nav:    () => ({ dir: [0, 0.62, -0.78], dist: Math.max(16, fitDistance(2.6, 1.6) * 0.9), target: [0, 0.9, 5.5] })
+  };
+  let tween = null;
+  function goTo(name, ms) {
+    const v = VIEWS[name](); const end = new THREE.Vector3().fromArray(v.dir).normalize().multiplyScalar(v.dist);
+    const tg = new THREE.Vector3().fromArray(v.target);
+    if (!ms) { controls.target.copy(tg); camera.position.copy(tg).add(end); camera.lookAt(tg); controls.update(); return; }
+    const s0 = new THREE.Spherical().setFromVector3(tmpV.copy(camera.position).sub(controls.target));
+    const s1 = new THREE.Spherical().setFromVector3(end);
+    let dth = s1.theta - s0.theta; dth = Math.atan2(Math.sin(dth), Math.cos(dth));
+    tween = { t0: performance.now(), ms, s0, s1, dth, tg0: controls.target.clone(), tg1: tg };
+    setSpin(false);
+  }
+  function stepTween(now) {
+    const k = Math.min(1, (now - tween.t0) / tween.ms);
+    const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+    const s = new THREE.Spherical(
+      tween.s0.radius + (tween.s1.radius - tween.s0.radius) * e,
+      tween.s0.phi + (tween.s1.phi - tween.s0.phi) * e,
+      tween.s0.theta + tween.dth * e);
+    controls.target.lerpVectors(tween.tg0, tween.tg1, e);
+    camera.position.copy(controls.target).add(tmpV.setFromSpherical(s));
+    if (k >= 1) tween = null;
+  }
+
+  // ------------------------------------------------------------------ UI
+  const dock = $('#dock');
+  let drive = false;
+  function setPressed(sel, on) { const b = dock.querySelector(sel); if (b) b.setAttribute('aria-pressed', on ? 'true' : 'false'); }
+  function setSpin(on) { controls.autoRotate = on; setPressed('[data-toggle="spin"]', on); if (on) markView(null); }
+  function markView(name) { dock.querySelectorAll('[data-view]').forEach((b) => b.setAttribute('aria-pressed', b.dataset.view === name ? 'true' : 'false')); }
+  dock.addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.view) { markView(b.dataset.view); goTo(b.dataset.view, reduceMotion ? 1 : 950); }
+    else if (b.dataset.toggle === 'spin') { tween = null; setSpin(!controls.autoRotate); }
+    else if (b.dataset.toggle === 'drive') { drive = !drive; setPressed('[data-toggle="drive"]', drive); }
+  });
+  controls.addEventListener('start', () => { tween = null; if (controls.autoRotate) setSpin(false); markView(null); });
+
+  function onResize() {
+    const w = window.innerWidth, h = window.innerHeight;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 3));
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h; camera.updateProjectionMatrix();
+  }
+  window.addEventListener('resize', onResize);
+  onResize();
+
+  // ------------------------------------------------------------------ build the bus
+  async function loadFonts() {
+    if (!document.fonts || !document.fonts.load) return;
+    try {
+      await Promise.race([
+        Promise.all([document.fonts.load('700 64px Poppins'), document.fonts.load('800 64px Poppins')]),
+        new Promise((r) => setTimeout(r, 2500))
+      ]);
+    } catch (e) { /* fall back to system sans */ }
+  }
+
+  let bus = null, wheels = [];
+  async function start() {
+    await loadFonts();
+    await new Promise((r) => requestAnimationFrame(r));
+    bus = createCollegeBus(THREE, {
+      createCanvas: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+    });
+    wheels = bus.userData.wheels;
+    scene.add(bus);
+    let tris = 0;
+    bus.traverse((o) => { if (o.isMesh) { const g = o.geometry; tris += (g.index ? g.index.count : g.attributes.position.count) / 3; } });
+    const bb = new THREE.Box3().setFromObject(bus), sz = bb.getSize(new THREE.Vector3());
+    $('#stats').textContent = sz.z.toFixed(1) + ' m long, ' + sz.y.toFixed(1) + ' m tall, ' + Math.round(tris / 1000) + 'k triangles';
+    $('#loading').remove();
+    goTo('iso', 0);
+    if (!reduceMotion) setSpin(true);
+    canvas.classList.add('ready');
+  }
+
+  const clock = new THREE.Clock();
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
+    if (tween) stepTween(now || performance.now());
+    if (bus) {
+      if (drive) {
+        for (const w of wheels) w.rotation.y += w.userData.dir * dt * 16;
+        bus.position.y = Math.sin(t * 9) * 0.003; bus.rotation.z = Math.sin(t * 5.3) * 0.0016;
+      } else { bus.position.y = 0; bus.rotation.z = 0; }
+    }
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(frame);
+  start();
+})();
+
+</script>
+</body>
+</html>
